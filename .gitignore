@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Sync / app logs (local)
+logs/
+
+# Local secrets (encrypted credentials DB + Fernet key — never commit)
+sophos_secrets.db
+sophos_secrets.db-*
+sophos_credential_key
+sophos_session_secret
+
+# Env files and local app database (never commit)
+credentials.env
+.env
+sophos_central.db

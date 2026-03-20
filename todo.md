@@ -1,0 +1,83 @@
+# App planned features
+
+## Features
+
+- [ ] Basic UI layout 
+    - [x] tabbed nav
+    - [x] top bar with icons
+    - [x] top nav pinned
+    - [x] Table style
+        - [x] table search
+        - [x] column sort
+        - [x] facet filter
+        - [x] Export to excel/csv/json
+        - [x] column selector
+        - [x] Lazy loading
+    - [x] Browser tab title: Firewalls Managed by Sophos Central 
+    - [x] Sopos.com favicon
+    - [x] Map control
+        - [x] set firewall location by address
+        - [x] resizable
+        - [x] touch support
+        - [x] remember zoom level
+        - [ ] Clcikable pins
+        - [x] hover cards
+    - [ ] Documentation and make use of help icon 
+    - [ ] Translation
+    - [ ] make use of notification bell icon
+- [x] Dashboard tab 
+    - [x] alerts table
+        - [x] clickable firewall hostname
+        - [x] details flyout
+        - [ ] ack alerts
+    - [x] clickable cards with summary counts
+        - [x] Alerts
+        - [x] Firewalls
+        - [x] Tenants
+        - [x] Licenses
+- [ ] Firewalls tab 
+    - [x] status icon
+    - [x] Alert count
+    - [x] view firmware updates
+    - [ ] schedule updates
+    - [ ] flyout view
+    - [ ] Approve management
+    - [ ] group/ungroup
+    - [ ] Import / Export config management
+- [x] Tenants tab
+    - [x] Firewall count
+    - [x] clickable names - filter firewall view
+    - [ ] Hide tab if tenants list is empty
+- [ ] Licenses tab
+    - [x] clickable flyout
+        - [x] gantt chart licens expiry view
+    - [x] Firewall hostname
+    - [x] "Device Managed By" status
+    - [x] Details view
+- [ ] User authentication
+    - [x] basic RBAC
+        - [x] admin role - access and change settings
+        - [x] user role - can trigger central callbacks : schedule firmware, ack alerts
+        - [ ] viewer role - can change their password and view all tabs
+    - [x] self-service password change
+    - [ ] session timeouut
+    - [ ] forgot password flow
+        - [ ] email challenge loop
+        - [ ] text challenge loop
+    - [ ] passkey support
+    - [ ] mfa tokens
+    - [ ] IDP integration
+        - [ ] google auth signin
+        - [ ] azure auth signin
+        - [ ] Sophos ID signin?
+- [x] Central Creds management
+    - [x] Add / Remove creds
+    - [x] Test creds
+    - [x] Lookup cred type and save with creds
+- [ ] Sync management
+    - [x] set sync interval UI
+    - [x] Implement sync action
+    - [ ] Add visual indicator to show last sync
+    - [ ] Event logging
+    - [ ] Notifications panel
+    

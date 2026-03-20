@@ -1,0 +1,1137 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Firewalls Managed by Sophos Central</title>
+  <link rel="icon" href="/static/img/favicon.ico" type="image/x-icon" sizes="any" />
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+</head>
+
+<body>
+  <div id="auth-overlay" class="auth-overlay" hidden aria-hidden="true">
+    <div class="auth-overlay__stage">
+      <div class="auth-overlay__stack">
+        <div class="auth-overlay__logo-wrap" aria-hidden="true">
+          <img class="auth-overlay__logo" src="/static/img/sophos-wordmark.png" width="220" alt="" />
+        </div>
+        <div class="auth-overlay__card" role="dialog" aria-modal="true" aria-labelledby="auth-overlay-title">
+          <h1 id="auth-overlay-title" class="auth-overlay__card-title">Sign in</h1>
+          <p id="auth-overlay-subtitle" class="auth-overlay__card-sub muted" hidden></p>
+          <div id="auth-setup-block" class="auth-overlay__block" hidden>
+            <p class="auth-overlay__lead muted">Create the first sign-in password (for the <strong>admin</strong>
+              account if
+              it exists, otherwise the earliest admin). Minimum 10 characters. Other accounts without a password can be
+              updated
+              in Settings after you sign in.</p>
+            <form id="auth-setup-form" class="auth-overlay__form" autocomplete="off">
+              <label class="settings-form__field">
+                <span class="settings-form__label">New password</span>
+                <input type="password" id="auth-setup-password" class="settings-form__input auth-overlay__input"
+                  required minlength="10" maxlength="256" autocomplete="new-password" />
+              </label>
+              <label class="settings-form__field">
+                <span class="settings-form__label">Confirm password</span>
+                <input type="password" id="auth-setup-password-confirm" class="settings-form__input auth-overlay__input"
+                  required minlength="10" maxlength="256" autocomplete="new-password" />
+              </label>
+              <p id="auth-setup-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+              <button type="submit" class="btn btn--primary auth-overlay__submit">Save and continue</button>
+            </form>
+          </div>
+          <div id="auth-login-block" class="auth-overlay__block" hidden>
+            <form id="auth-login-form" class="auth-overlay__form" autocomplete="on">
+              <label class="settings-form__field">
+                <span class="settings-form__label">Username</span>
+                <span class="auth-overlay__input-wrap">
+                  <input type="text" id="auth-login-username" class="settings-form__input auth-overlay__input" required
+                    maxlength="200" name="username" autocomplete="username" />
+                  <span class="auth-overlay__input-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="18" height="18">
+                      <path fill="currentColor"
+                        d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+                    </svg>
+                  </span>
+                </span>
+              </label>
+              <label class="settings-form__field">
+                <span class="settings-form__label">Password</span>
+                <span class="auth-overlay__input-wrap">
+                  <input type="password" id="auth-login-password" class="settings-form__input auth-overlay__input"
+                    required maxlength="512" name="password" autocomplete="current-password" />
+                  <span class="auth-overlay__input-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="18" height="18">
+                      <path fill="currentColor"
+                        d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z" />
+                    </svg>
+                  </span>
+                </span>
+              </label>
+              <p id="auth-login-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+              <button type="submit" class="btn btn--primary auth-overlay__submit">Continue</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+    <footer class="auth-overlay__footer">
+      <nav class="auth-overlay__footer-links" aria-label="Legal">
+        <a href="https://www.sophos.com/en-us/legal" target="_blank" rel="noopener noreferrer">Legal</a>
+        <a href="https://www.sophos.com/en-us/legal/privacy" target="_blank" rel="noopener noreferrer">Privacy</a>
+        <a href="https://www.sophos.com/en-us/legal/cookies" target="_blank" rel="noopener noreferrer">Cookies</a>
+        <a href="https://www.sophos.com" target="_blank" rel="noopener noreferrer">Learn more</a>
+      </nav>
+      <p class="auth-overlay__copyright">© 1997–2026 Sophos Ltd. All rights reserved.</p>
+    </footer>
+  </div>
+
+  <div class="app-chrome-sticky">
+    <header class="top-bar" role="banner">
+      <div class="top-bar__inner">
+        <div class="top-bar__left">
+          <a href="/" class="top-bar__brand" aria-label="Home">
+            <img class="top-bar__logo" src="/static/img/sophos-wordmark.png" alt="" width="140" />
+          </a>
+          <span class="top-bar__app-title">Firewalls Managed by Sophos Central</span>
+        </div>
+        <div class="top-bar__tools">
+          <button type="button" class="icon-btn" title="Notifications" aria-label="Notifications">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path fill="currentColor"
+                d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 0 0 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
+            </svg>
+          </button>
+          <button type="button" class="icon-btn" title="Help" aria-label="Help">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path fill="currentColor"
+                d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
+            </svg>
+          </button>
+          <button type="button" class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings"
+            aria-haspopup="dialog" aria-controls="settings-modal">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path fill="currentColor"
+                d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+            </svg>
+          </button>
+          <div class="user-menu user-menu--trailing">
+            <button type="button" class="icon-btn user-menu__trigger" id="btn-user-menu" title="Account"
+              aria-label="Account menu" aria-haspopup="true" aria-expanded="false" aria-controls="user-menu-dropdown"
+              hidden>
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+              </svg>
+            </button>
+            <div id="user-menu-dropdown" class="user-menu__dropdown user-menu__dropdown--rich" hidden role="menu"
+              aria-labelledby="btn-user-menu">
+              <div class="user-menu__header">
+                <div class="user-menu__avatar" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="28" height="28">
+                    <path fill="currentColor"
+                      d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+                  </svg>
+                </div>
+                <div class="user-menu__identity">
+                  <div class="user-menu__display-name" id="user-menu-display-name"></div>
+                  <div class="user-menu__role" id="user-menu-role-line"></div>
+                </div>
+              </div>
+              <div class="user-menu__rule" role="separator"></div>
+              <div class="user-menu__links">
+                <button type="button" class="user-menu__link" role="menuitem" id="user-menu-profile">Profile</button>
+                <button type="button" class="user-menu__link" role="menuitem" id="user-menu-change-password">Change
+                  password</button>
+              </div>
+              <div class="user-menu__rule" role="separator"></div>
+              <div class="user-menu__footer">
+                <button type="button" class="user-menu__theme-btn" id="user-menu-theme-placeholder"
+                  aria-label="Theme (not available yet)" title="Theme">
+                  <svg class="user-menu__theme-icon user-menu__theme-icon--moon" viewBox="0 0 24 24" width="20"
+                    height="20" aria-hidden="true">
+                    <path fill="currentColor"
+                      d="M12.34 2.02C6.59 1.82 2 6.57 2 12c0 5.52 4.48 10 10 10 3.71 0 6.93-2.02 8.66-5.02-8.2.75-15.02-6.43-15.02-14.66 0-.21 0-.41.01-.61.98-.34 2.03-.51 3.09-.49zM4.34 12.02c.24 4.28 3.71 7.75 7.99 7.99-.52 2.18-2.47 3.81-4.83 3.81-2.76 0-5-2.24-5-5 0-2.36 1.63-4.31 3.84-4.8z" />
+                  </svg>
+                  <svg class="user-menu__theme-icon user-menu__theme-icon--sun" viewBox="0 0 24 24" width="20"
+                    height="20" aria-hidden="true" hidden>
+                    <path fill="currentColor"
+                      d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zm10.48 0l1.79-1.79 1.41 1.41-1.79 1.8-1.41-1.42zM12 4V1h-1v3h1zm0 19v-3h-1v3h1zM4 12H1v-1h3v1zm19 0h-3v-1h3v1zM6.76 19.16l-1.42 1.41-1.79-1.8 1.41-1.41 1.8 1.8zm10.48 0l1.41 1.41 1.8-1.8-1.41-1.41-1.8 1.8zM12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6zm0-11c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5z" />
+                  </svg>
+                </button>
+                <button type="button" class="user-menu__signout" role="menuitem" id="user-menu-logout">
+                  <span class="user-menu__signout-label">Sign out</span>
+                  <svg class="user-menu__signout-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor"
+                      d="M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="page-head">
+      <h1 id="page-title" class="page-title">Dashboard</h1>
+    </div>
+
+    <nav class="tabs" aria-label="Main">
+      <button type="button" class="tabs__tab is-active" data-tab="dashboard" role="tab"
+        aria-selected="true">Dashboard</button>
+      <button type="button" class="tabs__tab" data-tab="firewalls" role="tab" aria-selected="false">Firewalls</button>
+      <button type="button" class="tabs__tab" data-tab="tenants" role="tab" aria-selected="false">Tenants</button>
+      <button type="button" class="tabs__tab" data-tab="licenses" role="tab" aria-selected="false">Licenses</button>
+    </nav>
+  </div>
+
+  <main class="main">
+    <!-- Dashboard -->
+    <section id="panel-dashboard" class="panel is-active" role="tabpanel" data-panel="dashboard">
+      <div class="fw-map-section fw-map-section--dashboard" id="dash-fw-map-wrap" data-fw-map-context="dashboard">
+        <div class="fw-map-section__head">
+          <button type="button" class="fw-map-section__toggle" id="dash-fw-map-toggle" aria-expanded="true"
+            aria-controls="dash-fw-map-body">Firewall map</button>
+        </div>
+        <div id="dash-fw-map-body" class="fw-map-section__body">
+          <div id="dash-fw-map" class="fw-map-leaflet fw-map-leaflet--dashboard" role="img" aria-label="Firewalls on world map"></div>
+          <p class="fw-map-attribution muted">
+            Map © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>
+            contributors
+          </p>
+        </div>
+      </div>
+      <div class="dashboard-grid" id="dashboard-stats"></div>
+      <div class="section-block section-block--alerts">
+        <h2 class="section-heading" id="dashboard-alerts-heading">Alerts</h2>
+        <div class="split split--dashboard-alerts">
+          <aside class="filters filters--collapsed" aria-label="Alert filters">
+            <div id="da-filters-drawer" class="filters__drawer" hidden>
+              <div id="da-filters"></div>
+            </div>
+          </aside>
+          <div class="split__main split__main--alerts">
+            <div class="table-wrap">
+              <div class="toolbar toolbar--alerts-toolbar">
+                <div class="toolbar__sheet">
+                  <div class="toolbar__line toolbar__line--export">
+                    <div class="toolbar__actions" aria-hidden="true"></div>
+                    <div class="toolbar__export-row">
+                      <button type="button" class="link-btn toolbar__export-btn" id="da-export-btn"
+                        aria-haspopup="true" aria-expanded="false" aria-controls="table-export-popover">Export</button>
+                    </div>
+                  </div>
+                  <div class="toolbar__line toolbar__line--main">
+                    <div class="toolbar__filters">
+                      <div class="filters__head">
+                        <button type="button" class="filters__toggle" aria-expanded="false" aria-controls="da-filters-drawer"
+                          aria-label="Filters" title="Filters">
+                          <svg class="filters__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                            <path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z" />
+                          </svg>
+                          <span class="filters__title-label">Filters</span>
+                        </button>
+                        <div class="filters__head-actions" id="da-filters-head-actions" hidden>
+                          <span class="filters__facet-count" id="da-facet-count" aria-live="polite"></span>
+                          <button type="button" class="filters__facet-reset link-btn" id="da-facet-reset" hidden>Reset</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="toolbar__search-cluster">
+                      <div class="search-field">
+                        <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                          <path fill="currentColor"
+                            d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                        </svg>
+                        <input type="search" id="da-search" class="search-field__input" placeholder="Search"
+                          autocomplete="off" aria-label="Search alerts" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="table-scroll">
+                <table class="data-table" id="dashboard-alerts-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Severity</th>
+                      <th scope="col">Tenant</th>
+                      <th scope="col">Firewall</th>
+                      <th scope="col">Description</th>
+                      <th scope="col">Raised</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dashboard-alerts-body"></tbody>
+                </table>
+              </div>
+              <footer class="table-footer table-footer--dashboard">
+                <span class="table-footer__count" id="da-count"></span>
+                <div class="table-footer__lazy-cluster">
+                  <label class="pager__per">
+                    Rows per load
+                    <select id="da-page-size" aria-label="Alerts loaded per request">
+                      <option value="10">10</option>
+                      <option value="25" selected>25</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                    </select>
+                  </label>
+                  <span class="table-footer__lazy-hint muted" id="da-lazy-hint" aria-live="polite"></span>
+                </div>
+              </footer>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Firewalls -->
+    <section id="panel-firewalls" class="panel" role="tabpanel" data-panel="firewalls" hidden>
+      <div class="firewalls-panel">
+        <div class="fw-map-section fw-map-section--firewalls" id="panel-fw-map-wrap" data-fw-map-context="firewalls">
+          <div class="fw-map-section__head">
+            <button type="button" class="fw-map-section__toggle" id="panel-fw-map-toggle" aria-expanded="true"
+              aria-controls="panel-fw-map-body">Firewall map</button>
+          </div>
+          <div id="panel-fw-map-body" class="fw-map-section__body">
+            <div id="panel-fw-map" class="fw-map-leaflet fw-map-leaflet--firewalls" role="img" aria-label="Firewalls on world map"></div>
+            <p class="fw-map-attribution muted">
+              Map © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>
+              contributors
+            </p>
+          </div>
+        </div>
+        <div class="split">
+          <aside class="filters filters--collapsed" aria-label="Filters">
+            <div id="fw-filters-drawer" class="filters__drawer" hidden>
+              <div id="firewall-filters"></div>
+            </div>
+          </aside>
+          <div class="content-pane">
+            <div class="table-wrap">
+          <div class="toolbar">
+            <div class="toolbar__sheet">
+              <div class="toolbar__line toolbar__line--export">
+                <div class="toolbar__export-row">
+                  <button type="button" class="link-btn toolbar__export-btn" id="fw-export-btn" aria-haspopup="true"
+                    aria-expanded="false" aria-controls="table-export-popover">Export</button>
+                </div>
+              </div>
+              <div class="toolbar__line toolbar__line--main">
+                <div class="toolbar__filters">
+                  <div class="filters__head">
+                    <button type="button" class="filters__toggle" aria-expanded="false" aria-controls="fw-filters-drawer"
+                      aria-label="Filters" title="Filters">
+                      <svg class="filters__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z" />
+                      </svg>
+                      <span class="filters__title-label">Filters</span>
+                    </button>
+                    <div class="filters__head-actions" id="fw-filters-head-actions" hidden>
+                      <span class="filters__facet-count" id="fw-facet-count" aria-live="polite"></span>
+                      <button type="button" class="filters__facet-reset link-btn" id="fw-facet-reset" hidden>Reset</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="toolbar__actions">
+                  <button type="button" class="link-btn">Delete</button>
+                  <button type="button" class="link-btn">Replace Management</button>
+                  <button type="button" class="link-btn">Update Firmware</button>
+                  <button type="button" class="link-btn">Manage tags</button>
+                </div>
+                <div class="toolbar__search-cluster">
+                  <div class="search-field">
+                    <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                      <path fill="currentColor"
+                        d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                    </svg>
+                    <input type="search" id="fw-search" class="search-field__input" placeholder="Search" autocomplete="off"
+                      aria-label="Search firewalls" />
+                  </div>
+                  <span id="fw-cols-trigger" class="toolbar__cols-icon" role="button" tabindex="0" aria-expanded="false"
+                    aria-haspopup="true" aria-controls="fw-cols-modal" title="Columns" aria-label="Choose table columns">
+                    <svg class="toolbar__cols-icon-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                      <path fill="currentColor"
+                        d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                    </svg>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table data-table--dense" id="fw-table">
+              <thead>
+                <tr id="fw-thead-row">
+                  <th class="th-check" scope="col"><input type="checkbox" id="fw-select-all" title="Select all"
+                      aria-label="Select all rows" /></th>
+                </tr>
+              </thead>
+              <tbody id="fw-tbody"></tbody>
+            </table>
+          </div>
+          <footer class="table-footer">
+            <span class="table-footer__count" id="fw-count"></span>
+            <div class="table-footer__lazy-cluster">
+              <label class="pager__per">
+                Rows per load
+                <select id="fw-page-size" aria-label="Rows loaded at a time">
+                  <option value="10">10</option>
+                  <option value="25">25</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+              <span class="table-footer__lazy-hint muted" id="fw-lazy-hint" aria-live="polite"></span>
+            </div>
+          </footer>
+            </div>
+        </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tenants -->
+    <section id="panel-tenants" class="panel" role="tabpanel" data-panel="tenants" hidden>
+      <div class="split">
+        <aside class="filters filters--collapsed" aria-label="Tenant filters">
+          <div id="tn-filters-drawer" class="filters__drawer" hidden>
+            <div id="tenant-filters"></div>
+          </div>
+        </aside>
+        <div class="content-pane">
+            <div class="table-wrap">
+          <div class="toolbar">
+            <div class="toolbar__sheet">
+              <div class="toolbar__line toolbar__line--export">
+                <div class="toolbar__export-row">
+                  <button type="button" class="link-btn toolbar__export-btn" id="tn-export-btn" aria-haspopup="true"
+                    aria-expanded="false" aria-controls="table-export-popover">Export</button>
+                </div>
+              </div>
+              <div class="toolbar__line toolbar__line--main">
+                <div class="toolbar__filters">
+                  <div class="filters__head">
+                    <button type="button" class="filters__toggle" aria-expanded="false" aria-controls="tn-filters-drawer"
+                      aria-label="Filters" title="Filters">
+                      <svg class="filters__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z" />
+                      </svg>
+                      <span class="filters__title-label">Filters</span>
+                    </button>
+                    <div class="filters__head-actions" id="tn-filters-head-actions" hidden>
+                      <span class="filters__facet-count" id="tn-facet-count" aria-live="polite"></span>
+                      <button type="button" class="filters__facet-reset link-btn" id="tn-facet-reset" hidden>Reset</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="toolbar__actions"></div>
+                <div class="toolbar__search-cluster">
+                  <div class="search-field">
+                    <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                      <path fill="currentColor"
+                        d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                    </svg>
+                    <input type="search" id="tn-search" class="search-field__input" placeholder="Search" autocomplete="off"
+                      aria-label="Search tenants" />
+                  </div>
+                  <span id="tn-cols-trigger" class="toolbar__cols-icon" role="button" tabindex="0" aria-expanded="false"
+                    aria-haspopup="true" aria-controls="tn-cols-panel" title="Columns" aria-label="Choose table columns">
+                    <svg class="toolbar__cols-icon-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                      <path fill="currentColor"
+                        d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                    </svg>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table data-table--dense" id="tn-table">
+              <thead>
+                <tr id="tn-thead-row"></tr>
+              </thead>
+              <tbody id="tn-tbody"></tbody>
+            </table>
+          </div>
+          <footer class="table-footer">
+            <span class="table-footer__count" id="tn-count"></span>
+            <div class="table-footer__lazy-cluster">
+              <label class="pager__per">
+                Rows per load
+                <select id="tn-page-size" aria-label="Rows loaded at a time">
+                  <option value="10">10</option>
+                  <option value="25">25</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+              <span class="table-footer__lazy-hint muted" id="tn-lazy-hint" aria-live="polite"></span>
+            </div>
+          </footer>
+            </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Licenses -->
+    <section id="panel-licenses" class="panel" role="tabpanel" data-panel="licenses" hidden>
+      <div class="split">
+        <aside class="filters filters--collapsed" aria-label="License filters">
+          <div id="lc-filters-drawer" class="filters__drawer" hidden>
+            <div id="license-filters"></div>
+          </div>
+        </aside>
+        <div class="content-pane">
+            <div class="table-wrap">
+          <div class="toolbar">
+            <div class="toolbar__sheet">
+              <div class="toolbar__line toolbar__line--export">
+                <div class="toolbar__export-row">
+                  <button type="button" class="link-btn toolbar__export-btn" id="lc-export-btn" aria-haspopup="true"
+                    aria-expanded="false" aria-controls="table-export-popover">Export</button>
+                </div>
+              </div>
+              <div class="toolbar__line toolbar__line--main">
+                <div class="toolbar__filters">
+                  <div class="filters__head">
+                    <button type="button" class="filters__toggle" aria-expanded="false" aria-controls="lc-filters-drawer"
+                      aria-label="Filters" title="Filters">
+                      <svg class="filters__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z" />
+                      </svg>
+                      <span class="filters__title-label">Filters</span>
+                    </button>
+                    <div class="filters__head-actions" id="lc-filters-head-actions" hidden>
+                      <span class="filters__facet-count" id="lc-facet-count" aria-live="polite"></span>
+                      <button type="button" class="filters__facet-reset link-btn" id="lc-facet-reset" hidden>Reset</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="toolbar__actions"></div>
+                <div class="toolbar__search-cluster">
+                  <div class="toolbar__seg toolbar__seg--compact" role="group" aria-label="License table view">
+                    <button type="button" class="toolbar__seg-btn" id="lc-view-summary" data-lc-view="summary"
+                      aria-pressed="true" title="One row per license">Summary</button>
+                    <button type="button" class="toolbar__seg-btn" id="lc-view-details" data-lc-view="details"
+                      aria-pressed="false" title="One row per subscription">Details</button>
+                  </div>
+                  <div class="search-field">
+                    <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                      <path fill="currentColor"
+                        d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                    </svg>
+                    <input type="search" id="lc-search" class="search-field__input" placeholder="Search" autocomplete="off"
+                      aria-label="Search licenses" />
+                  </div>
+                  <span id="lc-cols-trigger" class="toolbar__cols-icon" role="button" tabindex="0" aria-expanded="false"
+                    aria-haspopup="true" aria-controls="lc-cols-panel" title="Columns" aria-label="Choose table columns">
+                    <svg class="toolbar__cols-icon-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                      <path fill="currentColor"
+                        d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                    </svg>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table data-table--dense" id="lc-table">
+              <thead>
+                <tr id="lc-thead-row"></tr>
+              </thead>
+              <tbody id="lc-tbody"></tbody>
+            </table>
+          </div>
+          <footer class="table-footer">
+            <span class="table-footer__count" id="lc-count"></span>
+            <div class="table-footer__lazy-cluster">
+              <label class="pager__per">
+                Rows per load
+                <select id="lc-page-size" aria-label="Rows loaded at a time">
+                  <option value="10">10</option>
+                  <option value="25">25</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+              <span class="table-footer__lazy-hint muted" id="lc-lazy-hint" aria-live="polite"></span>
+            </div>
+          </footer>
+            </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer id="app-sync-status-bar" class="app-sync-status-bar" role="contentinfo" aria-live="polite">
+    <div class="app-sync-status-bar__inner">
+      <span class="app-sync-status-bar__label">Last successful data sync</span>
+      <span id="app-sync-status-value" class="app-sync-status-bar__value">—</span>
+    </div>
+  </footer>
+
+  <div id="fw-cols-modal" class="fw-cols-modal" hidden aria-hidden="true">
+    <div class="fw-cols-modal__backdrop" aria-hidden="true"></div>
+    <div id="fw-cols-panel" class="fw-cols-modal__panel" role="dialog" aria-modal="true"
+      aria-labelledby="fw-cols-modal-title">
+      <div class="fw-cols-modal__header">
+        <h2 id="fw-cols-modal-title" class="fw-cols-modal__title">Table columns</h2>
+        <button type="button" class="fw-cols-modal__close" id="fw-cols-close" aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <input type="search" id="fw-cols-filter" class="fw-cols-modal__filter" placeholder="Search columns"
+        autocomplete="off" aria-label="Filter column list" />
+      <ul id="fw-cols-list" class="fw-cols-modal__list"></ul>
+    </div>
+  </div>
+
+  <div id="tn-cols-modal" class="fw-cols-modal" hidden aria-hidden="true">
+    <div class="fw-cols-modal__backdrop" aria-hidden="true"></div>
+    <div id="tn-cols-panel" class="fw-cols-modal__panel" role="dialog" aria-modal="true"
+      aria-labelledby="tn-cols-modal-title">
+      <div class="fw-cols-modal__header">
+        <h2 id="tn-cols-modal-title" class="fw-cols-modal__title">Table columns</h2>
+        <button type="button" class="fw-cols-modal__close" id="tn-cols-close" aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <input type="search" id="tn-cols-filter" class="fw-cols-modal__filter" placeholder="Search columns"
+        autocomplete="off" aria-label="Filter column list" />
+      <ul id="tn-cols-list" class="fw-cols-modal__list"></ul>
+    </div>
+  </div>
+
+  <div id="lc-cols-modal" class="fw-cols-modal" hidden aria-hidden="true">
+    <div class="fw-cols-modal__backdrop" aria-hidden="true"></div>
+    <div id="lc-cols-panel" class="fw-cols-modal__panel" role="dialog" aria-modal="true"
+      aria-labelledby="lc-cols-modal-title">
+      <div class="fw-cols-modal__header">
+        <h2 id="lc-cols-modal-title" class="fw-cols-modal__title">Table columns</h2>
+        <button type="button" class="fw-cols-modal__close" id="lc-cols-close" aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <input type="search" id="lc-cols-filter" class="fw-cols-modal__filter" placeholder="Search columns"
+        autocomplete="off" aria-label="Filter column list" />
+      <ul id="lc-cols-list" class="fw-cols-modal__list"></ul>
+    </div>
+  </div>
+
+  <div id="fw-location-modal" class="fw-location-modal" hidden aria-hidden="true">
+    <div class="fw-location-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
+    <div class="fw-location-modal__panel" role="dialog" aria-modal="true" aria-labelledby="fw-location-modal-title">
+      <div class="fw-location-modal__header">
+        <h2 id="fw-location-modal-title" class="fw-location-modal__title">Firewall location</h2>
+        <button type="button" class="fw-location-modal__close" id="fw-location-modal-close" aria-label="Close"
+          title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <div class="fw-location-modal__body">
+        <p class="muted fw-location-modal__lead">Enter a street address (search powered by OpenStreetMap Nominatim) or
+          latitude and longitude. You can also click the map to place the pin.</p>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Street address</span>
+          <input type="text" id="fw-location-address" class="settings-form__input" maxlength="500" autocomplete="off"
+            placeholder="e.g. 1 Main St, City" />
+        </label>
+        <div id="fw-location-suggestions" class="fw-location-suggestions" hidden role="listbox"
+          aria-label="Address suggestions"></div>
+        <div class="fw-location-modal__coords">
+          <label class="settings-form__field">
+            <span class="settings-form__label">Latitude</span>
+            <input type="text" id="fw-location-lat" class="settings-form__input" inputmode="decimal"
+              placeholder="e.g. 51.5" />
+          </label>
+          <label class="settings-form__field">
+            <span class="settings-form__label">Longitude</span>
+            <input type="text" id="fw-location-lon" class="settings-form__input" inputmode="decimal"
+              placeholder="e.g. -0.12" />
+          </label>
+        </div>
+        <div id="fw-location-pick-map" class="fw-location-pick-map" aria-hidden="true"></div>
+        <p id="fw-location-modal-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+        <div class="fw-location-modal__actions">
+          <button type="button" class="btn" id="fw-location-cancel">Cancel</button>
+          <button type="button" class="btn btn--primary" id="fw-location-save">Save location</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="fw-firmware-modal" class="fw-firmware-modal" hidden aria-hidden="true">
+    <div class="fw-firmware-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
+    <div class="fw-firmware-modal__panel" role="dialog" aria-modal="true" aria-labelledby="fw-firmware-modal-title">
+      <div class="fw-firmware-modal__header">
+        <h2 id="fw-firmware-modal-title" class="fw-firmware-modal__title">Firmware upgrades</h2>
+        <button type="button" class="fw-firmware-modal__close" id="fw-firmware-modal-close" aria-label="Close"
+          title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <div id="fw-firmware-modal-body" class="fw-firmware-modal__body"></div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="settings-modal" hidden aria-hidden="true">
+    <div class="settings-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
+    <div class="settings-modal__panel" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+      <div class="settings-modal__layout">
+        <aside class="settings-modal__sidebar" aria-label="Settings sections">
+          <div class="settings-modal__sidebar-head">
+            <h2 id="settings-modal-title" class="settings-modal__title">Settings</h2>
+            <div class="settings-modal__search search-field">
+              <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+              </svg>
+              <input type="search" id="settings-nav-filter" class="search-field__input" placeholder="Search settings"
+                autocomplete="off" aria-label="Filter settings sections" />
+            </div>
+          </div>
+          <nav class="settings-nav" id="settings-nav">
+            <button type="button" class="settings-nav__item is-active" data-settings-section="users"
+              aria-current="page">
+              <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+              </svg>
+              <span>Users</span>
+            </button>
+            <button type="button" class="settings-nav__item" data-settings-section="credentials"
+              data-requires-admin="true">
+              <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M12.65 10A5.99 5.99 0 0 0 7 6c-3.31 0-6 2.69-6 6 0 1.66.68 3.15 1.76 4.24l1.42-1.42A3.96 3.96 0 0 1 3 12c0-2.21 1.79-4 4-4 1.38 0 2.6.7 3.31 1.76L12 11h5V6l-1.79 1.79C14.55 6.67 12.83 6 11 6a7 7 0 0 0 0 14c3.87 0 7-3.13 7-7h-2c0 2.76-2.24 5-5 5s-5-2.24-5-5 2.24-5 5-5c1.13 0 2.17.39 3.02 1.02L12.65 10zM16 9V3h-2v2h-2v2h2v2h2z" />
+              </svg>
+              <span>Credentials</span>
+            </button>
+            <button type="button" class="settings-nav__item" data-settings-section="sync" data-requires-admin="true">
+              <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.96 7.96 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.96 7.96 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z" />
+              </svg>
+              <span>Sync</span>
+            </button>
+          </nav>
+        </aside>
+        <div class="settings-modal__main">
+          <div class="settings-modal__main-toolbar">
+            <button type="button" class="settings-modal__close icon-btn" id="settings-modal-close"
+              aria-label="Close settings" title="Close">
+              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+              </svg>
+            </button>
+          </div>
+          <div class="settings-modal__main-scroll">
+            <section id="settings-panel-users" class="settings-panel is-active" data-settings-panel="users">
+              <h3 class="settings-panel__heading">Users</h3>
+              <p class="settings-panel__lead muted">Local accounts for this application. Passwords are stored with
+                strong hashing in the secrets database.</p>
+              <div class="settings-panel__actions" id="settings-users-actions" hidden>
+                <button type="button" class="btn btn--primary" id="btn-add-user">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+                  </svg>
+                  Add user
+                </button>
+              </div>
+              <div class="settings-cred-table-wrap table-wrap" id="settings-users-wrap">
+                <div class="table-scroll">
+                  <table class="data-table data-table--dense settings-cred-table settings-user-table"
+                    id="settings-users-table">
+                    <colgroup>
+                      <col class="settings-user-col-name" />
+                      <col class="settings-user-col-fullname" />
+                      <col class="settings-user-col-email" />
+                      <col class="settings-user-col-mobile" />
+                      <col class="settings-user-col-role" />
+                      <col class="settings-user-col-updated" />
+                      <col class="settings-cred-col-actions" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th scope="col">Username</th>
+                        <th scope="col">Full name</th>
+                        <th scope="col">Email</th>
+                        <th scope="col">Mobile</th>
+                        <th scope="col">Role</th>
+                        <th scope="col">Updated</th>
+                        <th scope="col" class="settings-cred-actions-col">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="settings-users-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+            <section id="settings-panel-credentials" class="settings-panel" data-settings-panel="credentials" hidden>
+              <h3 class="settings-panel__heading">Central credentials</h3>
+              <p class="settings-panel__lead muted">Store Sophos Central API client credentials. Secrets are encrypted
+                on
+                disk. Each entry is verified against Central before it is saved.</p>
+              <div class="settings-panel__actions">
+                <button type="button" class="btn btn--primary" id="btn-add-credential">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+                  </svg>
+                  Add credential
+                </button>
+              </div>
+              <div class="settings-cred-table-wrap table-wrap">
+                <div class="table-scroll">
+                  <table class="data-table data-table--dense settings-cred-table" id="settings-credentials-table">
+                    <colgroup>
+                      <col class="settings-cred-col-name" />
+                      <col class="settings-cred-col-client" />
+                      <col class="settings-cred-col-type" />
+                      <col class="settings-cred-col-central" />
+                      <col class="settings-cred-col-actions" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th scope="col">Name</th>
+                        <th scope="col">Client ID</th>
+                        <th scope="col">ID type</th>
+                        <th scope="col">Central ID</th>
+                        <th scope="col" class="settings-cred-actions-col">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="settings-credentials-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+            <section id="settings-panel-sync" class="settings-panel" data-settings-panel="sync" hidden>
+              <h3 class="settings-panel__heading">Sync</h3>
+              <p class="settings-panel__lead muted">Set how often each credential should sync. The <strong>sync</strong>
+                icon re-authenticates with Central and refreshes stored profile metadata.</p>
+              <div class="settings-cred-table-wrap table-wrap">
+                <div class="table-scroll">
+                  <table class="data-table data-table--dense settings-cred-table settings-sync-table"
+                    id="settings-sync-table">
+                    <colgroup>
+                      <col class="settings-sync-col-name" />
+                      <col class="settings-sync-col-interval" />
+                      <col class="settings-sync-col-last" />
+                      <col class="settings-sync-col-next" />
+                      <col class="settings-sync-col-actions" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th scope="col">Credential</th>
+                        <th scope="col">Sync interval</th>
+                        <th scope="col">Last sync</th>
+                        <th scope="col">Next sync</th>
+                        <th scope="col" class="settings-cred-actions-col">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="settings-sync-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="profile-modal" class="settings-modal profile-modal" hidden aria-hidden="true">
+    <div class="settings-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
+    <div class="settings-modal__panel profile-modal__panel" role="dialog" aria-modal="true"
+      aria-labelledby="profile-modal-title">
+      <div class="settings-modal__layout profile-modal__layout">
+        <aside class="settings-modal__sidebar profile-modal__sidebar" aria-label="Account sections">
+          <div class="settings-modal__sidebar-head profile-modal__sidebar-head">
+            <h2 id="profile-modal-title" class="settings-modal__title profile-modal__sidebar-title">Account</h2>
+          </div>
+          <nav class="settings-nav profile-nav" id="profile-nav">
+            <button type="button" class="settings-nav__item is-active" data-profile-section="profile"
+              aria-current="page">
+              <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+              </svg>
+              <span>Profile</span>
+            </button>
+            <button type="button" class="settings-nav__item" data-profile-section="password">
+              <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z" />
+              </svg>
+              <span>Change password</span>
+            </button>
+          </nav>
+        </aside>
+        <div class="settings-modal__main profile-modal__main">
+          <div class="settings-modal__main-toolbar">
+            <button type="button" class="settings-modal__close icon-btn" id="profile-modal-close"
+              aria-label="Close account" title="Close">
+              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+              </svg>
+            </button>
+          </div>
+          <div class="settings-modal__main-scroll">
+            <section id="profile-panel-profile" class="settings-panel is-active" data-profile-panel="profile">
+              <h3 class="settings-panel__heading">Profile</h3>
+              <p class="settings-panel__lead muted">Your full name is managed in <strong>Settings → Users</strong> (admin).
+                You can update your own email and phone here.</p>
+              <form id="profile-details-form" class="settings-form">
+                <div class="settings-form__field">
+                  <span class="settings-form__label">Full name</span>
+                  <p id="profile-full-name-display" class="profile-readonly-value"></p>
+                </div>
+                <label class="settings-form__field">
+                  <span class="settings-form__label">Username</span>
+                  <input type="text" id="profile-username-readonly" class="settings-form__input" readonly tabindex="-1" />
+                </label>
+                <label class="settings-form__field">
+                  <span class="settings-form__label">Email</span>
+                  <input type="email" id="profile-email" class="settings-form__input" maxlength="320"
+                    autocomplete="email" />
+                </label>
+                <label class="settings-form__field">
+                  <span class="settings-form__label">Mobile number</span>
+                  <input type="tel" id="profile-mobile" class="settings-form__input" maxlength="80"
+                    autocomplete="tel" />
+                </label>
+                <p id="profile-details-status" class="settings-form__status muted" role="status" aria-live="polite">
+                </p>
+                <div class="settings-form__actions">
+                  <button type="submit" class="btn btn--primary" id="profile-details-submit">Save profile</button>
+                </div>
+              </form>
+            </section>
+            <section id="profile-panel-password" class="settings-panel" data-profile-panel="password" hidden>
+              <h3 class="settings-panel__heading">Change password</h3>
+              <p class="settings-panel__lead muted">Choose a strong password you have not used elsewhere.</p>
+              <form id="profile-password-form" class="settings-form">
+                <label class="settings-form__field">
+                  <span class="settings-form__label">Current password</span>
+                  <input type="password" id="profile-current-password" class="settings-form__input" required
+                    maxlength="512" autocomplete="current-password" />
+                </label>
+                <label class="settings-form__field">
+                  <span class="settings-form__label">New password</span>
+                  <input type="password" id="profile-new-password" class="settings-form__input" required minlength="10"
+                    maxlength="256" autocomplete="new-password" />
+                </label>
+                <label class="settings-form__field">
+                  <span class="settings-form__label">Confirm new password</span>
+                  <input type="password" id="profile-new-password-confirm" class="settings-form__input" required
+                    minlength="10" maxlength="256" autocomplete="new-password" />
+                </label>
+                <p id="profile-password-status" class="settings-form__status muted" role="status" aria-live="polite">
+                </p>
+                <div class="settings-form__actions">
+                  <button type="submit" class="btn btn--primary" id="profile-password-submit">Update password</button>
+                </div>
+              </form>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="user-form-dialog" class="settings-subdialog" hidden aria-hidden="true">
+    <div class="settings-subdialog__backdrop" aria-hidden="true"></div>
+    <div class="settings-subdialog__panel" role="dialog" aria-modal="true" aria-labelledby="user-form-title">
+      <div class="settings-subdialog__header">
+        <h3 id="user-form-title" class="settings-subdialog__title">Add user</h3>
+        <button type="button" class="settings-subdialog__close icon-btn" id="user-form-close" aria-label="Close"
+          title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <form id="user-form" class="settings-form">
+        <label class="settings-form__field">
+          <span class="settings-form__label">Username</span>
+          <input type="text" name="username" id="user-form-username" class="settings-form__input" required
+            maxlength="200" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Full name <span class="muted">(optional)</span></span>
+          <input type="text" name="full_name" id="user-form-full-name" class="settings-form__input" maxlength="200"
+            autocomplete="off" />
+        </label>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Email <span class="muted">(optional)</span></span>
+          <input type="email" name="email" id="user-form-email" class="settings-form__input" maxlength="320"
+            autocomplete="off" />
+        </label>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Mobile number <span class="muted">(optional)</span></span>
+          <input type="tel" name="mobile" id="user-form-mobile" class="settings-form__input" maxlength="80"
+            autocomplete="off" />
+        </label>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Role</span>
+          <select id="user-form-role" class="settings-form__input" name="role" required>
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Password</span>
+          <input type="password" name="password" id="user-form-password" class="settings-form__input" required
+            minlength="10" maxlength="256" autocomplete="new-password" />
+        </label>
+        <p id="user-form-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+        <div class="settings-form__actions">
+          <button type="submit" class="btn btn--primary" id="user-form-submit">Create user</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="user-edit-profile-dialog" class="settings-subdialog" hidden aria-hidden="true">
+    <div class="settings-subdialog__backdrop" aria-hidden="true"></div>
+    <div class="settings-subdialog__panel" role="dialog" aria-modal="true" aria-labelledby="user-edit-profile-title">
+      <div class="settings-subdialog__header">
+        <h3 id="user-edit-profile-title" class="settings-subdialog__title">Edit user profile</h3>
+        <button type="button" class="settings-subdialog__close icon-btn" id="user-edit-profile-close"
+          aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <form id="user-edit-profile-form" class="settings-form">
+        <input type="hidden" id="user-edit-profile-id" name="user_id" value="" />
+        <label class="settings-form__field">
+          <span class="settings-form__label">Full name <span class="muted">(optional)</span></span>
+          <input type="text" id="user-edit-profile-full-name" class="settings-form__input" maxlength="200"
+            autocomplete="off" />
+        </label>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Email <span class="muted">(optional)</span></span>
+          <input type="email" id="user-edit-profile-email" class="settings-form__input" maxlength="320"
+            autocomplete="off" />
+        </label>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Mobile number <span class="muted">(optional)</span></span>
+          <input type="tel" id="user-edit-profile-mobile" class="settings-form__input" maxlength="80"
+            autocomplete="off" />
+        </label>
+        <p id="user-edit-profile-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+        <div class="settings-form__actions">
+          <button type="submit" class="btn btn--primary" id="user-edit-profile-submit">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="credential-form-dialog" class="settings-subdialog" hidden aria-hidden="true">
+    <div class="settings-subdialog__backdrop" aria-hidden="true"></div>
+    <div class="settings-subdialog__panel" role="dialog" aria-modal="true" aria-labelledby="credential-form-title">
+      <div class="settings-subdialog__header">
+        <h3 id="credential-form-title" class="settings-subdialog__title">Add Central credential</h3>
+        <button type="button" class="settings-subdialog__close icon-btn" id="credential-form-close" aria-label="Close"
+          title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <form id="credential-form" class="settings-form">
+        <label class="settings-form__field">
+          <span class="settings-form__label">Display name</span>
+          <input type="text" name="name" id="cred-form-name" class="settings-form__input" required maxlength="200"
+            autocomplete="off" />
+        </label>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Client ID</span>
+          <input type="text" name="client_id" id="cred-form-client-id" class="settings-form__input" required
+            maxlength="512" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="settings-form__field">
+          <span class="settings-form__label">Client secret</span>
+          <input type="password" name="client_secret" id="cred-form-client-secret" class="settings-form__input" required
+            maxlength="512" autocomplete="off" spellcheck="false" />
+        </label>
+        <p id="credential-form-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+        <div class="settings-form__actions">
+          <button type="button" class="btn btn--outline" id="cred-form-test">Test connection</button>
+          <button type="submit" class="btn btn--primary" id="cred-form-submit">Add credential</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="app-toast-host" class="app-toast-host" aria-live="polite" aria-relevant="additions"></div>
+
+  <div id="alert-flyout-backdrop" class="flyout-backdrop" hidden aria-hidden="true"></div>
+  <aside id="alert-flyout" class="flyout" hidden role="dialog" aria-modal="true" aria-labelledby="alert-flyout-title">
+    <div class="flyout__header">
+      <h2 id="alert-flyout-title" class="flyout__title">Alert</h2>
+      <button type="button" class="flyout__close icon-btn flyout__close-btn" aria-label="Close" title="Close">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path fill="currentColor"
+            d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+        </svg>
+      </button>
+    </div>
+    <div id="alert-flyout-body" class="flyout__body"></div>
+  </aside>
+
+  <div id="license-flyout-backdrop" class="flyout-backdrop" hidden aria-hidden="true"></div>
+  <aside id="license-flyout" class="flyout flyout--license" hidden role="dialog" aria-modal="true"
+    aria-labelledby="license-flyout-title">
+    <div class="flyout__header">
+      <h2 id="license-flyout-title" class="flyout__title">License subscriptions</h2>
+      <button type="button" class="flyout__close icon-btn flyout__close-btn" aria-label="Close" title="Close">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path fill="currentColor"
+            d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+        </svg>
+      </button>
+    </div>
+    <div id="license-flyout-body" class="flyout__body"></div>
+  </aside>
+
+  <div id="table-export-popover" class="table-export-popover" hidden role="dialog" aria-modal="true"
+    aria-labelledby="table-export-popover-title">
+    <div id="table-export-popover-title" class="table-export-popover__title">Export as</div>
+    <div class="table-export-popover__actions" role="group" aria-label="File format">
+      <button type="button" class="table-export-popover__fmt" data-export-format="xlsx">Excel (.xlsx)</button>
+      <button type="button" class="table-export-popover__fmt" data-export-format="csv">CSV</button>
+      <button type="button" class="table-export-popover__fmt" data-export-format="json">JSON</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+  <script src="/static/js/app.js" defer></script>
+</body>
+
+</html>

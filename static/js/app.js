@@ -1,0 +1,7174 @@
+(() => {
+  const TITLES = {
+    dashboard: "Dashboard",
+    firewalls: "Central Firewalls",
+    tenants: "Central Tenants",
+    licenses: "Central Licenses",
+  };
+
+  const UI_STATE_KEY = "sophos-central-ui-v1";
+
+  function readUiState() {
+    try {
+      const raw = sessionStorage.getItem(UI_STATE_KEY);
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      return o && typeof o === "object" ? o : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeUiState(state) {
+    try {
+      sessionStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }
+
+  let persistTimer = null;
+  function schedulePersistUiState() {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      writeUiState(collectUiState());
+    }, 60);
+  }
+
+  function getActiveTabName() {
+    const btn = document.querySelector(".tabs__tab.is-active");
+    const id = btn?.dataset?.tab;
+    return id && TITLES[id] ? id : "dashboard";
+  }
+
+  window.addEventListener("beforeunload", () => {
+    writeUiState(collectUiState());
+  });
+
+  function escapeHtml(s) {
+    if (s == null) return "";
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function escapeAttr(s) {
+    if (s == null) return "";
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;");
+  }
+
+  function parseJsonArray(raw) {
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function parseGeoCoord(v) {
+    if (v == null) return null;
+    const s = String(v).trim();
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function yesNo(v) {
+    if (v === 1 || v === true || v === "1") return "Yes";
+    if (v === 0 || v === false || v === "0") return "No";
+    return "—";
+  }
+
+  function fmtDate(s) {
+    if (!s) return "—";
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? escapeHtml(s) : escapeHtml(d.toLocaleString());
+  }
+
+  let appSyncStatusTimer = null;
+  let lastKnownSuccessfulDataSync = null;
+  let syncStatusSampleCount = 0;
+  let onSuccessfulDataSyncTimestampChange = null;
+  let silentDataRefreshInFlight = false;
+
+  function formatSyncStatusBarTime(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
+  }
+
+  async function refreshAppSyncStatusBar() {
+    const el = document.getElementById("app-sync-status-value");
+    if (!el) return;
+    try {
+      const r = await fetch("/api/sync/status", { credentials: "same-origin", cache: "no-store" });
+      if (!r.ok) {
+        el.textContent = "—";
+        return;
+      }
+      const data = await r.json();
+      const ts = data?.last_successful_data_sync ?? null;
+      el.textContent = formatSyncStatusBarTime(ts);
+      syncStatusSampleCount += 1;
+      if (syncStatusSampleCount === 1) {
+        lastKnownSuccessfulDataSync = ts;
+        return;
+      }
+      if (ts !== lastKnownSuccessfulDataSync) {
+        const fn = onSuccessfulDataSyncTimestampChange;
+        if (typeof fn === "function") fn(ts, lastKnownSuccessfulDataSync);
+      }
+      lastKnownSuccessfulDataSync = ts;
+    } catch {
+      el.textContent = "—";
+    }
+  }
+
+  function startAppSyncStatusPolling() {
+    if (appSyncStatusTimer != null) {
+      clearInterval(appSyncStatusTimer);
+      appSyncStatusTimer = null;
+    }
+    refreshAppSyncStatusBar();
+    appSyncStatusTimer = window.setInterval(refreshAppSyncStatusBar, 15000);
+  }
+
+  function stopAppSyncStatusPolling() {
+    if (appSyncStatusTimer != null) {
+      clearInterval(appSyncStatusTimer);
+      appSyncStatusTimer = null;
+    }
+    lastKnownSuccessfulDataSync = null;
+    syncStatusSampleCount = 0;
+    const el = document.getElementById("app-sync-status-value");
+    if (el) el.textContent = "—";
+  }
+
+  function severityClass(severity) {
+    const sev = (severity || "").toLowerCase();
+    let cls = "sev-low";
+    if (sev.includes("high") || sev.includes("critical")) cls = "sev-high";
+    else if (sev.includes("medium")) cls = "sev-medium";
+    return cls;
+  }
+
+  function formatJsonish(raw) {
+    if (raw == null || raw === "") return "—";
+    const s = String(raw);
+    try {
+      const v = JSON.parse(s);
+      if (typeof v === "object" && v !== null) {
+        return escapeHtml(JSON.stringify(v, null, 2));
+      }
+      return escapeHtml(JSON.stringify(v));
+    } catch {
+      return escapeHtml(s);
+    }
+  }
+
+  let currentSessionUser = null;
+
+  function isAdmin() {
+    return currentSessionUser?.role === "admin";
+  }
+
+  function handleSessionExpired(message) {
+    currentSessionUser = null;
+    const btnUser = document.getElementById("btn-user-menu");
+    if (btnUser) btnUser.hidden = true;
+    closeUserDropdown();
+    closeProfileModal();
+    closeSettingsModal();
+    const uf = document.getElementById("user-form-dialog");
+    if (uf && !uf.hidden) {
+      uf.hidden = true;
+      uf.setAttribute("aria-hidden", "true");
+    }
+    const uep = document.getElementById("user-edit-profile-dialog");
+    if (uep && !uep.hidden) {
+      uep.hidden = true;
+      uep.setAttribute("aria-hidden", "true");
+    }
+    showLoginGate(message || "Session expired. Sign in again.");
+  }
+
+  async function loadJson(url) {
+    const r = await fetch(url, { credentials: "same-origin" });
+    if (r.status === 401) {
+      handleSessionExpired();
+      throw new Error("Unauthorized");
+    }
+    if (!r.ok) throw new Error(r.statusText);
+    return r.json();
+  }
+
+  async function apiRequestJson(url, options = {}) {
+    const skipAuthRedirectOn401 = Boolean(options.skipAuthRedirectOn401);
+    const { skipAuthRedirectOn401: _s, ...fetchOptions } = options;
+    const headers = { "Content-Type": "application/json", ...(fetchOptions.headers || {}) };
+    const r = await fetch(url, { ...fetchOptions, headers, credentials: "same-origin" });
+    if (r.status === 401 && !skipAuthRedirectOn401) {
+      handleSessionExpired();
+      const err = new Error("Unauthorized");
+      err.status = 401;
+      throw err;
+    }
+    if (!r.ok) {
+      let msg = r.statusText;
+      try {
+        const j = await r.json();
+        if (j.detail !== undefined) {
+          msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+        }
+      } catch {
+        /* ignore */
+      }
+      const err = new Error(msg);
+      err.status = r.status;
+      throw err;
+    }
+    const ct = r.headers.get("content-type") || "";
+    if (!ct.includes("application/json")) return null;
+    const text = await r.text();
+    return text ? JSON.parse(text) : null;
+  }
+
+  function appRoleDisplay(role) {
+    if (role === "admin") return "Administrator";
+    if (role === "user") return "User";
+    return role ? String(role) : "—";
+  }
+
+  function applySessionUserToChrome() {
+    const u = currentSessionUser;
+    const nameEl = document.getElementById("user-menu-display-name");
+    const roleEl = document.getElementById("user-menu-role-line");
+    if (nameEl) {
+      const fn = u?.full_name != null ? String(u.full_name).trim() : "";
+      nameEl.textContent = fn || (u?.username ? String(u.username) : "—");
+    }
+    if (roleEl) {
+      roleEl.textContent = u ? appRoleDisplay(u.role) : "";
+    }
+  }
+
+  function revealAuthenticatedChrome() {
+    const overlay = document.getElementById("auth-overlay");
+    if (overlay) {
+      overlay.classList.remove("auth-overlay--anim");
+      overlay.hidden = true;
+      overlay.setAttribute("aria-hidden", "true");
+    }
+    const btnUser = document.getElementById("btn-user-menu");
+    if (btnUser) btnUser.hidden = false;
+    applySessionUserToChrome();
+  }
+
+  function triggerAuthIntro() {
+    const overlay = document.getElementById("auth-overlay");
+    if (!overlay || overlay.hidden) return;
+    overlay.classList.remove("auth-overlay--anim");
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        overlay.classList.add("auth-overlay--anim");
+      });
+    });
+  }
+
+  function scheduleAuthGateFocus() {
+    const reduce =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const delay = reduce ? 0 : 560;
+    window.setTimeout(() => {
+      const o = document.getElementById("auth-overlay");
+      if (!o || o.hidden) return;
+      const setup = document.getElementById("auth-setup-block");
+      const login = document.getElementById("auth-login-block");
+      if (setup && !setup.hidden) {
+        document.getElementById("auth-setup-password")?.focus();
+      } else if (login && !login.hidden) {
+        document.getElementById("auth-login-username")?.focus();
+      }
+    }, delay);
+  }
+
+  function showSetupGate() {
+    const overlay = document.getElementById("auth-overlay");
+    const title = document.getElementById("auth-overlay-title");
+    const sub = document.getElementById("auth-overlay-subtitle");
+    const setup = document.getElementById("auth-setup-block");
+    const login = document.getElementById("auth-login-block");
+    if (!overlay || !setup || !login) return;
+    if (title) title.textContent = "Set administrator password";
+    if (sub) {
+      sub.textContent = "";
+      sub.hidden = true;
+    }
+    setup.hidden = false;
+    login.hidden = true;
+    overlay.hidden = false;
+    overlay.setAttribute("aria-hidden", "false");
+    const st = document.getElementById("auth-setup-status");
+    if (st) {
+      st.textContent = "";
+      st.classList.remove("is-error", "is-ok");
+    }
+    document.getElementById("auth-setup-form")?.reset();
+    triggerAuthIntro();
+    scheduleAuthGateFocus();
+  }
+
+  function showLoginGate(prefillMessage) {
+    const overlay = document.getElementById("auth-overlay");
+    const title = document.getElementById("auth-overlay-title");
+    const sub = document.getElementById("auth-overlay-subtitle");
+    const setup = document.getElementById("auth-setup-block");
+    const login = document.getElementById("auth-login-block");
+    if (!overlay || !setup || !login) return;
+    if (title) title.textContent = "Sign in to Sophos Central";
+    if (sub) {
+      sub.textContent = "Use your local account credentials.";
+      sub.hidden = false;
+    }
+    setup.hidden = true;
+    login.hidden = false;
+    overlay.hidden = false;
+    overlay.setAttribute("aria-hidden", "false");
+    const lst = document.getElementById("auth-login-status");
+    if (lst) {
+      lst.textContent = prefillMessage || "";
+      lst.classList.toggle("is-error", Boolean(prefillMessage));
+      lst.classList.remove("is-ok");
+    }
+    document.getElementById("auth-login-form")?.reset();
+    triggerAuthIntro();
+    scheduleAuthGateFocus();
+  }
+
+  async function bootAuth() {
+    try {
+      const r = await fetch("/api/auth/status", {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const st = await r.json();
+      if (st.needs_admin_password_setup === true) {
+        showSetupGate();
+        return;
+      }
+      if (!st.authenticated) {
+        showLoginGate();
+        return;
+      }
+      currentSessionUser = st.user;
+      revealAuthenticatedChrome();
+      await init();
+      startAppSyncStatusPolling();
+    } catch (e) {
+      console.error(e);
+      showLoginGate("Could not reach the server.");
+    }
+  }
+
+  function initAuthForms() {
+    document.getElementById("auth-setup-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const p1 = document.getElementById("auth-setup-password")?.value || "";
+      const p2 = document.getElementById("auth-setup-password-confirm")?.value || "";
+      const st = document.getElementById("auth-setup-status");
+      if (p1 !== p2) {
+        if (st) {
+          st.textContent = "Passwords do not match.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+        return;
+      }
+      try {
+        const res = await apiRequestJson("/api/auth/setup-admin-password", {
+          method: "POST",
+          body: JSON.stringify({ password: p1, password_confirm: p2 }),
+        });
+        currentSessionUser = res?.user;
+        revealAuthenticatedChrome();
+        await init();
+        startAppSyncStatusPolling();
+      } catch (err) {
+        if (st) {
+          st.textContent = err.message || "Could not save password.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+      }
+    });
+
+    document.getElementById("auth-login-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = document.getElementById("auth-login-username")?.value?.trim() || "";
+      const password = document.getElementById("auth-login-password")?.value || "";
+      const st = document.getElementById("auth-login-status");
+      try {
+        const res = await apiRequestJson("/api/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ username, password }),
+          skipAuthRedirectOn401: true,
+        });
+        currentSessionUser = res?.user;
+        revealAuthenticatedChrome();
+        if (st) {
+          st.textContent = "";
+          st.classList.remove("is-error");
+        }
+        await init();
+        startAppSyncStatusPolling();
+      } catch (err) {
+        const msg = err.message || "";
+        if (
+          msg.includes("administrator password first") ||
+          msg.includes("Initial setup") ||
+          msg.toLowerCase().includes("initial setup")
+        ) {
+          showSetupGate();
+          const sst = document.getElementById("auth-setup-status");
+          if (sst) {
+            sst.textContent =
+              "This installation still needs an administrator password. Enter and confirm it below.";
+            sst.classList.add("is-ok");
+            sst.classList.remove("is-error");
+          }
+          return;
+        }
+        if (st) {
+          st.textContent = msg || "Sign-in failed.";
+          st.classList.add("is-error");
+        }
+      }
+    });
+  }
+
+  let userDropdownOpen = false;
+
+  function closeUserDropdown() {
+    const dd = document.getElementById("user-menu-dropdown");
+    const trig = document.getElementById("btn-user-menu");
+    if (dd) dd.hidden = true;
+    if (trig) trig.setAttribute("aria-expanded", "false");
+    userDropdownOpen = false;
+  }
+
+  function toggleUserDropdown() {
+    const dd = document.getElementById("user-menu-dropdown");
+    const trig = document.getElementById("btn-user-menu");
+    if (!dd || !trig) return;
+    const next = dd.hidden;
+    dd.hidden = !next;
+    trig.setAttribute("aria-expanded", next ? "true" : "false");
+    userDropdownOpen = next;
+  }
+
+  function initUserMenu() {
+    const trig = document.getElementById("btn-user-menu");
+    trig?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      toggleUserDropdown();
+    });
+    document.getElementById("user-menu-dropdown")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+    });
+    document.getElementById("user-menu-profile")?.addEventListener("click", () => {
+      closeUserDropdown();
+      openProfileModal("profile");
+    });
+    document.getElementById("user-menu-change-password")?.addEventListener("click", () => {
+      closeUserDropdown();
+      openProfileModal("password");
+    });
+    document.getElementById("user-menu-theme-placeholder")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const btn = ev.currentTarget;
+      const moon = btn?.querySelector?.(".user-menu__theme-icon--moon");
+      const sun = btn?.querySelector?.(".user-menu__theme-icon--sun");
+      if (!moon || !sun) return;
+      const showingSun = !sun.hasAttribute("hidden");
+      if (showingSun) {
+        sun.setAttribute("hidden", "");
+        moon.removeAttribute("hidden");
+      } else {
+        sun.removeAttribute("hidden");
+        moon.setAttribute("hidden", "");
+      }
+    });
+    document.getElementById("user-menu-logout")?.addEventListener("click", async () => {
+      closeUserDropdown();
+      try {
+        await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      } catch {
+        /* still show login */
+      }
+      currentSessionUser = null;
+      stopAppSyncStatusPolling();
+      const btnUser = document.getElementById("btn-user-menu");
+      if (btnUser) btnUser.hidden = true;
+      showLoginGate();
+    });
+    document.addEventListener("click", () => {
+      if (userDropdownOpen) closeUserDropdown();
+    });
+  }
+
+  let profileFocusBefore = null;
+
+  function setProfileModalSection(section) {
+    const s = section === "password" ? "password" : "profile";
+    document.querySelectorAll("#profile-nav .settings-nav__item").forEach((btn) => {
+      const on = btn.dataset.profileSection === s;
+      btn.classList.toggle("is-active", on);
+      if (on) btn.setAttribute("aria-current", "page");
+      else btn.removeAttribute("aria-current");
+    });
+    document.querySelectorAll("[data-profile-panel]").forEach((p) => {
+      const on = p.dataset.profilePanel === s;
+      p.classList.toggle("is-active", on);
+      p.hidden = !on;
+    });
+  }
+
+  function openProfileModal(section) {
+    const m = document.getElementById("profile-modal");
+    if (!m) return;
+    profileFocusBefore = document.activeElement;
+    m.hidden = false;
+    m.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+    const sec = section === "password" ? "password" : "profile";
+    setProfileModalSection(sec);
+    const stPw = document.getElementById("profile-password-status");
+    if (stPw) {
+      stPw.textContent = "";
+      stPw.classList.remove("is-error", "is-ok");
+    }
+    const stDet = document.getElementById("profile-details-status");
+    if (stDet) {
+      stDet.textContent = "";
+      stDet.classList.remove("is-error", "is-ok");
+    }
+    document.getElementById("profile-password-form")?.reset();
+    if (currentSessionUser) {
+      const fnDisp = document.getElementById("profile-full-name-display");
+      const un = document.getElementById("profile-username-readonly");
+      const em = document.getElementById("profile-email");
+      const mob = document.getElementById("profile-mobile");
+      if (fnDisp) {
+        const n = currentSessionUser.full_name != null ? String(currentSessionUser.full_name).trim() : "";
+        fnDisp.textContent = n || "—";
+        fnDisp.classList.toggle("muted", !n);
+      }
+      if (un) un.value = currentSessionUser.username != null ? String(currentSessionUser.username) : "";
+      if (em) em.value = currentSessionUser.email != null ? String(currentSessionUser.email).trim() : "";
+      if (mob) mob.value = currentSessionUser.mobile != null ? String(currentSessionUser.mobile).trim() : "";
+    }
+    if (sec === "password") {
+      document.getElementById("profile-current-password")?.focus();
+    } else {
+      document.getElementById("profile-email")?.focus();
+    }
+  }
+
+  function closeProfileModal() {
+    const m = document.getElementById("profile-modal");
+    if (!m || m.hidden) return;
+    m.hidden = true;
+    m.setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+    if (profileFocusBefore && typeof profileFocusBefore.focus === "function") profileFocusBefore.focus();
+    profileFocusBefore = null;
+  }
+
+  function initProfileModal() {
+    document.getElementById("profile-modal-close")?.addEventListener("click", closeProfileModal);
+    document.querySelector("#profile-modal .settings-modal__backdrop")?.addEventListener("click", closeProfileModal);
+    document.querySelectorAll("#profile-nav .settings-nav__item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const s = btn.dataset.profileSection;
+        if (s) setProfileModalSection(s);
+        if (s === "password") {
+          document.getElementById("profile-current-password")?.focus();
+        } else {
+          document.getElementById("profile-email")?.focus();
+        }
+      });
+    });
+    document.getElementById("profile-details-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const st = document.getElementById("profile-details-status");
+      const email = document.getElementById("profile-email")?.value?.trim() ?? "";
+      const mobile = document.getElementById("profile-mobile")?.value?.trim() ?? "";
+      const sub = document.getElementById("profile-details-submit");
+      if (sub) sub.disabled = true;
+      try {
+        const res = await apiRequestJson("/api/auth/profile", {
+          method: "PATCH",
+          body: JSON.stringify({ email, mobile }),
+        });
+        if (res?.user) {
+          currentSessionUser = res.user;
+          applySessionUserToChrome();
+        }
+        if (st) {
+          st.textContent = "Profile saved.";
+          st.classList.remove("is-error");
+          st.classList.add("is-ok");
+        }
+      } catch (err) {
+        if (st) {
+          st.textContent = err.message || "Could not save profile.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+      } finally {
+        if (sub) sub.disabled = false;
+      }
+    });
+    document.getElementById("profile-password-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const cur = document.getElementById("profile-current-password")?.value || "";
+      const n1 = document.getElementById("profile-new-password")?.value || "";
+      const n2 = document.getElementById("profile-new-password-confirm")?.value || "";
+      const st = document.getElementById("profile-password-status");
+      if (n1 !== n2) {
+        if (st) {
+          st.textContent = "New passwords do not match.";
+          st.classList.add("is-error");
+        }
+        return;
+      }
+      try {
+        await apiRequestJson("/api/auth/change-password", {
+          method: "POST",
+          body: JSON.stringify({
+            current_password: cur,
+            new_password: n1,
+            new_password_confirm: n2,
+          }),
+        });
+        if (st) {
+          st.textContent = "Password updated.";
+          st.classList.remove("is-error");
+          st.classList.add("is-ok");
+        }
+        document.getElementById("profile-password-form")?.reset();
+      } catch (err) {
+        if (st) {
+          st.textContent = err.message || "Could not update password.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+      }
+    });
+  }
+
+  function applySettingsNavForRole() {
+    const admin = isAdmin();
+    document.querySelectorAll(".settings-nav__item[data-requires-admin='true']").forEach((el) => {
+      el.hidden = !admin;
+    });
+    const actions = document.getElementById("settings-users-actions");
+    const wrap = document.getElementById("settings-users-wrap");
+    if (actions) actions.hidden = !admin;
+    if (wrap) wrap.classList.toggle("settings-user-readonly", !admin);
+  }
+
+  function openUserFormDialog() {
+    const d = document.getElementById("user-form-dialog");
+    if (!d) return;
+    document.getElementById("user-form")?.reset();
+    const st = document.getElementById("user-form-status");
+    if (st) {
+      st.textContent = "";
+      st.classList.remove("is-error", "is-ok");
+    }
+    d.hidden = false;
+    d.setAttribute("aria-hidden", "false");
+    document.getElementById("user-form-username")?.focus();
+  }
+
+  function closeUserFormDialog() {
+    const d = document.getElementById("user-form-dialog");
+    if (!d || d.hidden) return;
+    d.hidden = true;
+    d.setAttribute("aria-hidden", "true");
+  }
+
+  /* ---------- Settings modal ---------- */
+  let settingsFocusBeforeOpen = null;
+
+  function openSettingsModal() {
+    const m = document.getElementById("settings-modal");
+    if (!m) return;
+    settingsFocusBeforeOpen = document.activeElement;
+    m.hidden = false;
+    m.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+    const filter = document.getElementById("settings-nav-filter");
+    if (filter) filter.value = "";
+    document.querySelectorAll(".settings-nav__item").forEach((btn) => {
+      btn.hidden = false;
+    });
+    applySettingsNavForRole();
+    filterSettingsNav();
+    filter?.focus();
+  }
+
+  function closeCredentialFormDialog() {
+    const d = document.getElementById("credential-form-dialog");
+    if (!d || d.hidden) return;
+    d.hidden = true;
+    d.setAttribute("aria-hidden", "true");
+  }
+
+  function closeUserEditProfileDialog() {
+    const d = document.getElementById("user-edit-profile-dialog");
+    if (!d || d.hidden) return;
+    d.hidden = true;
+    d.setAttribute("aria-hidden", "true");
+  }
+
+  function closeSettingsModal() {
+    const m = document.getElementById("settings-modal");
+    if (!m || m.hidden) return;
+    closeCredentialFormDialog();
+    closeUserFormDialog();
+    closeUserEditProfileDialog();
+    m.hidden = true;
+    m.setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+    if (settingsFocusBeforeOpen && typeof settingsFocusBeforeOpen.focus === "function") {
+      settingsFocusBeforeOpen.focus();
+    }
+    settingsFocusBeforeOpen = null;
+  }
+
+  function setSettingsSection(section) {
+    let s = section;
+    if ((s === "credentials" || s === "sync") && !isAdmin()) {
+      s = "users";
+    }
+    document.querySelectorAll(".settings-nav__item").forEach((btn) => {
+      const on = btn.dataset.settingsSection === s;
+      btn.classList.toggle("is-active", on);
+      if (on) btn.setAttribute("aria-current", "page");
+      else btn.removeAttribute("aria-current");
+    });
+    document.querySelectorAll(".settings-panel").forEach((p) => {
+      const on = p.dataset.settingsPanel === s;
+      p.classList.toggle("is-active", on);
+      p.hidden = !on;
+    });
+    if (s === "credentials") {
+      loadSettingsCredentials().catch(console.error);
+    }
+    if (s === "sync") {
+      loadSettingsSync().catch(console.error);
+    }
+    if (s === "users") {
+      loadSettingsUsers().catch(console.error);
+    }
+  }
+
+  function filterSettingsNav() {
+    const q = (document.getElementById("settings-nav-filter")?.value || "").trim().toLowerCase();
+    document.querySelectorAll(".settings-nav__item").forEach((btn) => {
+      const t = (btn.querySelector("span")?.textContent || "").toLowerCase();
+      const match = q === "" || t.includes(q);
+      const needsAdmin = btn.dataset.requiresAdmin === "true";
+      btn.hidden = !match || (needsAdmin && !isAdmin());
+    });
+  }
+
+  const CRED_ROW_ICONS = {
+    test: '<svg class="settings-cred-icon-btn__svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>',
+    edit: '<svg class="settings-cred-icon-btn__svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>',
+    del: '<svg class="settings-cred-icon-btn__svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
+    sync: '<svg class="settings-cred-icon-btn__svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>',
+    clipboard:
+      '<svg class="settings-cred-icon-btn__svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>',
+  };
+
+  const USER_ROW_ICONS = {
+    role: '<svg class="settings-cred-icon-btn__svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>',
+    edit: CRED_ROW_ICONS.edit,
+    key: '<svg class="settings-cred-icon-btn__svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12.65 10A5.99 5.99 0 0 0 7 6c-3.31 0-6 2.69-6 6 0 1.66.68 3.15 1.76 4.24l1.42-1.42A3.96 3.96 0 0 1 3 12c0-2.21 1.79-4 4-4 1.38 0 2.6.7 3.31 1.76L12 11h5V6l-1.79 1.79C14.55 6.67 12.83 6 11 6a7 7 0 0 0 0 14c3.87 0 7-3.13 7-7h-2c0 2.76-2.24 5-5 5s-5-2.24-5-5 2.24-5 5-5c1.13 0 2.17.39 3.02 1.02L12.65 10z"/></svg>',
+    del: CRED_ROW_ICONS.del,
+  };
+
+  function cellTextOrDash(val) {
+    const t = val != null ? String(val).trim() : "";
+    return t ? escapeHtml(t) : "—";
+  }
+
+  async function loadSettingsUsers() {
+    const rows = await loadJson("/api/settings/users");
+    const tbody = document.getElementById("settings-users-body");
+    if (!tbody) return;
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="muted">No users.</td></tr>';
+      return;
+    }
+    const adminUi = isAdmin();
+    tbody.innerHTML = rows
+      .map((row) => {
+        const id = escapeHtml(row.id);
+        const actions = adminUi
+          ? `<td class="settings-cred-actions settings-user-actions-cell">
+          <div class="settings-cred-actions">
+            <button type="button" class="settings-cred-icon-btn user-role-btn" data-id="${id}" title="Change role" aria-label="Change role">${USER_ROW_ICONS.role}</button>
+            <button type="button" class="settings-cred-icon-btn user-profile-btn" data-id="${id}" title="Edit name and contact" aria-label="Edit name and contact">${USER_ROW_ICONS.edit}</button>
+            <button type="button" class="settings-cred-icon-btn user-password-btn" data-id="${id}" title="Set password" aria-label="Set password">${USER_ROW_ICONS.key}</button>
+            <button type="button" class="settings-cred-icon-btn settings-cred-icon-btn--danger user-delete-btn" data-id="${id}" title="Delete user" aria-label="Delete user">${USER_ROW_ICONS.del}</button>
+          </div>
+        </td>`
+          : `<td class="settings-user-actions-cell"></td>`;
+        return `<tr data-user-id="${id}">
+          <td><strong>${escapeHtml(row.username)}</strong></td>
+          <td>${cellTextOrDash(row.full_name)}</td>
+          <td>${cellTextOrDash(row.email)}</td>
+          <td>${cellTextOrDash(row.mobile)}</td>
+          <td class="settings-user-cell--role">${escapeHtml(row.role)}</td>
+          <td class="muted">${fmtDate(row.updated_at)}</td>
+          ${actions}
+        </tr>`;
+      })
+      .join("");
+  }
+
+  const CRED_TOAST_SUCCESS_MS = 4800;
+
+  function dismissAppToast(el) {
+    if (!el?.parentNode) return;
+    if (el._toastTimer != null) {
+      window.clearTimeout(el._toastTimer);
+      el._toastTimer = null;
+    }
+    el.classList.add("app-toast--out");
+    window.setTimeout(() => el.remove(), 220);
+  }
+
+  function showCredentialRowTestToast(success, detailText, opts) {
+    const host = document.getElementById("app-toast-host");
+    if (!host) return;
+    const el = document.createElement("div");
+    el.className = `app-toast ${success ? "app-toast--success" : "app-toast--error"}`;
+    el.setAttribute("role", success ? "status" : "alert");
+    const title =
+      opts && opts.title != null && opts.title !== ""
+        ? opts.title
+        : success
+          ? "Connection OK"
+          : "Test failed";
+    const msg = escapeHtml(detailText || (success ? "Verified with Sophos Central." : "Unknown error"));
+    const closeBtn = success
+      ? ""
+      : `<button type="button" class="app-toast__close" aria-label="Dismiss notification" title="Dismiss">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>`;
+    el.innerHTML = `<div class="app-toast__body">
+      <p class="app-toast__title">${escapeHtml(title)}</p>
+      <p class="app-toast__msg">${msg}</p>
+    </div>${closeBtn}`;
+    host.appendChild(el);
+    if (success) {
+      el._toastTimer = window.setTimeout(() => dismissAppToast(el), CRED_TOAST_SUCCESS_MS);
+    } else {
+      el.querySelector(".app-toast__close")?.addEventListener("click", () => dismissAppToast(el));
+    }
+  }
+
+  async function loadSettingsCredentials() {
+    const rows = await loadJson("/api/settings/credentials");
+    const tbody = document.getElementById("settings-credentials-body");
+    if (!tbody) return;
+    if (!rows.length) {
+      tbody.innerHTML =
+        '<tr><td colspan="5" class="muted">No credentials yet. Use <strong>Add credential</strong> to verify and store a Central API client.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows
+      .map((row) => {
+        const id = escapeHtml(row.id);
+        const cidRaw = row.client_id != null && String(row.client_id) !== "" ? String(row.client_id) : "";
+        const whoRaw =
+          row.whoami != null && row.whoami.id != null && String(row.whoami.id) !== ""
+            ? String(row.whoami.id)
+            : "";
+        const titleClient = cidRaw ? ` title="${escapeHtml(cidRaw)}"` : "";
+        const copyBtn = whoRaw
+          ? `<button type="button" class="settings-cred-icon-btn settings-cred-copy-btn cred-copy-central" data-clipboard-text="${escapeAttr(whoRaw)}" title="Copy Central ID" aria-label="Copy Central ID">${CRED_ROW_ICONS.clipboard}</button>`
+          : "";
+        const centralCell = whoRaw
+          ? `<td class="settings-cred-central-cell"><div class="settings-cred-central-cell__inner"><span class="settings-cred-central-cell__text fw-col-code" title="${escapeHtml(whoRaw)}">${escapeHtml(whoRaw)}</span>${copyBtn}</div></td>`
+          : `<td class="settings-cred-central-cell"><div class="settings-cred-central-cell__inner"><span class="settings-cred-central-cell__text fw-col-code muted">—</span></div></td>`;
+        return `<tr data-credential-id="${id}">
+          <td><strong>${escapeHtml(row.name)}</strong></td>
+          <td class="fw-col-code settings-cred-client-cell settings-cred-truncate"${titleClient}>${escapeHtml(cidRaw || "—")}</td>
+          <td>${escapeHtml(row.id_type || "—")}</td>
+          ${centralCell}
+          <td class="settings-cred-actions">
+            <button type="button" class="settings-cred-icon-btn cred-retest" data-id="${id}" title="Test connection" aria-label="Test connection">${CRED_ROW_ICONS.test}</button>
+            <button type="button" class="settings-cred-icon-btn cred-rename" data-id="${id}" title="Edit name" aria-label="Edit name">${CRED_ROW_ICONS.edit}</button>
+            <button type="button" class="settings-cred-icon-btn settings-cred-icon-btn--danger cred-delete" data-id="${id}" title="Delete" aria-label="Delete credential">${CRED_ROW_ICONS.del}</button>
+          </td>
+        </tr>`;
+      })
+      .join("");
+  }
+
+  const SYNC_INTERVAL_OPTIONS = [
+    { value: "hourly", label: "Hourly" },
+    { value: "3h", label: "3 hours" },
+    { value: "6h", label: "6 Hours" },
+    { value: "12h", label: "12 Hours" },
+    { value: "daily", label: "Daily" },
+    { value: "none", label: "None" },
+  ];
+
+  const SYNC_INTERVAL_ALLOWED = new Set(SYNC_INTERVAL_OPTIONS.map((o) => o.value));
+
+  function normalizeCredentialSyncInterval(raw) {
+    const v = raw != null && String(raw).trim() !== "" ? String(raw).trim() : "12h";
+    return SYNC_INTERVAL_ALLOWED.has(v) ? v : "12h";
+  }
+
+  function syncIntervalSelectHtml(credentialId, selected) {
+    const sel = normalizeCredentialSyncInterval(selected);
+    const eid = escapeAttr(credentialId);
+    const opts = SYNC_INTERVAL_OPTIONS.map(
+      (o) =>
+        `<option value="${escapeHtml(o.value)}"${o.value === sel ? " selected" : ""}>${escapeHtml(o.label)}</option>`
+    ).join("");
+    return `<select class="settings-sync-interval-select" data-credential-id="${eid}" aria-label="Sync interval for this credential">${opts}</select>`;
+  }
+
+  function syncPreciseTimeForTitle(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
+  }
+
+  function formatSyncLastRelative(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    const t = d.getTime();
+    if (Number.isNaN(t)) return "—";
+    const ageSec = Math.floor((Date.now() - t) / 1000);
+    if (ageSec < 60) return "Just now";
+    if (ageSec < 3600) {
+      const m = Math.floor(ageSec / 60);
+      return `${m} min${m === 1 ? "" : "s"} ago`;
+    }
+    if (ageSec < 86400) {
+      const h = Math.floor(ageSec / 3600);
+      return `${h} hour${h === 1 ? "" : "s"} ago`;
+    }
+    const days = Math.floor(ageSec / 86400);
+    return `${days} day${days === 1 ? "" : "s"} ago`;
+  }
+
+  function formatSyncNextRelative(nextIso, intervalNorm) {
+    if (intervalNorm === "none") return { text: "—", title: "" };
+    if (!nextIso) {
+      return {
+        text: "Pending",
+        title: "No successful sync yet. After the first sync, the next scheduled time appears here.",
+      };
+    }
+    const d = new Date(nextIso);
+    const t = d.getTime();
+    if (Number.isNaN(t)) return { text: "—", title: "" };
+    const deltaSec = Math.floor((t - Date.now()) / 1000);
+    const precise = syncPreciseTimeForTitle(nextIso);
+    if (deltaSec <= 0) {
+      return { text: "Due now", title: precise };
+    }
+    if (deltaSec < 60) return { text: "Soon", title: precise };
+    if (deltaSec < 3600) {
+      const m = Math.floor(deltaSec / 60);
+      return { text: `in ${m} min${m === 1 ? "" : "s"}`, title: precise };
+    }
+    if (deltaSec < 86400) {
+      const h = Math.floor(deltaSec / 3600);
+      return { text: `in ${h} hour${h === 1 ? "" : "s"}`, title: precise };
+    }
+    const days = Math.floor(deltaSec / 86400);
+    return { text: `in ${days} day${days === 1 ? "" : "s"}`, title: precise };
+  }
+
+  async function loadSettingsSync() {
+    const rows = await loadJson("/api/settings/credentials");
+    const tbody = document.getElementById("settings-sync-body");
+    if (!tbody) return;
+    if (!rows.length) {
+      tbody.innerHTML =
+        '<tr><td colspan="5" class="muted">No credentials yet. Add credentials under <strong>Central credentials</strong>.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows
+      .map((row) => {
+        const name = escapeHtml(row.name);
+        const idAttr = escapeAttr(row.id);
+        const lastTitle = row.last_sync ? escapeAttr(syncPreciseTimeForTitle(row.last_sync)) : "";
+        const lastText = escapeHtml(formatSyncLastRelative(row.last_sync));
+        const iv = normalizeCredentialSyncInterval(row.sync_interval);
+        const next = formatSyncNextRelative(row.next_scheduled_sync_at, iv);
+        const nextTitle = next.title ? escapeAttr(next.title) : "";
+        const nextText = escapeHtml(next.text);
+        const lastCell = row.last_sync
+          ? `<span class="settings-sync-relative" title="${lastTitle}">${lastText}</span>`
+          : `<span class="settings-sync-relative">${lastText}</span>`;
+        const nextCell = next.title
+          ? `<span class="settings-sync-relative" title="${nextTitle}">${nextText}</span>`
+          : `<span class="settings-sync-relative">${nextText}</span>`;
+        return `<tr data-credential-id="${idAttr}">
+          <td><strong>${name}</strong></td>
+          <td>${syncIntervalSelectHtml(row.id, row.sync_interval)}</td>
+          <td>${lastCell}</td>
+          <td>${nextCell}</td>
+          <td class="settings-cred-actions">
+            <span role="button" tabindex="0" class="settings-cred-icon-btn cred-sync-now" data-id="${idAttr}" title="Sync now" aria-label="Sync now">${CRED_ROW_ICONS.sync}</span>
+          </td>
+        </tr>`;
+      })
+      .join("");
+    tbody.querySelectorAll(".settings-sync-interval-select").forEach((el) => {
+      el.dataset.lastValue = el.value;
+    });
+  }
+
+  function refreshSettingsSyncIfVisible() {
+    const panel = document.getElementById("settings-panel-sync");
+    if (panel?.classList.contains("is-active")) {
+      loadSettingsSync().catch(console.error);
+    }
+  }
+
+  function openCredentialFormDialog() {
+    const d = document.getElementById("credential-form-dialog");
+    if (!d) return;
+    document.getElementById("credential-form")?.reset();
+    const st = document.getElementById("credential-form-status");
+    if (st) {
+      st.textContent = "";
+      st.classList.remove("is-error", "is-ok");
+    }
+    d.hidden = false;
+    d.setAttribute("aria-hidden", "false");
+    document.getElementById("cred-form-name")?.focus();
+  }
+
+  function initSettingsModal() {
+    document.getElementById("btn-settings")?.addEventListener("click", () => {
+      openSettingsModal();
+      setSettingsSection("users");
+    });
+    document.getElementById("settings-modal-close")?.addEventListener("click", closeSettingsModal);
+    document
+      .querySelector("#settings-modal .settings-modal__backdrop")
+      ?.addEventListener("click", closeSettingsModal);
+
+    document.getElementById("settings-nav-filter")?.addEventListener("input", filterSettingsNav);
+
+    document.querySelectorAll(".settings-nav__item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const s = btn.dataset.settingsSection;
+        if (s) setSettingsSection(s);
+      });
+    });
+
+    document.getElementById("btn-add-credential")?.addEventListener("click", openCredentialFormDialog);
+    document.getElementById("credential-form-close")?.addEventListener("click", closeCredentialFormDialog);
+    document
+      .querySelector("#credential-form-dialog .settings-subdialog__backdrop")
+      ?.addEventListener("click", closeCredentialFormDialog);
+
+    document.getElementById("cred-form-test")?.addEventListener("click", async () => {
+      const clientId = document.getElementById("cred-form-client-id")?.value?.trim() || "";
+      const secret = document.getElementById("cred-form-client-secret")?.value || "";
+      const st = document.getElementById("credential-form-status");
+      if (!clientId || !secret) {
+        if (st) {
+          st.textContent = "Enter client ID and secret to test.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+        return;
+      }
+      const testBtn = document.getElementById("cred-form-test");
+      const submitBtn = document.getElementById("cred-form-submit");
+      testBtn.disabled = true;
+      submitBtn.disabled = true;
+      if (st) {
+        st.textContent = "Testing…";
+        st.classList.remove("is-error", "is-ok");
+      }
+      try {
+        const res = await apiRequestJson("/api/settings/credentials/test", {
+          method: "POST",
+          body: JSON.stringify({ client_id: clientId, client_secret: secret }),
+        });
+        if (st) {
+          st.textContent = `Connected. ID type: ${res.id_type || "—"}. Central ID: ${res.whoami?.id ?? "—"}`;
+          st.classList.add("is-ok");
+          st.classList.remove("is-error");
+        }
+      } catch (e) {
+        if (st) {
+          st.textContent = e.message || "Test failed.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+      } finally {
+        testBtn.disabled = false;
+        submitBtn.disabled = false;
+      }
+    });
+
+    document.getElementById("credential-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = document.getElementById("cred-form-name")?.value?.trim() || "";
+      const clientId = document.getElementById("cred-form-client-id")?.value?.trim() || "";
+      const secret = document.getElementById("cred-form-client-secret")?.value || "";
+      const st = document.getElementById("credential-form-status");
+      if (!name || !clientId || !secret) {
+        if (st) {
+          st.textContent = "All fields are required to add a credential.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+        return;
+      }
+      const testBtn = document.getElementById("cred-form-test");
+      const submitBtn = document.getElementById("cred-form-submit");
+      testBtn.disabled = true;
+      submitBtn.disabled = true;
+      if (st) {
+        st.textContent = "Verifying with Central and saving…";
+        st.classList.remove("is-error", "is-ok");
+      }
+      try {
+        await apiRequestJson("/api/settings/credentials", {
+          method: "POST",
+          body: JSON.stringify({ name, client_id: clientId, client_secret: secret }),
+        });
+        closeCredentialFormDialog();
+        await loadSettingsCredentials();
+        refreshSettingsSyncIfVisible();
+      } catch (err) {
+        if (st) {
+          st.textContent = err.message || "Could not save credential.";
+          st.classList.add("is-error");
+        }
+      } finally {
+        testBtn.disabled = false;
+        submitBtn.disabled = false;
+      }
+    });
+
+    document.getElementById("settings-credentials-body")?.addEventListener("click", async (e) => {
+      const retest = e.target.closest("button.cred-retest");
+      if (retest) {
+        const id = retest.getAttribute("data-id");
+        if (!id) return;
+        retest.disabled = true;
+        try {
+          const res = await apiRequestJson(`/api/settings/credentials/${encodeURIComponent(id)}/test`, {
+            method: "POST",
+          });
+          const c = res?.credential;
+          const detail =
+            c != null
+              ? `ID type: ${c.id_type || "—"}. Central ID: ${c.whoami?.id ?? "—"}`
+              : "Verified with Sophos Central.";
+          showCredentialRowTestToast(true, detail);
+          await loadSettingsCredentials();
+        } catch (err) {
+          showCredentialRowTestToast(false, err.message || "Test failed.");
+        } finally {
+          retest.disabled = false;
+        }
+        return;
+      }
+      const copyCentral = e.target.closest("button.cred-copy-central");
+      if (copyCentral) {
+        const text = copyCentral.getAttribute("data-clipboard-text");
+        if (text == null || text === "") return;
+        (async () => {
+          try {
+            await navigator.clipboard.writeText(text);
+            showCredentialRowTestToast(true, "Central ID copied to clipboard.", { title: "Copied" });
+          } catch {
+            showCredentialRowTestToast(false, "Could not copy to clipboard.", { title: "Copy failed" });
+          }
+        })();
+        return;
+      }
+      const rename = e.target.closest("button.cred-rename");
+      if (rename) {
+        const id = rename.getAttribute("data-id");
+        if (!id) return;
+        const currentRow = rename.closest("tr");
+        const currentName = currentRow?.querySelector("strong")?.textContent || "";
+        const next = window.prompt("Credential display name", currentName);
+        if (next == null) return;
+        const trimmed = next.trim();
+        if (!trimmed) return;
+        try {
+          await apiRequestJson(`/api/settings/credentials/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ name: trimmed }),
+          });
+          await loadSettingsCredentials();
+          refreshSettingsSyncIfVisible();
+        } catch (err) {
+          window.alert(err.message || "Rename failed.");
+        }
+        return;
+      }
+      const del = e.target.closest("button.cred-delete");
+      if (del) {
+        const id = del.getAttribute("data-id");
+        if (!id) return;
+        if (
+          !window.confirm(
+            "Remove this credential from the app? The client secret will be deleted from local storage."
+          )
+        )
+          return;
+        try {
+          await apiRequestJson(`/api/settings/credentials/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+          });
+          await loadSettingsCredentials();
+          refreshSettingsSyncIfVisible();
+        } catch (err) {
+          window.alert(err.message || "Delete failed.");
+        }
+      }
+    });
+
+    document.getElementById("settings-sync-body")?.addEventListener("change", async (e) => {
+      const sel = e.target.closest(".settings-sync-interval-select");
+      if (!sel) return;
+      const id = sel.getAttribute("data-credential-id");
+      if (!id) return;
+      const prev = sel.dataset.lastValue != null ? sel.dataset.lastValue : normalizeCredentialSyncInterval(null);
+      const value = sel.value;
+      try {
+        await apiRequestJson(`/api/settings/credentials/${encodeURIComponent(id)}/sync-interval`, {
+          method: "PATCH",
+          body: JSON.stringify({ sync_interval: value }),
+        });
+        sel.dataset.lastValue = value;
+      } catch (err) {
+        sel.value = prev;
+        showCredentialRowTestToast(false, err.message || "Could not save sync interval.", {
+          title: "Save failed",
+        });
+      }
+    });
+
+    document.getElementById("settings-sync-body")?.addEventListener("keydown", (e) => {
+      const el = e.target.closest(".cred-sync-now");
+      if (!el || el.getAttribute("aria-disabled") === "true") return;
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      el.click();
+    });
+
+    document.getElementById("settings-sync-body")?.addEventListener("click", async (e) => {
+      const btn = e.target.closest(".cred-sync-now");
+      if (!btn || btn.getAttribute("aria-disabled") === "true") return;
+      const id = btn.getAttribute("data-id");
+      if (!id) return;
+      btn.setAttribute("aria-disabled", "true");
+      try {
+        const res = await apiRequestJson(`/api/settings/credentials/${encodeURIComponent(id)}/sync-now`, {
+          method: "POST",
+        });
+        const c = res?.credential;
+        const who = c?.whoami?.id != null ? String(c.whoami.id) : "";
+        const detail = who ? `Central ID ${who} refreshed.` : "Profile metadata refreshed.";
+        showCredentialRowTestToast(true, detail, { title: "Sync complete" });
+        await loadSettingsSync();
+        refreshAppSyncStatusBar();
+      } catch (err) {
+        showCredentialRowTestToast(false, err.message || "Sync failed.", { title: "Sync failed" });
+      } finally {
+        btn.removeAttribute("aria-disabled");
+      }
+    });
+
+    document.getElementById("btn-add-user")?.addEventListener("click", openUserFormDialog);
+    document.getElementById("user-form-close")?.addEventListener("click", closeUserFormDialog);
+    document
+      .querySelector("#user-form-dialog .settings-subdialog__backdrop")
+      ?.addEventListener("click", closeUserFormDialog);
+
+    document.getElementById("user-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = document.getElementById("user-form-username")?.value?.trim() || "";
+      const password = document.getElementById("user-form-password")?.value || "";
+      const role = document.getElementById("user-form-role")?.value || "user";
+      const full_name = document.getElementById("user-form-full-name")?.value?.trim() || "";
+      const email = document.getElementById("user-form-email")?.value?.trim() || "";
+      const mobile = document.getElementById("user-form-mobile")?.value?.trim() || "";
+      const st = document.getElementById("user-form-status");
+      if (!username || !password) {
+        if (st) {
+          st.textContent = "Username and password are required.";
+          st.classList.add("is-error");
+        }
+        return;
+      }
+      const sub = document.getElementById("user-form-submit");
+      sub.disabled = true;
+      const payload = { username, password, role };
+      if (full_name) payload.full_name = full_name;
+      if (email) payload.email = email;
+      if (mobile) payload.mobile = mobile;
+      try {
+        await apiRequestJson("/api/settings/users", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        closeUserFormDialog();
+        await loadSettingsUsers();
+      } catch (err) {
+        if (st) {
+          st.textContent = err.message || "Could not create user.";
+          st.classList.add("is-error");
+        }
+      } finally {
+        sub.disabled = false;
+      }
+    });
+
+    function openUserEditProfileDialogFromRow(tr, userId) {
+      const d = document.getElementById("user-edit-profile-dialog");
+      if (!d) return;
+      const cells = tr?.querySelectorAll("td");
+      const readCell = (i) => {
+        const raw = cells?.[i]?.textContent?.trim() || "";
+        return raw === "—" ? "" : raw;
+      };
+      document.getElementById("user-edit-profile-id").value = userId;
+      document.getElementById("user-edit-profile-full-name").value = readCell(1);
+      document.getElementById("user-edit-profile-email").value = readCell(2);
+      document.getElementById("user-edit-profile-mobile").value = readCell(3);
+      const st = document.getElementById("user-edit-profile-status");
+      if (st) {
+        st.textContent = "";
+        st.classList.remove("is-error", "is-ok");
+      }
+      d.hidden = false;
+      d.setAttribute("aria-hidden", "false");
+      document.getElementById("user-edit-profile-full-name")?.focus();
+    }
+
+    document.getElementById("user-edit-profile-close")?.addEventListener("click", closeUserEditProfileDialog);
+    document
+      .querySelector("#user-edit-profile-dialog .settings-subdialog__backdrop")
+      ?.addEventListener("click", closeUserEditProfileDialog);
+
+    document.getElementById("user-edit-profile-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const id = document.getElementById("user-edit-profile-id")?.value?.trim() || "";
+      const full_name = document.getElementById("user-edit-profile-full-name")?.value?.trim() ?? "";
+      const email = document.getElementById("user-edit-profile-email")?.value?.trim() ?? "";
+      const mobile = document.getElementById("user-edit-profile-mobile")?.value?.trim() ?? "";
+      const st = document.getElementById("user-edit-profile-status");
+      const sub = document.getElementById("user-edit-profile-submit");
+      if (!id) return;
+      if (sub) sub.disabled = true;
+      try {
+        const updated = await apiRequestJson(`/api/settings/users/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ full_name, email, mobile }),
+        });
+        if (updated && updated.id === currentSessionUser?.id) {
+          currentSessionUser = { ...currentSessionUser, ...updated };
+          applySessionUserToChrome();
+        }
+        closeUserEditProfileDialog();
+        await loadSettingsUsers();
+      } catch (err) {
+        if (st) {
+          st.textContent = err.message || "Could not save.";
+          st.classList.add("is-error");
+        }
+      } finally {
+        if (sub) sub.disabled = false;
+      }
+    });
+
+    document.getElementById("settings-users-body")?.addEventListener("click", async (e) => {
+      const profileBtn = e.target.closest("button.user-profile-btn");
+      if (profileBtn) {
+        const id = profileBtn.getAttribute("data-id");
+        if (!id) return;
+        const row = profileBtn.closest("tr");
+        openUserEditProfileDialogFromRow(row, id);
+        return;
+      }
+      const roleBtn = e.target.closest("button.user-role-btn");
+      if (roleBtn) {
+        const id = roleBtn.getAttribute("data-id");
+        if (!id) return;
+        const row = roleBtn.closest("tr");
+        const current = row?.querySelector(".settings-user-cell--role")?.textContent?.trim() || "user";
+        const choice = window.prompt(`Role for this user: type "admin" or "user"`, current);
+        if (choice == null) return;
+        const r = choice.trim().toLowerCase();
+        if (r !== "admin" && r !== "user") {
+          window.alert('Role must be "admin" or "user".');
+          return;
+        }
+        try {
+          await apiRequestJson(`/api/settings/users/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ role: r }),
+          });
+          await loadSettingsUsers();
+          if (id === currentSessionUser?.id) {
+            currentSessionUser = { ...currentSessionUser, role: r };
+            applySettingsNavForRole();
+            applySessionUserToChrome();
+          }
+        } catch (err) {
+          window.alert(err.message || "Could not update role.");
+        }
+        return;
+      }
+      const pwBtn = e.target.closest("button.user-password-btn");
+      if (pwBtn) {
+        const id = pwBtn.getAttribute("data-id");
+        if (!id) return;
+        const pw = window.prompt("New password (min. 10 characters)");
+        if (pw == null) return;
+        if (pw.length < 10) {
+          window.alert("Password must be at least 10 characters.");
+          return;
+        }
+        try {
+          await apiRequestJson(`/api/settings/users/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ password: pw }),
+          });
+          await loadSettingsUsers();
+        } catch (err) {
+          window.alert(err.message || "Could not set password.");
+        }
+        return;
+      }
+      const delBtn = e.target.closest("button.user-delete-btn");
+      if (delBtn) {
+        const id = delBtn.getAttribute("data-id");
+        if (!id) return;
+        if (!window.confirm("Remove this user? They will no longer be able to sign in.")) return;
+        try {
+          await apiRequestJson(`/api/settings/users/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+          });
+          if (id === currentSessionUser?.id) {
+            currentSessionUser = null;
+            const btnUser = document.getElementById("btn-user-menu");
+            if (btnUser) btnUser.hidden = true;
+            showLoginGate();
+            return;
+          }
+          await loadSettingsUsers();
+        } catch (err) {
+          window.alert(err.message || "Delete failed.");
+        }
+      }
+    });
+  }
+
+  /* ---------- Tabs ---------- */
+  const pageTitle = document.getElementById("page-title");
+  const tabButtons = document.querySelectorAll(".tabs__tab");
+  const panels = document.querySelectorAll(".panel");
+
+  function invalidateFwMapSizes() {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (dashFwMap) dashFwMap.invalidateSize({ animate: false });
+        if (panelFwMap) panelFwMap.invalidateSize({ animate: false });
+        if (fwLocPickMap) fwLocPickMap.invalidateSize({ animate: false });
+      });
+    });
+  }
+
+  function activateTab(name, persist = true) {
+    tabButtons.forEach((btn) => {
+      const on = btn.dataset.tab === name;
+      btn.classList.toggle("is-active", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    panels.forEach((p) => {
+      const on = p.dataset.panel === name;
+      p.classList.toggle("is-active", on);
+      p.hidden = !on;
+    });
+    pageTitle.textContent = TITLES[name] || name;
+    if (persist) schedulePersistUiState();
+    hideFwMapHoverPortalNow();
+    const lazyFwMapInit =
+      (name === "dashboard" && !dashFwMap) || (name === "firewalls" && !panelFwMap);
+    if (lazyFwMapInit) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          refreshFwMapMarkers();
+        });
+      });
+    } else {
+      invalidateFwMapSizes();
+    }
+  }
+
+  tabButtons.forEach((btn) => {
+    btn.addEventListener("click", () => activateTab(btn.dataset.tab, true));
+  });
+
+  function filtersToggleButtonForAside(aside) {
+    const drawer = aside?.querySelector(".filters__drawer");
+    const id = drawer?.id;
+    if (!id) return null;
+    return document.querySelector(`[aria-controls="${id}"]`);
+  }
+
+  function setFiltersPanelCollapsed(aside, collapsed) {
+    if (!aside) return;
+    const drawer = aside.querySelector(".filters__drawer");
+    const btn = filtersToggleButtonForAside(aside);
+    aside.classList.toggle("filters--collapsed", collapsed);
+    if (btn) btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    if (drawer) {
+      if (collapsed) drawer.setAttribute("hidden", "");
+      else drawer.removeAttribute("hidden");
+    }
+  }
+
+  function expandFirewallFiltersPanel() {
+    setFiltersPanelCollapsed(document.querySelector("#panel-firewalls .filters"), false);
+  }
+
+  function expandDashboardFiltersPanel() {
+    setFiltersPanelCollapsed(document.querySelector("#panel-dashboard .filters"), false);
+  }
+
+  function initCollapsibleFilterPanels() {
+    document.querySelectorAll(".filters").forEach((aside) => {
+      const drawer = aside.querySelector(".filters__drawer");
+      const btn = filtersToggleButtonForAside(aside);
+      if (!drawer || !btn) return;
+      btn.addEventListener("click", () => {
+        const isCollapsed = aside.classList.contains("filters--collapsed");
+        setFiltersPanelCollapsed(aside, !isCollapsed);
+        schedulePersistUiState();
+      });
+    });
+  }
+
+  /* ---------- Generic table controller (lazy / infinite scroll) ---------- */
+  function lazyIntersectionRootForTbody(tbody) {
+    if (!tbody) return null;
+    let el = tbody.parentElement;
+    while (el && el !== document.body) {
+      const st = window.getComputedStyle(el);
+      const oy = st.overflowY;
+      if (
+        (oy === "auto" || oy === "scroll" || oy === "overlay") &&
+        el.scrollHeight > el.clientHeight + 1
+      ) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function createTableController(cfg) {
+    const {
+      getFilteredRows,
+      tbody,
+      countEl,
+      rangeEl,
+      pageSizeEl,
+      prevBtn,
+      nextBtn,
+      searchInput,
+      selectAllInput,
+      sortHeaders,
+      sortDelegateRoot,
+      renderRow,
+      getRowSearchText,
+      afterRender,
+    } = cfg;
+
+    let sortKey = null;
+    let sortDir = 1;
+    let visibleCount = 0;
+    let selected = new Set();
+    let lazyIo = null;
+    let lazyAppending = false;
+
+    function disconnectLazyIo() {
+      if (lazyIo) {
+        lazyIo.disconnect();
+        lazyIo = null;
+      }
+    }
+
+    function getSortHeaderElements() {
+      if (sortDelegateRoot) {
+        return sortDelegateRoot.querySelectorAll("thead th[data-sort]");
+      }
+      return sortHeaders;
+    }
+
+    function updateSortUi() {
+      getSortHeaderElements().forEach((th) => {
+        th.classList.remove("sorted-asc", "sorted-desc");
+        const k = th.dataset.sort;
+        if (k && k === sortKey) {
+          th.classList.add(sortDir === 1 ? "sorted-asc" : "sorted-desc");
+        }
+      });
+    }
+
+    function applySortKey(k) {
+      if (!k) return;
+      if (sortKey === k) sortDir = -sortDir;
+      else {
+        sortKey = k;
+        sortDir = 1;
+      }
+      render(true);
+    }
+
+    function compare(a, b, key) {
+      const va = a[key];
+      const vb = b[key];
+      const na = Number(va);
+      const nb = Number(vb);
+      if (!Number.isNaN(na) && !Number.isNaN(nb) && va !== "" && vb !== "") {
+        return na === nb ? 0 : na < nb ? -1 : 1;
+      }
+      const sa = va == null ? "" : String(va).toLowerCase();
+      const sb = vb == null ? "" : String(vb).toLowerCase();
+      return sa === sb ? 0 : sa < sb ? -1 : 1;
+    }
+
+    function sortedRows(list) {
+      if (!sortKey) return list.slice();
+      const out = list.slice();
+      out.sort((a, b) => sortDir * compare(a, b, sortKey));
+      return out;
+    }
+
+    function searchFiltered(list) {
+      const q = (searchInput?.value || "").trim().toLowerCase();
+      if (!q) return list;
+      return list.filter((row) => getRowSearchText(row).includes(q));
+    }
+
+    function chunkSize() {
+      if (!pageSizeEl) return 50;
+      return Math.max(1, parseInt(pageSizeEl.value, 10) || 50);
+    }
+
+    function getSortedPipeline() {
+      const base = getFilteredRows();
+      const searched = searchFiltered(base);
+      const sorted = sortedRows(searched);
+      return { sorted, total: sorted.length };
+    }
+
+    function updateLazyFooter(total, loaded) {
+      if (countEl) {
+        countEl.textContent =
+          total === 0 ? "0 items" : `${loaded} of ${total} items`;
+      }
+      if (rangeEl) {
+        if (total === 0) rangeEl.textContent = "";
+        else if (loaded >= total) rangeEl.textContent = "All rows loaded";
+        else rangeEl.textContent = "Scroll for more";
+      }
+      if (prevBtn) prevBtn.disabled = true;
+      if (nextBtn) nextBtn.disabled = true;
+    }
+
+    function connectLazyIo() {
+      disconnectLazyIo();
+      const { sorted, total } = getSortedPipeline();
+      if (visibleCount >= total || total === 0) return;
+      const lastTr = tbody.querySelector("tr:last-of-type");
+      if (!lastTr) return;
+      const root = lazyIntersectionRootForTbody(tbody);
+      lazyIo = new IntersectionObserver(
+        (entries) => {
+          for (const ent of entries) {
+            if (ent.isIntersecting) appendMore();
+          }
+        },
+        { root, rootMargin: "120px", threshold: 0.01 }
+      );
+      lazyIo.observe(lastTr);
+    }
+
+    function appendMore() {
+      if (lazyAppending) return;
+      const { sorted, total } = getSortedPipeline();
+      if (visibleCount >= total) {
+        disconnectLazyIo();
+        updateLazyFooter(total, visibleCount);
+        return;
+      }
+      lazyAppending = true;
+      try {
+        disconnectLazyIo();
+        const prev = visibleCount;
+        visibleCount = Math.min(visibleCount + chunkSize(), total);
+        const html = sorted
+          .slice(prev, visibleCount)
+          .map((row) => renderRow(row, selected))
+          .join("");
+        tbody.insertAdjacentHTML("beforeend", html);
+        syncSelectAll();
+        updateSortUi();
+        updateLazyFooter(total, visibleCount);
+        schedulePersistUiState();
+        if (typeof afterRender === "function") afterRender();
+      } finally {
+        lazyAppending = false;
+      }
+      connectLazyIo();
+    }
+
+    function render(reset) {
+      disconnectLazyIo();
+      const { sorted, total } = getSortedPipeline();
+      if (reset) {
+        visibleCount = Math.min(chunkSize(), total);
+        tbody.innerHTML = sorted
+          .slice(0, visibleCount)
+          .map((row) => renderRow(row, selected))
+          .join("");
+      } else if (visibleCount > total) {
+        visibleCount = total;
+        tbody.innerHTML = sorted
+          .slice(0, visibleCount)
+          .map((row) => renderRow(row, selected))
+          .join("");
+      }
+      syncSelectAll();
+      updateSortUi();
+      updateLazyFooter(total, Math.min(visibleCount, total));
+      schedulePersistUiState();
+      if (typeof afterRender === "function") afterRender();
+      connectLazyIo();
+    }
+
+    function syncSelectAll() {
+      if (!selectAllInput) return;
+      const { sorted, total } = getSortedPipeline();
+      const loaded = Math.min(visibleCount, total);
+      const slice = sorted.slice(0, loaded);
+      const ids = slice.map((r) => r._id).filter(Boolean);
+      const allOn = ids.length > 0 && ids.every((id) => selected.has(id));
+      selectAllInput.indeterminate =
+        ids.some((id) => selected.has(id)) && !allOn;
+      selectAllInput.checked = allOn;
+    }
+
+    tbody.addEventListener("change", (e) => {
+      const cb = e.target;
+      if (!(cb instanceof HTMLInputElement) || !cb.classList.contains("row-check")) return;
+      const id = cb.dataset.id;
+      if (id == null) return;
+      if (cb.checked) selected.add(id);
+      else selected.delete(id);
+      syncSelectAll();
+    });
+
+    if (sortDelegateRoot) {
+      sortDelegateRoot.addEventListener("click", (e) => {
+        const th = e.target.closest("thead th[data-sort]");
+        if (!th || !sortDelegateRoot.contains(th)) return;
+        applySortKey(th.dataset.sort);
+      });
+    } else {
+      sortHeaders.forEach((th) => {
+        th.addEventListener("click", () => applySortKey(th.dataset.sort));
+      });
+    }
+
+    if (searchInput) {
+      searchInput.addEventListener("input", () => {
+        render(true);
+      });
+    }
+
+    if (pageSizeEl) {
+      pageSizeEl.addEventListener("change", () => {
+        render(true);
+      });
+    }
+
+    if (prevBtn) {
+      prevBtn.addEventListener("click", () => {
+        render(true);
+      });
+    }
+
+    if (nextBtn) {
+      nextBtn.addEventListener("click", () => {
+        appendMore();
+      });
+    }
+
+    if (selectAllInput) {
+      selectAllInput.addEventListener("change", () => {
+        const { sorted, total } = getSortedPipeline();
+        const loaded = Math.min(visibleCount, total);
+        const slice = sorted.slice(0, loaded);
+        slice.forEach((r) => {
+          if (r._id == null) return;
+          if (selectAllInput.checked) selected.add(r._id);
+          else selected.delete(r._id);
+        });
+        tbody.querySelectorAll("input.row-check").forEach((cb) => {
+          const id = cb.dataset.id;
+          if (!id) return;
+          cb.checked = selected.has(id);
+        });
+        syncSelectAll();
+        schedulePersistUiState();
+      });
+    }
+
+    function restoreVisibleSlice(target) {
+      const { sorted, total } = getSortedPipeline();
+      const chunk = chunkSize();
+      const want = Math.floor(Number(target));
+      const lo = total === 0 ? 0 : Math.min(chunk, total);
+      const hi = total;
+      const t =
+        !Number.isFinite(want) || want <= 0
+          ? lo
+          : Math.min(Math.max(want, lo), hi);
+      visibleCount = t;
+      disconnectLazyIo();
+      tbody.innerHTML = sorted
+        .slice(0, visibleCount)
+        .map((row) => renderRow(row, selected))
+        .join("");
+      syncSelectAll();
+      updateSortUi();
+      updateLazyFooter(total, Math.min(visibleCount, total));
+      schedulePersistUiState();
+      if (typeof afterRender === "function") afterRender();
+      connectLazyIo();
+    }
+
+    return {
+      render: () => render(true),
+      getVisibleCount: () => visibleCount,
+      restoreVisibleSlice,
+      getSortKey: () => sortKey,
+      getTableState: () => ({ sortKey, sortDir }),
+      setTableState: (s) => {
+        if (!s || typeof s !== "object") return;
+        if ("sortKey" in s) {
+          sortKey = s.sortKey == null || s.sortKey === "" ? null : s.sortKey;
+        }
+        if (typeof s.sortDir === "number" && (s.sortDir === 1 || s.sortDir === -1)) {
+          sortDir = s.sortDir;
+        }
+      },
+      resetPage: () => {
+        render(true);
+      },
+      resetSort: () => {
+        sortKey = null;
+        sortDir = 1;
+      },
+      clearSelection: () => {
+        selected.clear();
+        if (selectAllInput) {
+          selectAllInput.checked = false;
+          selectAllInput.indeterminate = false;
+        }
+      },
+      getFullFilteredRows: () => {
+        const { sorted } = getSortedPipeline();
+        return sorted;
+      },
+    };
+  }
+
+  /* ---------- Dashboard alerts (lazy / server pages) + flyout ---------- */
+  const daState = { pageSize: 25, total: 0, severity: "all" };
+  let daAlertsNextPage = 1;
+  let daAlertsLoading = false;
+  let daAlertsIo = null;
+
+  function disconnectDaAlertsIo() {
+    if (daAlertsIo) {
+      daAlertsIo.disconnect();
+      daAlertsIo = null;
+    }
+  }
+
+  function connectDaAlertsIo() {
+    disconnectDaAlertsIo();
+    const tbody = document.getElementById("dashboard-alerts-body");
+    if (!tbody || daAlertsLoading) return;
+    const total = daState.total || 0;
+    const loaded = tbody.querySelectorAll("tr.alert-row").length;
+    if (total === 0 || loaded >= total) return;
+    const last = tbody.querySelector("tr.alert-row:last-of-type");
+    if (!last) return;
+    const root = lazyIntersectionRootForTbody(tbody);
+    daAlertsIo = new IntersectionObserver(
+      (entries) => {
+        for (const ent of entries) {
+          if (!ent.isIntersecting || daAlertsLoading) continue;
+          const tb = document.getElementById("dashboard-alerts-body");
+          const n = tb ? tb.querySelectorAll("tr.alert-row").length : 0;
+          if (n < (daState.total || 0)) {
+            loadDashboardAlerts({ reset: false }).catch(console.error);
+          }
+        }
+      },
+      { root, rootMargin: "160px", threshold: 0.01 }
+    );
+    daAlertsIo.observe(last);
+  }
+  let lastDashboardStats = null;
+  /** Matches a tenants dashboard billing segment when that filter was applied from the card. */
+  let tnDashBilling = null;
+  /** "Active" | "Expired" from subscription state; "Expiring" = dashboard opened End date (Past 30 + Next 90). */
+  let lcDashState = null;
+  const daFilterState = {
+    tenant_name: new Set(),
+    firewall_hostname: new Set(),
+  };
+  let daFacets = { tenant_names: [], firewall_hostnames: [] };
+
+  function hydrateDashboardFromSaved(d) {
+    if (!d || typeof d !== "object") return;
+    if (typeof d.severity === "string") daState.severity = d.severity;
+    const sel = document.getElementById("da-page-size");
+    if (typeof d.pageSize === "number") {
+      const ps = Math.max(1, d.pageSize);
+      daState.pageSize = ps;
+      if (sel && [...sel.options].some((o) => o.value === String(ps))) {
+        sel.value = String(ps);
+      }
+    }
+    daFilterState.tenant_name.clear();
+    daFilterState.firewall_hostname.clear();
+    (Array.isArray(d.tenant_names) ? d.tenant_names : []).forEach((v) =>
+      daFilterState.tenant_name.add(String(v))
+    );
+    (Array.isArray(d.firewall_hostnames) ? d.firewall_hostnames : []).forEach((v) =>
+      daFilterState.firewall_hostname.add(String(v))
+    );
+    if (typeof d.filtersExpanded === "boolean") {
+      const aside = document.querySelector("#panel-dashboard .filters");
+      if (aside) setFiltersPanelCollapsed(aside, !d.filtersExpanded);
+    }
+    const daSearchEl = document.getElementById("da-search");
+    if (daSearchEl && typeof d.search === "string") daSearchEl.value = d.search;
+  }
+
+  function getDashboardAlertsSearchQuery() {
+    const el = document.getElementById("da-search");
+    return (el?.value || "").trim();
+  }
+
+  function dashboardFacetFilterCount() {
+    return daFilterState.tenant_name.size + daFilterState.firewall_hostname.size;
+  }
+
+  function updateDashboardFiltersChrome() {
+    const wrap = document.getElementById("da-filters-head-actions");
+    const countEl = document.getElementById("da-facet-count");
+    const resetBtn = document.getElementById("da-facet-reset");
+    if (!wrap || !countEl || !resetBtn) return;
+    const n = dashboardFacetFilterCount();
+    resetBtn.hidden = n === 0;
+    if (n === 0) {
+      wrap.hidden = true;
+      countEl.textContent = "";
+      return;
+    }
+    wrap.hidden = false;
+    countEl.innerHTML = `<span class="filters__facet-count-num">${n}</span> applied`;
+  }
+
+  function resetDashboardFacetFilters() {
+    daFilterState.tenant_name.clear();
+    daFilterState.firewall_hostname.clear();
+    syncDashboardAlertFilterCheckboxes();
+    setFiltersPanelCollapsed(document.querySelector("#panel-dashboard .filters"), true);
+    loadDashboardAlerts({ reset: true }).catch(console.error);
+  }
+
+  async function loadDashboardAlertFacets() {
+    const sevQ =
+      daState.severity && daState.severity !== "all"
+        ? `?severity=${encodeURIComponent(daState.severity)}`
+        : "";
+    daFacets = await loadJson(`/api/alerts/facets${sevQ}`);
+  }
+
+  function syncDashboardAlertFilterCheckboxes() {
+    const host = document.getElementById("da-filters");
+    if (!host) return;
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      const cat = cb.dataset.cat;
+      const st = daFilterState[cat];
+      if (!st) return;
+      cb.checked = st.has(cb.value);
+    });
+  }
+
+  function buildDashboardAlertFilters() {
+    const host = document.getElementById("da-filters");
+    if (!host) return;
+    const groups = [
+      { key: "tenant_name", label: "Tenant", optsKey: "tenant_names" },
+      { key: "firewall_hostname", label: "Firewall", optsKey: "firewall_hostnames" },
+    ];
+    const optsByKey = {
+      tenant_names: Array.isArray(daFacets.tenant_names) ? daFacets.tenant_names : [],
+      firewall_hostnames: Array.isArray(daFacets.firewall_hostnames)
+        ? daFacets.firewall_hostnames
+        : [],
+    };
+
+    host.innerHTML = groups
+      .map((g, idx) => {
+        const opts = (optsByKey[g.optsKey] || []).slice(0, 120);
+        const open = idx < 2 ? "is-open" : "";
+        const optsHtml = opts
+          .map(
+            (o) => `
+          <label class="filter-opt">
+            <input type="checkbox" data-cat="${escapeHtml(g.key)}" value="${escapeHtml(o)}" />
+            <span>${escapeHtml(o)}</span>
+          </label>`
+          )
+          .join("");
+        return `
+        <div class="filter-group ${open}" data-cat-wrap="${escapeHtml(g.key)}">
+          <button type="button" class="filter-group__head" aria-expanded="${idx < 2}">
+            <span>${escapeHtml(g.label)}</span>
+            <span class="filter-group__chev">▼</span>
+          </button>
+          <div class="filter-group__body">${optsHtml}</div>
+        </div>`;
+      })
+      .join("");
+
+    host.querySelectorAll(".filter-group__head").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const grp = btn.closest(".filter-group");
+        grp.classList.toggle("is-open");
+        btn.setAttribute("aria-expanded", grp.classList.contains("is-open"));
+      });
+    });
+
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const cat = cb.dataset.cat;
+        const st = daFilterState[cat];
+        if (!st) return;
+        if (cb.checked) st.add(cb.value);
+        else st.delete(cb.value);
+        loadDashboardAlerts({ reset: true }).catch(console.error);
+      });
+    });
+
+    syncDashboardAlertFilterCheckboxes();
+    updateDashboardFiltersChrome();
+  }
+
+  function updateDashboardAlertsHeading() {
+    const el = document.getElementById("dashboard-alerts-heading");
+    if (!el) return;
+    const titles = {
+      all: "Alerts",
+      high: "Alerts — High severity",
+      medium: "Alerts — Medium severity",
+      low: "Alerts — Low severity",
+    };
+    el.textContent = titles[daState.severity] || titles.all;
+  }
+
+  function syncDashboardAlertStatActive() {
+    const root = document.getElementById("dashboard-stats");
+    if (!root) return;
+    root.querySelectorAll("[data-alert-severity]").forEach((el) => {
+      el.classList.toggle("is-active", el.dataset.alertSeverity === daState.severity);
+    });
+  }
+
+  async function loadDashboardAlerts(opts = {}) {
+    const reset = opts.reset !== false;
+    const tbody = document.getElementById("dashboard-alerts-body");
+    const pageSizeEl = document.getElementById("da-page-size");
+    const hintEl = document.getElementById("da-lazy-hint");
+    if (!tbody) return;
+    if (daAlertsLoading) return;
+
+    daState.pageSize = Math.max(1, parseInt(pageSizeEl?.value, 10) || 25);
+
+    if (reset) {
+      disconnectDaAlertsIo();
+      tbody.innerHTML = "";
+      daAlertsNextPage = 1;
+    }
+
+    const loadedBefore = tbody.querySelectorAll("tr.alert-row").length;
+    if (!reset && daState.total > 0 && loadedBefore >= daState.total) {
+      connectDaAlertsIo();
+      return;
+    }
+
+    daAlertsLoading = true;
+    if (hintEl && !reset) hintEl.textContent = "Loading more…";
+
+    try {
+      const params = new URLSearchParams();
+      params.set("page", String(daAlertsNextPage));
+      params.set("page_size", String(daState.pageSize));
+      if (daState.severity && daState.severity !== "all") {
+        params.set("severity", daState.severity);
+      }
+      daFilterState.tenant_name.forEach((v) => params.append("tenant_name", v));
+      daFilterState.firewall_hostname.forEach((v) => params.append("firewall_hostname", v));
+      const q = getDashboardAlertsSearchQuery();
+      if (q) params.set("q", q);
+      const data = await loadJson(`/api/alerts?${params.toString()}`);
+      if (reset || daAlertsNextPage === 1) {
+        daState.total = data.total ?? 0;
+      }
+      const items = data.items || [];
+      const rowsHtml = items
+        .map((a) => {
+          const cls = severityClass(a.severity);
+          const id = escapeHtml(a.id);
+          const tn = escapeHtml(a.tenant_name != null && a.tenant_name !== "" ? a.tenant_name : "—");
+          const fh = escapeHtml(
+            a.firewall_hostname != null && a.firewall_hostname !== "" ? a.firewall_hostname : "—"
+          );
+          return `<tr class="alert-row" tabindex="0" data-alert-id="${id}" aria-label="View alert details">
+          <td class="${cls}">${escapeHtml(a.severity || "—")}</td>
+          <td class="alert-row__cell--truncate muted" title="${tn}">${tn}</td>
+          <td class="alert-row__cell--truncate muted" title="${fh}">${fh}</td>
+          <td class="alert-row__desc">${escapeHtml(a.description || "—")}</td>
+          <td class="muted">${fmtDate(a.raised_at)}</td>
+        </tr>`;
+        })
+        .join("");
+      tbody.insertAdjacentHTML("beforeend", rowsHtml);
+      daAlertsNextPage += 1;
+
+      const total = daState.total;
+      const loaded = tbody.querySelectorAll("tr.alert-row").length;
+      const countEl = document.getElementById("da-count");
+      if (countEl) {
+        countEl.textContent = total === 0 ? "0 alerts" : `${loaded} of ${total} alerts`;
+      }
+      if (hintEl) {
+        if (total === 0) hintEl.textContent = "";
+        else if (loaded >= total) hintEl.textContent = "All alerts loaded";
+        else hintEl.textContent = "Scroll for more";
+      }
+
+      updateDashboardAlertsHeading();
+      syncDashboardAlertStatActive();
+      updateDashboardFiltersChrome();
+      schedulePersistUiState();
+    } finally {
+      daAlertsLoading = false;
+      /* Must run after loading flag clears: connectDaAlertsIo bails out while daAlertsLoading is true. */
+      connectDaAlertsIo();
+    }
+  }
+
+  function flyoutDetailRow(label, valueHtml) {
+    return `<div class="flyout-dl__row"><dt>${escapeHtml(label)}</dt><dd>${valueHtml}</dd></div>`;
+  }
+
+  function firewallFilterHostnameValue(hostname, name) {
+    const rawH = hostname != null && String(hostname) !== "" ? String(hostname) : "";
+    const rawN = name != null && String(name) !== "" ? String(name) : "";
+    return rawH || rawN || "—";
+  }
+
+  function formatFirewallDisplay(hostname, name) {
+    const filterVal = firewallFilterHostnameValue(hostname, name);
+    const h = hostname != null && String(hostname).trim() !== "" ? String(hostname).trim() : "";
+    const n = name != null && String(name).trim() !== "" ? String(name).trim() : "";
+    if (!h && !n) return null;
+    function hostLineHtml(display) {
+      if (filterVal === "—") return escapeHtml(display);
+      return `<button type="button" class="cell-link flyout-fw__host-link" data-fw-host="${encodeURIComponent(filterVal)}" title="Show in Firewalls">${escapeHtml(display)}</button>`;
+    }
+    if (h && n && h !== n) {
+      return `<div class="flyout-fw"><div class="flyout-fw__line">${hostLineHtml(h)}</div><div class="flyout-fw__line flyout-fw__line--secondary muted">${escapeHtml(n)}</div></div>`;
+    }
+    return `<div class="flyout-fw"><div class="flyout-fw__line">${hostLineHtml(h || n)}</div></div>`;
+  }
+
+  async function openAlertFlyout(alertId) {
+    const backdrop = document.getElementById("alert-flyout-backdrop");
+    const panel = document.getElementById("alert-flyout");
+    const body = document.getElementById("alert-flyout-body");
+    body.innerHTML = '<p class="muted">Loading…</p>';
+    backdrop.hidden = false;
+    panel.hidden = false;
+    document.body.style.overflow = "hidden";
+
+    try {
+      const d = await loadJson(`/api/alerts/${encodeURIComponent(alertId)}`);
+      const desc = escapeHtml(d.description || "—").replace(/\n/g, "<br />");
+      const sev = severityClass(d.severity);
+      const tenantCell =
+        d.tenant_display_name || d.tenant_name
+          ? escapeHtml(d.tenant_display_name || d.tenant_name)
+          : d.tenant_id
+            ? `<span class="muted">No tenant record</span> <code class="flyout-code">${escapeHtml(d.tenant_id)}</code>`
+            : "—";
+      const fwCell =
+        formatFirewallDisplay(d.firewall_hostname, d.firewall_name) ||
+        `<pre class="flyout-pre">${formatJsonish(d.managed_agent_json)}</pre>`;
+      body.innerHTML = `
+        <p class="flyout-lead"><span class="${sev}">${escapeHtml(d.severity || "—")}</span> · ${escapeHtml(d.product || "—")}</p>
+        <dl class="flyout-dl">
+          ${flyoutDetailRow("Raised", fmtDate(d.raised_at))}
+          ${flyoutDetailRow("Category", escapeHtml(d.category || "—"))}
+          ${flyoutDetailRow("Type", escapeHtml(d.type || "—"))}
+          ${flyoutDetailRow("Description", `<div class="flyout-desc">${desc}</div>`)}
+          ${flyoutDetailRow("Tenant", tenantCell)}
+          ${flyoutDetailRow("Firewall", fwCell)}
+          ${flyoutDetailRow("First sync", fmtDate(d.first_sync))}
+          ${flyoutDetailRow("Last sync", fmtDate(d.last_sync))}
+          ${flyoutDetailRow("Sync ID", `<code class="flyout-code">${escapeHtml(d.sync_id || "—")}</code>`)}
+        </dl>`;
+    } catch {
+      body.innerHTML = '<p class="sev-high">Could not load this alert.</p>';
+    }
+  }
+
+  function closeAlertFlyout() {
+    document.getElementById("alert-flyout-backdrop").hidden = true;
+    document.getElementById("alert-flyout").hidden = true;
+    document.body.style.overflow = "";
+  }
+
+  function openDashboardFirewallFilterGroup() {
+    expandDashboardFiltersPanel();
+    const wrap = document.querySelector(
+      '#da-filters .filter-group[data-cat-wrap="firewall_hostname"]'
+    );
+    if (!wrap) return;
+    wrap.classList.add("is-open");
+    const head = wrap.querySelector(".filter-group__head");
+    if (head) head.setAttribute("aria-expanded", "true");
+  }
+
+  function goToDashboardAlertsForFirewall(hostnameFilter) {
+    if (hostnameFilter == null) return;
+    daFilterState.tenant_name.clear();
+    daFilterState.firewall_hostname.clear();
+    daFilterState.firewall_hostname.add(String(hostnameFilter));
+    closeAlertFlyout();
+    activateTab("dashboard");
+    expandDashboardFiltersPanel();
+    openDashboardFirewallFilterGroup();
+    loadDashboardAlertFacets()
+      .then(() => {
+        buildDashboardAlertFilters();
+        return loadDashboardAlerts({ reset: true });
+      })
+      .catch(console.error);
+  }
+
+  function initFacetFilterResetControls() {
+    document.getElementById("da-facet-reset")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetDashboardFacetFilters();
+    });
+    document.getElementById("fw-facet-reset")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetFirewallFacetFilters();
+    });
+    document.getElementById("tn-facet-reset")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetTenantFacetFilters();
+    });
+    document.getElementById("lc-facet-reset")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetLicenseFacetFilters();
+    });
+  }
+
+  function initDashboardAlertsUi() {
+    document.getElementById("da-page-size").addEventListener("change", () => {
+      loadDashboardAlerts({ reset: true }).catch(console.error);
+    });
+
+    document.getElementById("da-search")?.addEventListener("input", () => {
+      loadDashboardAlerts({ reset: true }).catch(console.error);
+    });
+
+    document.getElementById("dashboard-stats").addEventListener("click", (e) => {
+      const t = e.target.closest("[data-dash-action]");
+      if (!t) return;
+      const act = t.dataset.dashAction;
+      if (act === "fw-all") {
+        goToFirewallsUnfiltered();
+        return;
+      }
+      if (act === "fw-online") {
+        goToFirewallsOnline();
+        return;
+      }
+      if (act === "fw-offline") {
+        goToFirewallsOffline();
+        return;
+      }
+      if (act === "fw-suspended") {
+        goToFirewallsSuspended();
+        return;
+      }
+      if (act === "tn-all") {
+        goToTenantsUnfiltered().catch(console.error);
+        return;
+      }
+      if (act === "tn-billing") {
+        const bt = t.dataset.billingType;
+        if (bt == null || bt === "") return;
+        goToTenantsFilteredByBilling(bt).catch(console.error);
+        return;
+      }
+      if (act === "lic-all") {
+        goToLicensesUnfiltered().catch(console.error);
+        return;
+      }
+      if (act === "lc-sub-state") {
+        const st = t.dataset.lcSubState;
+        if (!st) return;
+        goToLicensesFilteredBySubscriptionState(st).catch(console.error);
+        return;
+      }
+      if (act === "lc-end-expiring") {
+        goToLicensesDashboardExpiring().catch(console.error);
+        return;
+      }
+      if (act === "alerts-sev") {
+        const sev = t.dataset.alertSeverity;
+        if (!sev) return;
+        daState.severity = sev;
+        loadDashboardAlertFacets()
+          .then(() => {
+            buildDashboardAlertFilters();
+            return loadDashboardAlerts({ reset: true });
+          })
+          .catch(console.error);
+      }
+    });
+
+    const tbody = document.getElementById("dashboard-alerts-body");
+    tbody.addEventListener("click", (e) => {
+      const tr = e.target.closest("tr.alert-row[data-alert-id]");
+      if (!tr) return;
+      openAlertFlyout(tr.getAttribute("data-alert-id")).catch(console.error);
+    });
+    tbody.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const tr = e.target.closest("tr.alert-row[data-alert-id]");
+      if (!tr) return;
+      e.preventDefault();
+      openAlertFlyout(tr.getAttribute("data-alert-id")).catch(console.error);
+    });
+
+    document.getElementById("alert-flyout-backdrop").addEventListener("click", closeAlertFlyout);
+    document.querySelector("#alert-flyout .flyout__close-btn").addEventListener("click", closeAlertFlyout);
+    document.getElementById("alert-flyout").addEventListener("click", (e) => {
+      const btn = e.target.closest("button.flyout-fw__host-link");
+      if (!btn) return;
+      e.preventDefault();
+      const enc = btn.getAttribute("data-fw-host");
+      if (enc == null || enc === "") return;
+      try {
+        goToFirewallsFilteredByHostname(decodeURIComponent(enc));
+      } catch {
+        /* ignore malformed data-fw-host */
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      const uep = document.getElementById("user-edit-profile-dialog");
+      if (uep && !uep.hidden) {
+        closeUserEditProfileDialog();
+        e.preventDefault();
+        return;
+      }
+      const uf = document.getElementById("user-form-dialog");
+      if (uf && !uf.hidden) {
+        closeUserFormDialog();
+        e.preventDefault();
+        return;
+      }
+      const pm = document.getElementById("profile-modal");
+      if (pm && !pm.hidden) {
+        closeProfileModal();
+        e.preventDefault();
+        return;
+      }
+      const cf = document.getElementById("credential-form-dialog");
+      if (cf && !cf.hidden) {
+        closeCredentialFormDialog();
+        e.preventDefault();
+        return;
+      }
+      const sm = document.getElementById("settings-modal");
+      if (sm && !sm.hidden) {
+        closeSettingsModal();
+        e.preventDefault();
+        return;
+      }
+      const fwm = document.getElementById("fw-firmware-modal");
+      if (fwm && !fwm.hidden) {
+        closeFwFirmwareUpgradeModal();
+        e.preventDefault();
+        return;
+      }
+      const licenseFlyout = document.getElementById("license-flyout");
+      if (licenseFlyout && !licenseFlyout.hidden) {
+        closeLicenseSubscriptionsFlyout();
+        e.preventDefault();
+        return;
+      }
+      const panel = document.getElementById("alert-flyout");
+      if (!panel.hidden) closeAlertFlyout();
+    });
+  }
+
+  function refreshDashboardStatCards() {
+    if (!lastDashboardStats) return;
+    const root = document.getElementById("dashboard-stats");
+    if (!root) return;
+    root.innerHTML = renderDashboardStats(lastDashboardStats);
+  }
+
+  function expandTenantFiltersPanel() {
+    setFiltersPanelCollapsed(document.querySelector("#panel-tenants .filters"), false);
+  }
+
+  function openTenantBillingFilterGroup() {
+    expandTenantFiltersPanel();
+    const wrap = document.querySelector('#tenant-filters .filter-group[data-cat-wrap="billing_type"]');
+    if (!wrap) return;
+    wrap.classList.add("is-open");
+    const head = wrap.querySelector(".filter-group__head");
+    if (head) head.setAttribute("aria-expanded", "true");
+  }
+
+  async function goToTenantsUnfiltered() {
+    if (!tnFilterState.billing_type) await loadTenants();
+    tnDashBilling = null;
+    const host = document.getElementById("tenant-filters");
+    for (const st of Object.values(tnFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    if (host) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        cb.checked = false;
+      });
+    }
+    tnController.resetSort();
+    tnController.resetPage();
+    activateTab("tenants");
+    tnController.render();
+    updateTenantFiltersChrome();
+    schedulePersistUiState();
+    refreshDashboardStatCards();
+  }
+
+  async function goToTenantsFilteredByBilling(billingType) {
+    if (billingType == null || billingType === "") return;
+    if (!tnFilterState.billing_type) await loadTenants();
+    tnDashBilling = billingType;
+    const host = document.getElementById("tenant-filters");
+    for (const st of Object.values(tnFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    if (host) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        cb.checked = false;
+      });
+    }
+    const bset = tnFilterState.billing_type;
+    if (bset) bset.add(billingType);
+    syncTenantFilterCheckboxesFromState();
+    openTenantBillingFilterGroup();
+    tnController.resetSort();
+    tnController.resetPage();
+    activateTab("tenants");
+    tnController.render();
+    updateTenantFiltersChrome();
+    schedulePersistUiState();
+    refreshDashboardStatCards();
+  }
+
+  function renderDashboardStats(stats) {
+    const fwOn = escapeHtml(String(stats.firewalls_online));
+    const ah = stats.alerts_high ?? 0;
+    const am = stats.alerts_medium ?? 0;
+    const al = stats.alerts_low ?? 0;
+    const billingFacets = Array.isArray(stats.tenants_by_billing) ? stats.tenants_by_billing : [];
+    const licA = stats.licenses_subscription_active ?? 0;
+    const licE = stats.licenses_subscription_expired ?? 0;
+    const licX = stats.licenses_subscription_expiring ?? 0;
+    const billingSegs = billingFacets
+      .map((b) => {
+        const bt = b.billing_type != null && String(b.billing_type) !== "" ? String(b.billing_type) : "—";
+        const cnt = b.count ?? 0;
+        const active = tnDashBilling === bt ? " is-active" : "";
+        const safeTitle = escapeHtml(bt);
+        return `<button type="button" class="stat-card__alert-seg${active}" data-dash-action="tn-billing" data-billing-type="${escapeAttr(bt)}" title="Show tenants with billing: ${safeTitle}">
+            <span class="stat-card__seg-label">${escapeHtml(bt)}</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(cnt))}</span>
+          </button>`;
+      })
+      .join("");
+    return `
+      <div class="stat-card stat-card--alerts">
+        <button type="button" class="stat-card__main stat-card--alert${daState.severity === "all" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="all" title="Show all alerts">
+          <div class="stat-card__label">All alerts</div>
+          <div class="stat-card__value">${escapeHtml(String(stats.alerts))}</div>
+        </button>
+        <div class="stat-card__alert-row" role="group" aria-label="Filter alerts by severity">
+          <button type="button" class="stat-card__alert-seg${daState.severity === "low" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="low" title="Filter alerts by low / other severity">
+            <span class="stat-card__seg-label">Low</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(al))}</span>
+          </button>
+          <button type="button" class="stat-card__alert-seg${daState.severity === "medium" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="medium" title="Filter alerts by medium severity">
+            <span class="stat-card__seg-label">Medium</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(am))}</span>
+          </button>
+          <button type="button" class="stat-card__alert-seg${daState.severity === "high" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="high" title="Filter alerts by high severity">
+            <span class="stat-card__seg-label">High</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(ah))}</span>
+          </button>
+        </div>
+      </div>
+      <div class="stat-card stat-card--fw">
+        <button type="button" class="stat-card__main" data-dash-action="fw-all" title="View all firewalls">
+          <div class="stat-card__label">Firewalls</div>
+          <div class="stat-card__value">${escapeHtml(String(stats.firewalls))}</div>
+        </button>
+        <div class="stat-card__alert-row" role="group" aria-label="Filter firewalls by connection status">
+          <button type="button" class="stat-card__alert-seg" data-dash-action="fw-online" title="View online firewalls only">
+            <span class="stat-card__seg-label">Online</span>
+            <span class="stat-card__seg-value">${fwOn}</span>
+          </button>
+          <button type="button" class="stat-card__alert-seg" data-dash-action="fw-offline" title="View firewalls that are not online (disconnected or suspended)">
+            <span class="stat-card__seg-label">Offline</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(stats.firewalls_offline ?? 0))}</span>
+          </button>
+          <button type="button" class="stat-card__alert-seg" data-dash-action="fw-suspended" title="View suspended firewalls">
+            <span class="stat-card__seg-label">Suspended</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(stats.firewalls_suspended ?? 0))}</span>
+          </button>
+        </div>
+      </div>
+      <div class="stat-card stat-card--fw stat-card--tenants-dash">
+        <button type="button" class="stat-card__main" data-dash-action="tn-all" title="View all tenants">
+          <div class="stat-card__label">Tenants</div>
+          <div class="stat-card__value">${escapeHtml(String(stats.tenants))}</div>
+        </button>
+        <div class="stat-card__alert-row" role="group" aria-label="Filter tenants by billing type">
+          ${billingFacets.length
+        ? billingSegs
+        : '<span class="stat-card__billing-empty muted">No billing types</span>'
+      }
+        </div>
+      </div>
+      <div class="stat-card stat-card--fw">
+        <button type="button" class="stat-card__main" data-dash-action="lic-all" title="View all licenses">
+          <div class="stat-card__label">Licenses</div>
+          <div class="stat-card__value">${escapeHtml(String(stats.licenses))}</div>
+        </button>
+        <div class="stat-card__alert-row" role="group" aria-label="Filter licenses by subscription state (details view)">
+          <button type="button" class="stat-card__alert-seg${lcDashState === "Active" ? " is-active" : ""}" data-dash-action="lc-sub-state" data-lc-sub-state="Active" title="Details rows with subscription state Active">
+            <span class="stat-card__seg-label">Active</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(licA))}</span>
+          </button>
+          <button type="button" class="stat-card__alert-seg${lcDashState === "Expired" ? " is-active" : ""}" data-dash-action="lc-sub-state" data-lc-sub-state="Expired" title="Details rows with subscription state Expired">
+            <span class="stat-card__seg-label">Expired</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(licE))}</span>
+          </button>
+          <button type="button" class="stat-card__alert-seg${lcDashState === "Expiring" ? " is-active" : ""}" data-dash-action="lc-end-expiring" title="Details: End date Past 30 days and Next 90 days (matches expiring subscription count)">
+            <span class="stat-card__seg-label">Expiring</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(licX))}</span>
+          </button>
+        </div>
+      </div>`;
+  }
+
+  async function loadDashboard(opts = {}) {
+    const preserve = opts.preserve === true;
+    const daRowsTarget = preserve
+      ? document.querySelectorAll("#dashboard-alerts-body tr.alert-row").length
+      : 0;
+    const stats = await loadJson("/api/dashboard");
+    lastDashboardStats = stats;
+    document.getElementById("dashboard-stats").innerHTML = renderDashboardStats(stats);
+    await loadDashboardAlertFacets();
+    buildDashboardAlertFilters();
+    if (preserve && daRowsTarget > 0) {
+      await loadDashboardAlerts({ reset: true });
+      let guard = 0;
+      while (guard++ < 200) {
+        const loaded = document.querySelectorAll("#dashboard-alerts-body tr.alert-row").length;
+        const total = daState.total || 0;
+        if (loaded >= total || loaded >= daRowsTarget) break;
+        await loadDashboardAlerts({ reset: false });
+      }
+    } else {
+      await loadDashboardAlerts();
+    }
+  }
+
+  /* ---------- Firewalls ---------- */
+  let fwRaw = [];
+  let fwPrepared = [];
+  let dashFwMap = null;
+  let panelFwMap = null;
+  let dashFwLayer = null;
+  let panelFwLayer = null;
+  let fwLocPickMap = null;
+  let fwLocPickMarker = null;
+  let fwLocEditingId = null;
+  let fwLocModalFocusBefore = null;
+  let fwLocSuggestTimer = null;
+  let fwHoverActiveMap = null;
+  let fwHoverActiveMarker = null;
+  let fwHoverPortalHideTimer = null;
+  let fwHoverViewportListeners = false;
+  let _lastFwDashMapMarkerSig = "";
+  let _lastFwPanelMapMarkerSig = "";
+  /** Distinct `firmware_versions.version` values for the Firmware updates facet. */
+  let fwFirmwareVersionCatalog = [];
+  const fwFilterState = {};
+  /** Set from dashboard quick links; combined with facet filters via AND. */
+  let fwLinkMode = null;
+
+  const FW_COL_VISIBILITY_KEY = "sophos-central-fw-columns-v1";
+  const FW_COLUMNS = [
+    { id: "status", label: "Status", sortKey: "status", thClass: "th-sortable" },
+    {
+      id: "firmware_upgrade",
+      label: "Firmware upgrades",
+      sortKey: "firmware_upgrade_count",
+      thClass: "th-sortable fw-upgrade-col",
+    },
+    { id: "alert_count", label: "Alerts", sortKey: "alert_count", thClass: "th-sortable fw-alerts-col" },
+    { id: "hostname", label: "Host name", sortKey: "hostname", thClass: "th-sortable th-link-col" },
+    { id: "group_name", label: "Group", sortKey: "group_name", thClass: "th-sortable" },
+    { id: "serial_number", label: "Serial number", sortKey: "serial_number", thClass: "th-sortable" },
+    { id: "model", label: "Model", sortKey: "model", thClass: "th-sortable" },
+    { id: "firmware_version", label: "Firmware", sortKey: "firmware_version", thClass: "th-sortable" },
+    { id: "connected", label: "Connected", sortKey: "connected", thClass: "th-sortable" },
+    { id: "suspended", label: "Suspended", sortKey: "suspended", thClass: "th-sortable" },
+    { id: "external_ips", label: "External IPs", sortKey: "external_ips", thClass: "th-sortable" },
+    { id: "location", label: "Location", sortKey: "has_location", thClass: "th-sortable" },
+    { id: "tenant_name", label: "Tenant", sortKey: "tenant_name", thClass: "th-sortable" },
+    { id: "state_changed_at", label: "State changes", sortKey: "state_changed_at", thClass: "th-sortable" },
+    { id: "tagsPlain", label: "Tags", sortKey: "tagsPlain", thClass: "th-sortable" },
+    { id: "firewall_name", label: "Firewall name", sortKey: "firewall_name", thClass: "th-sortable", defaultVisible: false },
+    { id: "tenant_id", label: "Tenant ID", sortKey: "tenant_id", thClass: "th-sortable fw-col-code", defaultVisible: false },
+    { id: "managing_status", label: "Managing status", sortKey: "managing_status", thClass: "th-sortable", defaultVisible: false },
+    { id: "reporting_status", label: "Reporting status", sortKey: "reporting_status", thClass: "th-sortable", defaultVisible: false },
+    { id: "firewall_id", label: "Firewall ID", sortKey: "firewall_id", thClass: "th-sortable fw-col-code", defaultVisible: false },
+    {
+      id: "capabilities_json",
+      label: "Capabilities (JSON)",
+      sortKey: "capabilities_sort",
+      thClass: "th-sortable",
+      defaultVisible: false,
+    },
+  ];
+
+  function defaultFwColumnVisibility() {
+    const o = {};
+    FW_COLUMNS.forEach((c) => {
+      o[c.id] = c.defaultVisible !== false;
+    });
+    return o;
+  }
+
+  function loadFwColumnVisibility() {
+    const d = defaultFwColumnVisibility();
+    try {
+      const raw = localStorage.getItem(FW_COL_VISIBILITY_KEY);
+      if (!raw) return d;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        FW_COLUMNS.forEach((c) => {
+          if (typeof parsed[c.id] === "boolean") d[c.id] = parsed[c.id];
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+    return d;
+  }
+
+  let fwColVisible = loadFwColumnVisibility();
+
+  function persistFwColumnVisibility() {
+    try {
+      localStorage.setItem(FW_COL_VISIBILITY_KEY, JSON.stringify(fwColVisible));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function buildFwThead() {
+    const tr = document.getElementById("fw-thead-row");
+    if (!tr) return;
+    const checkTh = tr.querySelector(".th-check");
+    if (!checkTh) return;
+    while (tr.lastElementChild && tr.lastElementChild !== checkTh) {
+      tr.removeChild(tr.lastElementChild);
+    }
+    FW_COLUMNS.forEach((col) => {
+      if (!fwColVisible[col.id]) return;
+      const th = document.createElement("th");
+      th.scope = "col";
+      if (col.id === "firmware_upgrade") {
+        th.innerHTML = `<span class="fw-th-icon-header" title="Firmware upgrades">${firewallFirmwareUpgradeIconSvg()}</span>`;
+        th.setAttribute("aria-label", "Firmware upgrades");
+      } else if (col.id === "alert_count") {
+        th.innerHTML =
+          '<span class="fw-th-icon-header fw-th-icon-header--alerts" title="Alerts">' +
+          firewallWarnIconSvg() +
+          "</span>";
+        th.setAttribute("aria-label", "Alerts");
+      } else {
+        th.textContent = col.label;
+      }
+      if (col.sortKey) {
+        th.dataset.sort = col.sortKey;
+        th.className = col.thClass || "th-sortable";
+      } else {
+        th.className = col.thClass || "";
+      }
+      tr.appendChild(th);
+    });
+  }
+
+  function filterFwColumnMenuList() {
+    const q = (document.getElementById("fw-cols-filter")?.value || "").trim().toLowerCase();
+    const list = document.getElementById("fw-cols-list");
+    if (!list) return;
+    list.querySelectorAll("li[data-col-label]").forEach((li) => {
+      const lab = (li.dataset.colLabel || "").toLowerCase();
+      li.hidden = q !== "" && !lab.includes(q);
+    });
+  }
+
+  function buildFwColumnMenuList() {
+    const list = document.getElementById("fw-cols-list");
+    if (!list) return;
+    list.innerHTML = FW_COLUMNS.map(
+      (c) => `
+      <li class="toolbar__cols-item" data-col-id="${escapeHtml(c.id)}" data-col-label="${escapeHtml(c.label.toLowerCase())}">
+        <label class="toolbar__cols-label">
+          <input type="checkbox" data-fw-col="${escapeHtml(c.id)}" ${fwColVisible[c.id] ? "checked" : ""} />
+          <span>${escapeHtml(c.label)}</span>
+        </label>
+      </li>`
+    ).join("");
+    filterFwColumnMenuList();
+  }
+
+  function positionFwColsDropdown() {
+    const btn = document.getElementById("fw-cols-trigger");
+    const panel = document.getElementById("fw-cols-panel");
+    const modal = document.getElementById("fw-cols-modal");
+    if (!btn || !panel || !modal || modal.hidden) return;
+    panel.style.maxHeight = "";
+    const r = btn.getBoundingClientRect();
+    const gap = 6;
+    const margin = 8;
+    const pw = panel.offsetWidth || Math.min(380, window.innerWidth - 2 * margin);
+    let left = r.left;
+    if (left + pw > window.innerWidth - margin) {
+      left = window.innerWidth - margin - pw;
+    }
+    left = Math.max(margin, left);
+    const topBelow = r.bottom + gap;
+    panel.style.left = `${left}px`;
+    panel.style.top = `${topBelow}px`;
+    const after = panel.getBoundingClientRect();
+    if (after.bottom > window.innerHeight - margin) {
+      const aboveTop = r.top - gap - after.height;
+      if (aboveTop >= margin) {
+        panel.style.top = `${aboveTop}px`;
+      } else {
+        panel.style.top = `${margin}px`;
+        panel.style.maxHeight = `${Math.max(120, window.innerHeight - 2 * margin)}px`;
+      }
+    }
+  }
+
+  function setFwColumnPanelOpen(open) {
+    const modal = document.getElementById("fw-cols-modal");
+    const btn = document.getElementById("fw-cols-trigger");
+    const panel = document.getElementById("fw-cols-panel");
+    if (!modal || !btn) return;
+    modal.hidden = !open;
+    modal.setAttribute("aria-hidden", open ? "false" : "true");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!open && panel) {
+      panel.style.top = "";
+      panel.style.left = "";
+      panel.style.maxHeight = "";
+    }
+    if (open) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => positionFwColsDropdown());
+      });
+    }
+  }
+
+  function initFwColumnPicker() {
+    buildFwColumnMenuList();
+    const btn = document.getElementById("fw-cols-trigger");
+    const modal = document.getElementById("fw-cols-modal");
+    const panel = document.getElementById("fw-cols-panel");
+    const filterIn = document.getElementById("fw-cols-filter");
+    const list = document.getElementById("fw-cols-list");
+    const closeBtn = document.getElementById("fw-cols-close");
+    if (!btn || !modal || !panel) return;
+    list?.addEventListener("change", (e) => {
+      const cb = e.target.closest("input[data-fw-col]");
+      if (!cb) return;
+      const id = cb.dataset.fwCol;
+      if (!id || !Object.prototype.hasOwnProperty.call(fwColVisible, id)) return;
+      const col = FW_COLUMNS.find((c) => c.id === id);
+      if (col && !cb.checked && fwController.getSortKey() === col.sortKey) {
+        fwController.resetSort();
+      }
+      fwColVisible[id] = cb.checked;
+      persistFwColumnVisibility();
+      buildFwThead();
+      fwController.render();
+    });
+    function openFwColsModalFromTrigger() {
+      const willOpen = modal.hidden;
+      setFwColumnPanelOpen(willOpen);
+      if (willOpen) {
+        buildFwColumnMenuList();
+        filterIn?.focus();
+      }
+    }
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openFwColsModalFromTrigger();
+    });
+    btn.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openFwColsModalFromTrigger();
+      }
+    });
+    filterIn?.addEventListener("input", () => filterFwColumnMenuList());
+    closeBtn?.addEventListener("click", () => {
+      setFwColumnPanelOpen(false);
+      btn.focus();
+    });
+    modal.querySelector(".fw-cols-modal__backdrop")?.addEventListener("click", () => {
+      setFwColumnPanelOpen(false);
+      btn.focus();
+    });
+    document.addEventListener("mousedown", (e) => {
+      if (modal.hidden) return;
+      if (btn.contains(e.target) || panel.contains(e.target)) return;
+      setFwColumnPanelOpen(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !modal.hidden) {
+        setFwColumnPanelOpen(false);
+        btn.focus();
+      }
+    });
+
+    function repositionFwColsIfOpen() {
+      if (!modal.hidden) positionFwColsDropdown();
+    }
+    window.addEventListener("resize", repositionFwColsIfOpen);
+    window.addEventListener("scroll", repositionFwColsIfOpen, true);
+  }
+
+  function firewallWarnIconSvg() {
+    return '<svg class="fw-alerts-cell__icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M9.401 3.003c1.155-2 4.043-2 5.197 0l7.355 12.748c1.154 2-.577 4.5-2.598 4.5H4.645c-2.022 0-3.752-2.5-2.598-4.5L9.401 3.003ZM12 8.25a.75.75 0 0 1 .75.75v3.75a.75.75 0 0 1-1.5 0V9a.75.75 0 0 1 .75-.75Zm0 8.25a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"/></svg>';
+  }
+
+  function firewallFirmwareUpgradeIconSvg() {
+    return '<svg class="fw-firmware-upgrade-btn__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 4 20 16h-5v6h-6v-6H4l8-12z"/></svg>';
+  }
+
+  let fwFirmwareModalFocusBefore = null;
+
+  function closeFwFirmwareUpgradeModal() {
+    const m = document.getElementById("fw-firmware-modal");
+    if (!m || m.hidden) return;
+    m.hidden = true;
+    m.setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+    if (fwFirmwareModalFocusBefore && typeof fwFirmwareModalFocusBefore.focus === "function") {
+      fwFirmwareModalFocusBefore.focus();
+    }
+    fwFirmwareModalFocusBefore = null;
+  }
+
+  function formatFwFirmwareModalTitle(data) {
+    const host =
+      data?.hostname != null && String(data.hostname).trim() !== ""
+        ? String(data.hostname)
+        : "Firewall";
+    const curRaw = data?.current_version;
+    const cur =
+      curRaw != null && String(curRaw).trim() !== "" ? String(curRaw).trim() : null;
+    return cur ? `${host} · ${cur}` : host;
+  }
+
+  function renderFwFirmwareVersionCardInner(d) {
+    const size =
+      d.size != null && String(d.size).trim() !== "" ? escapeHtml(String(d.size)) : null;
+    const inDb = d.in_database !== false;
+    const dlParts = [];
+    if (size) dlParts.push(`<dt>Size</dt><dd>${size}</dd>`);
+    const dl = dlParts.length
+      ? `<dl class="fw-firmware-card__dl">${dlParts.join("")}</dl>`
+      : "";
+
+    const newsItems = (d.news || []).map((t) => `<li>${escapeHtml(String(t))}</li>`).join("");
+    const bugsItems = (d.bugs || []).map((t) => `<li>${escapeHtml(String(t))}</li>`).join("");
+
+    const newsBlock =
+      newsItems !== ""
+        ? `<div class="fw-firmware-card__block"><div class="fw-firmware-card__label">Release notes &amp; highlights</div><ul class="fw-firmware-card__list">${newsItems}</ul></div>`
+        : "";
+
+    const bugsBlock =
+      bugsItems !== ""
+        ? `<div class="fw-firmware-card__block"><div class="fw-firmware-card__label">Resolved issues</div><ul class="fw-firmware-card__list">${bugsItems}</ul></div>`
+        : "";
+
+    let metaNote = "";
+    if (!inDb) {
+      metaNote =
+        '<p class="muted fw-firmware-card__meta">No row in the local <span class="fw-col-code">firmware_versions</span> table for this version.</p>';
+    } else if (!newsItems && !bugsItems && !dl) {
+      metaNote =
+        '<p class="muted fw-firmware-card__meta">No release notes, resolved issues, or size metadata stored locally for this version.</p>';
+    }
+
+    return `${metaNote}${dl}${newsBlock}${bugsBlock}`;
+  }
+
+  function renderFwFirmwareModalBody(data) {
+    const vers = Array.isArray(data?.available_versions) ? data.available_versions : [];
+    if (vers.length === 0) {
+      return '<p class="muted">No upgrade versions listed in the local database for this firewall.</p>';
+    }
+
+    const details = Array.isArray(data?.version_details) ? data.version_details : [];
+    const tabButtons = vers
+      .map((v, idx) => {
+        const label = escapeHtml(String(v));
+        const active = idx === 0 ? " is-active" : "";
+        const selected = idx === 0 ? "true" : "false";
+        return `<button type="button" role="tab" id="fw-fw-tab-${idx}" class="fw-firmware-modal__tab${active}" aria-selected="${selected}" aria-controls="fw-fw-panel-${idx}" tabindex="${idx === 0 ? "0" : "-1"}">${label}</button>`;
+      })
+      .join("");
+
+    const panels = vers
+      .map((v, idx) => {
+        const d =
+          details[idx] ??
+          ({ version: v, size: null, bugs: [], news: [], in_database: false });
+        const ver = escapeHtml(String(d.version || v || "—"));
+        const inner = renderFwFirmwareVersionCardInner(d);
+        const hiddenAttr = idx === 0 ? "" : " hidden";
+        return `<div role="tabpanel" id="fw-fw-panel-${idx}" class="fw-firmware-modal__tab-panel" aria-labelledby="fw-fw-tab-${idx}"${hiddenAttr}><div class="fw-firmware-card"><h4 class="fw-firmware-card__title">${ver}</h4>${inner}</div></div>`;
+      })
+      .join("");
+
+    return `<div class="fw-firmware-modal__layout">
+      <div class="fw-firmware-modal__tabs" role="tablist" aria-label="Available firmware versions" aria-orientation="horizontal">${tabButtons}</div>
+      <div class="fw-firmware-modal__tab-panels">${panels}</div>
+    </div>`;
+  }
+
+  function activateFwFirmwareModalTab(modalRoot, index) {
+    const list = modalRoot.querySelector(".fw-firmware-modal__tabs[role='tablist']");
+    if (!list) return;
+    const tabs = [...list.querySelectorAll('[role="tab"]')];
+    const panels = [...modalRoot.querySelectorAll(".fw-firmware-modal__tab-panel")];
+    if (!tabs.length || tabs.length !== panels.length) return;
+    const i = Math.max(0, Math.min(index, tabs.length - 1));
+    tabs.forEach((t, j) => {
+      const on = j === i;
+      t.classList.toggle("is-active", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
+      t.setAttribute("tabindex", on ? "0" : "-1");
+    });
+    panels.forEach((p, j) => {
+      if (j === i) p.removeAttribute("hidden");
+      else p.setAttribute("hidden", "");
+    });
+  }
+
+  async function openFwFirmwareUpgradeModal(firewallId) {
+    const m = document.getElementById("fw-firmware-modal");
+    const titleEl = document.getElementById("fw-firmware-modal-title");
+    const bodyEl = document.getElementById("fw-firmware-modal-body");
+    if (!m || !titleEl || !bodyEl || !firewallId) return;
+    fwFirmwareModalFocusBefore = document.activeElement;
+    m.hidden = false;
+    m.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+    titleEl.textContent = "Loading…";
+    bodyEl.innerHTML = '<p class="muted">Loading firmware details…</p>';
+    document.getElementById("fw-firmware-modal-close")?.focus();
+
+    try {
+      const data = await loadJson(
+        `/api/firewalls/${encodeURIComponent(firewallId)}/firmware-upgrades`
+      );
+      titleEl.textContent = formatFwFirmwareModalTitle(data);
+      bodyEl.innerHTML = renderFwFirmwareModalBody(data);
+    } catch (e) {
+      console.error(e);
+      titleEl.textContent = "Firmware upgrades";
+      bodyEl.innerHTML =
+        '<p class="muted">Could not load firmware upgrade details. Check the console or try again.</p>';
+    }
+  }
+
+  function initFwFirmwareUpgradeModal() {
+    const m = document.getElementById("fw-firmware-modal");
+    const closeBtn = document.getElementById("fw-firmware-modal-close");
+    if (!m) return;
+    closeBtn?.addEventListener("click", closeFwFirmwareUpgradeModal);
+    m.querySelector(".fw-firmware-modal__backdrop")?.addEventListener("click", closeFwFirmwareUpgradeModal);
+
+    m.addEventListener("click", (e) => {
+      const tab = e.target.closest("button.fw-firmware-modal__tab");
+      if (!tab || !m.contains(tab)) return;
+      const list = tab.closest(".fw-firmware-modal__tabs");
+      if (!list) return;
+      const tabs = [...list.querySelectorAll('[role="tab"]')];
+      const idx = tabs.indexOf(tab);
+      if (idx < 0) return;
+      activateFwFirmwareModalTab(m, idx);
+    });
+
+    m.addEventListener("keydown", (e) => {
+      const tab = e.target.closest("button.fw-firmware-modal__tab");
+      if (!tab || !m.contains(tab)) return;
+      const list = tab.closest(".fw-firmware-modal__tabs");
+      if (!list) return;
+      const tabs = [...list.querySelectorAll('[role="tab"]')];
+      const i = tabs.indexOf(tab);
+      if (i < 0) return;
+      let next = i;
+      if (e.key === "ArrowRight") next = (i + 1) % tabs.length;
+      else if (e.key === "ArrowLeft") next = (i - 1 + tabs.length) % tabs.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = tabs.length - 1;
+      else return;
+      e.preventDefault();
+      activateFwFirmwareModalTab(m, next);
+      tabs[next]?.focus();
+    });
+  }
+
+  /** Firewalls table: show model prefix before first underscore (full value if none). */
+  function fwModelDisplay(s) {
+    if (s == null || s === "" || s === "—") return "—";
+    const str = String(s);
+    const i = str.indexOf("_");
+    if (i === -1) return str;
+    const head = str.slice(0, i);
+    return head !== "" ? head : "—";
+  }
+
+  /** Firewalls table: show firmware suffix after last underscore (full value if none). */
+  function fwFirmwareDisplay(s) {
+    if (s == null || s === "" || s === "—") return "—";
+    const str = String(s);
+    const i = str.lastIndexOf("_");
+    if (i === -1) return str;
+    const tail = str.slice(i + 1);
+    return tail !== "" ? tail : "—";
+  }
+
+  function renderFwDataCell(colId, row, ctx) {
+    const { dot, host } = ctx;
+    switch (colId) {
+      case "status":
+        return `<td>${dot}</td>`;
+      case "firmware_upgrade": {
+        const uc = row.firmware_upgrade_count ?? 0;
+        if (uc <= 0) return '<td class="fw-upgrade-col"></td>';
+        const upTitle =
+          uc === 1
+            ? "View 1 available firmware upgrade"
+            : `View ${uc} available firmware upgrades`;
+        return `<td class="fw-upgrade-col"><button type="button" class="cell-link fw-firmware-upgrade-btn" data-fw-id="${escapeHtml(row._id)}" title="${escapeHtml(upTitle)}" aria-label="${escapeHtml(upTitle)}">${firewallFirmwareUpgradeIconSvg()}</button></td>`;
+      }
+      case "alert_count": {
+        const ac = row.alert_count ?? 0;
+        if (ac <= 0) return '<td class="fw-alerts-col"></td>';
+        const dashTitle =
+          ac === 1
+            ? "View 1 alert on Dashboard (filtered by this firewall)"
+            : `View ${ac} alerts on Dashboard (filtered by this firewall)`;
+        const wi = firewallWarnIconSvg();
+        return `<td class="fw-alerts-col"><button type="button" class="cell-link fw-alerts-dash-link fw-alerts-cell fw-alerts-cell--has" data-fw-host="${encodeURIComponent(row.hostname)}" title="${escapeHtml(dashTitle)}" aria-label="${escapeHtml(dashTitle)}">${wi}<span class="fw-alerts-cell__count">${escapeHtml(String(ac))}</span></button></td>`;
+      }
+      case "hostname":
+        return `<td><a href="#" class="cell-link" data-id="${escapeHtml(row._id)}">${host}</a></td>`;
+      case "group_name":
+        return `<td>${escapeHtml(row.group_name)}</td>`;
+      case "serial_number":
+        return `<td>${escapeHtml(row.serial_number)}</td>`;
+      case "model":
+        return `<td>${escapeHtml(fwModelDisplay(row.model))}</td>`;
+      case "firmware_version":
+        return `<td>${escapeHtml(fwFirmwareDisplay(row.firmware_version))}</td>`;
+      case "connected":
+        return `<td>${escapeHtml(yesNo(row.connected))}</td>`;
+      case "suspended":
+        return `<td>${escapeHtml(yesNo(row.suspended))}</td>`;
+      case "external_ips":
+        return `<td>${escapeHtml(row.external_ips)}</td>`;
+      case "location": {
+        const has = row.has_location === 1;
+        const label = has ? "Update" : "Set";
+        const title = has ? "Update map location" : "Set map location";
+        return `<td><button type="button" class="cell-link fw-loc-btn" data-fw-id="${escapeHtml(row._id)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${escapeHtml(label)}</button></td>`;
+      }
+      case "tenant_name":
+        return `<td>${escapeHtml(row.tenant_name)}</td>`;
+      case "state_changed_at":
+        return `<td class="muted">${fmtDate(row.state_changed_at)}</td>`;
+      case "tagsPlain":
+        return `<td>${row.tags}</td>`;
+      case "firewall_name":
+        return `<td>${escapeHtml(row.firewall_name)}</td>`;
+      case "tenant_id":
+        return `<td class="fw-col-code">${escapeHtml(row.tenant_id)}</td>`;
+      case "managing_status":
+        return `<td>${escapeHtml(row.managing_status)}</td>`;
+      case "reporting_status":
+        return `<td>${escapeHtml(row.reporting_status)}</td>`;
+      case "firewall_id":
+        return `<td class="fw-col-code">${escapeHtml(row.firewall_id)}</td>`;
+      case "capabilities_json":
+        return `<td class="muted fw-col-capabilities"><pre class="fw-cell-pre">${row.capabilities_display}</pre></td>`;
+      default:
+        return "<td></td>";
+    }
+  }
+
+  function renderFirewallDataRow(row, selected) {
+    const dot = row.statusHealthy
+      ? '<span class="status-dot status-dot--ok" title="Healthy"></span>'
+      : '<span class="status-dot status-dot--bad" title="Attention"></span>';
+    const host = escapeHtml(row.hostname);
+    const checked = selected.has(row._id) ? " checked" : "";
+    const ctx = { dot, host };
+    const cells = FW_COLUMNS.filter((c) => fwColVisible[c.id])
+      .map((c) => renderFwDataCell(c.id, row, ctx))
+      .join("");
+    return `<tr>
+        <td class="th-check"><input type="checkbox" class="row-check" data-id="${escapeHtml(row._id)}"${checked} /></td>
+        ${cells}
+      </tr>`;
+  }
+
+  function firewallStatusHealthy(row) {
+    return row.connected === 1 && row.suspended === 0;
+  }
+
+  function prepareFirewall(row) {
+    const caps = parseJsonArray(row.capabilities_json);
+    const ips = parseJsonArray(row.external_ipv4_addresses_json);
+    const tags = caps.map((c) => `<span class="tag-pill">${escapeHtml(c)}</span>`).join("");
+    const healthy = firewallStatusHealthy(row);
+    const alertCount = Number(row.alert_count);
+    const alert_count = Number.isFinite(alertCount) ? alertCount : 0;
+    const upgradeCount = Number(row.firmware_upgrade_count);
+    const firmware_upgrade_count = Number.isFinite(upgradeCount) ? upgradeCount : 0;
+    const geo_lat = parseGeoCoord(row.geo_latitude);
+    const geo_lon = parseGeoCoord(row.geo_longitude);
+    const has_location = geo_lat != null && geo_lon != null ? 1 : 0;
+    return {
+      _id: row.id,
+      id: row.id,
+      status: healthy ? "Healthy" : "Attention",
+      statusHealthy: healthy,
+      alert_count,
+      firmware_upgrade_count,
+      hostname: row.hostname || row.name || "—",
+      group_name: row.group_name || "—",
+      serial_number: row.serial_number || "—",
+      model: row.model || "—",
+      firmware_version: row.firmware_version || "—",
+      connected: row.connected,
+      suspended: row.suspended,
+      external_ips: ips.length ? ips.join(", ") : "—",
+      tenant_name: row.tenant_name || "—",
+      state_changed_at: row.state_changed_at || "",
+      tags: tags || '<span class="muted">—</span>',
+      tagsPlain: caps.join(" "),
+      firewall_name:
+        row.name != null && String(row.name).trim() !== "" ? String(row.name) : "—",
+      tenant_id: row.tenant_id || "—",
+      managing_status: row.managing_status || "—",
+      reporting_status: row.reporting_status || "—",
+      firewall_id: row.id || "—",
+      capabilities_sort: row.capabilities_json || "",
+      capabilities_display: formatJsonish(row.capabilities_json),
+      firmware_available_updates: Array.isArray(row.firmware_available_updates)
+        ? row.firmware_available_updates.map(String)
+        : [],
+      geo_lat,
+      geo_lon,
+      has_location,
+      _row: row,
+    };
+  }
+
+  const FW_OSM_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+  const FW_OSM_ATTR =
+    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+
+  const FW_MAP_H_KEY_DASH = "sophos-central-fw-map-height-dashboard-v1";
+  const FW_MAP_H_KEY_PANEL = "sophos-central-fw-map-height-firewalls-v1";
+  const FW_MAP_VIEW_KEY_DASH = "sophos-central-fw-map-view-dashboard-v1";
+  const FW_MAP_VIEW_KEY_PANEL = "sophos-central-fw-map-view-firewalls-v1";
+  const FW_MAP_DEFAULT_H_DASH = 420;
+  const FW_MAP_DEFAULT_H_PANEL = 280;
+  const FW_MAP_H_MIN = 160;
+  const FW_MAP_H_MAX = 720;
+
+  function readFwMapHeightPx(storageKey, defaultPx) {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw == null) return defaultPx;
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n)) return defaultPx;
+      return Math.min(FW_MAP_H_MAX, Math.max(FW_MAP_H_MIN, n));
+    } catch {
+      return defaultPx;
+    }
+  }
+
+  function writeFwMapHeightPx(storageKey, px) {
+    try {
+      localStorage.setItem(storageKey, String(Math.round(px)));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function readFwMapView(storageKey) {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      if (!o || typeof o !== "object") return null;
+      const lat = Number(o.lat);
+      const lng = Number(o.lng);
+      const zoom = Number(o.zoom);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(zoom)) return null;
+      if (zoom < 1 || zoom > 22) return null;
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+      return { lat, lng, zoom };
+    } catch {
+      return null;
+    }
+  }
+
+  function writeFwMapView(storageKey, lat, lng, zoom) {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ lat, lng, zoom }));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function attachFwMapViewPersistence(map, storageKey) {
+    if (!map || map._fwViewPersistAttached) return;
+    map._fwViewPersistAttached = true;
+    let debounceT = null;
+    const flush = () => {
+      if (map._fwSkipViewSave) return;
+      const c = map.getCenter();
+      const z = map.getZoom();
+      writeFwMapView(storageKey, c.lat, c.lng, z);
+    };
+    map.on("moveend zoomend", () => {
+      clearTimeout(debounceT);
+      debounceT = setTimeout(flush, 120);
+    });
+  }
+
+  function applySavedFwMapViewOrFit(map, storageKey, rowsForFit) {
+    if (!map) return;
+    map._fwSkipViewSave = true;
+    const saved = readFwMapView(storageKey);
+    if (saved) {
+      map.setView([saved.lat, saved.lng], saved.zoom, { animate: false });
+    } else {
+      fitFwMapBounds(map, rowsForFit);
+    }
+    const clearSkip = () => {
+      map._fwSkipViewSave = false;
+    };
+    map.once("moveend", clearSkip);
+    map.once("zoomend", clearSkip);
+    setTimeout(clearSkip, 400);
+  }
+
+  function initFwMapResize(wrapId, mapElId, storageKey, defaultHeightPx) {
+    const wrap = document.getElementById(wrapId);
+    const mapEl = document.getElementById(mapElId);
+    if (!wrap || !mapEl) return;
+    const body = wrap.querySelector(".fw-map-section__body");
+    const attr = body?.querySelector(".fw-map-attribution");
+    if (!body || !attr) return;
+    if (body.querySelector(`[data-fw-map-resize-for="${mapElId}"]`)) return;
+
+    const h = readFwMapHeightPx(storageKey, defaultHeightPx);
+    mapEl.style.height = `${h}px`;
+
+    const handle = document.createElement("div");
+    handle.className = "fw-map-resize-handle";
+    handle.setAttribute("data-fw-map-resize-for", mapElId);
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-orientation", "horizontal");
+    handle.setAttribute("aria-label", "Resize map height");
+    handle.tabIndex = 0;
+    body.insertBefore(handle, attr);
+
+    function startResize(clientY) {
+      const startY = clientY;
+      const startH = mapEl.offsetHeight;
+      const onMove = (ev) => {
+        if (ev.cancelable && ev.type === "touchmove") ev.preventDefault();
+        const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
+        const dy = y - startY;
+        const nh = Math.round(Math.min(FW_MAP_H_MAX, Math.max(FW_MAP_H_MIN, startH + dy)));
+        mapEl.style.height = `${nh}px`;
+        const m = mapElId === "dash-fw-map" ? dashFwMap : panelFwMap;
+        if (m) m.invalidateSize({ animate: false });
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.removeEventListener("touchmove", onMove);
+        document.removeEventListener("touchend", onUp);
+        document.removeEventListener("touchcancel", onUp);
+        writeFwMapHeightPx(storageKey, mapEl.offsetHeight);
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.addEventListener("touchmove", onMove, { passive: false });
+      document.addEventListener("touchend", onUp);
+      document.addEventListener("touchcancel", onUp);
+    }
+
+    handle.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      startResize(e.clientY);
+    });
+    handle.addEventListener(
+      "touchstart",
+      (e) => {
+        if (e.touches.length !== 1) return;
+        e.preventDefault();
+        startResize(e.touches[0].clientY);
+      },
+      { passive: false }
+    );
+    handle.addEventListener("keydown", (e) => {
+      const step = e.shiftKey ? 40 : 16;
+      let next = mapEl.offsetHeight;
+      if (e.key === "ArrowUp") next -= step;
+      else if (e.key === "ArrowDown") next += step;
+      else return;
+      e.preventDefault();
+      next = Math.round(Math.min(FW_MAP_H_MAX, Math.max(FW_MAP_H_MIN, next)));
+      mapEl.style.height = `${next}px`;
+      const m = mapElId === "dash-fw-map" ? dashFwMap : panelFwMap;
+      if (m) m.invalidateSize({ animate: false });
+      writeFwMapHeightPx(storageKey, next);
+    });
+  }
+
+  function initFwMapHeightsAndResizeHandles() {
+    initFwMapResize("dash-fw-map-wrap", "dash-fw-map", FW_MAP_H_KEY_DASH, FW_MAP_DEFAULT_H_DASH);
+    initFwMapResize("panel-fw-map-wrap", "panel-fw-map", FW_MAP_H_KEY_PANEL, FW_MAP_DEFAULT_H_PANEL);
+  }
+
+  function fwApprovalUiLabel(statusRaw) {
+    const s = (statusRaw == null ? "" : String(statusRaw)).toLowerCase();
+    if (s.includes("approved")) return "Enabled";
+    if (s.includes("pending")) return "Pending approval";
+    const t = String(statusRaw || "").trim();
+    return t || "—";
+  }
+
+  function buildFwMapTooltipHtml(row) {
+    const raw = row._row || {};
+    const ips = parseJsonArray(raw.external_ipv4_addresses_json);
+    const lastIp = ips.length ? escapeHtml(String(ips[0])) : "—";
+    const namePill = escapeHtml(row.firewall_name || "—");
+    const host = escapeHtml(row.hostname || "—");
+    const serial = escapeHtml(row.serial_number || "—");
+    const model = escapeHtml(fwModelDisplay(row.model));
+    const fwVer = escapeHtml(fwFirmwareDisplay(row.firmware_version));
+    const connectedOk = row.connected === 1;
+    const connPill = connectedOk
+      ? '<span class="fw-map-pill fw-map-pill--ok">Connected</span>'
+      : '<span class="fw-map-pill fw-map-pill--bad">Offline</span>';
+    let suspBlock = "";
+    if (row.suspended === 1 || row.suspended === true) {
+      suspBlock =
+        '<div class="fw-map-card__row"><span class="fw-map-pill fw-map-pill--danger">Suspended</span></div>';
+    }
+    const mg = escapeHtml(fwApprovalUiLabel(row.managing_status));
+    const rp = escapeHtml(fwApprovalUiLabel(row.reporting_status));
+    const tn = escapeHtml(row.tenant_name || "—");
+    return `<div class="fw-map-card">
+      <div class="fw-map-card__host">${host}</div>
+      <div class="fw-map-card__row"><span class="fw-map-pill">${namePill}</span> ${connPill}</div>
+      ${suspBlock}
+      <div class="fw-map-card__row"><span class="fw-map-card__label">Serial</span><span class="fw-map-card__val">${serial}</span></div>
+      <div class="fw-map-card__row"><span class="fw-map-card__label">Model</span><span class="fw-map-card__val">${model}</span></div>
+      <div class="fw-map-card__row"><span class="fw-map-card__label">Firmware</span><span class="fw-map-card__val">${fwVer}</span></div>
+      <div class="fw-map-card__row"><span class="fw-map-card__label">Last IP</span><span class="fw-map-card__val">${lastIp}</span></div>
+      <div class="fw-map-card__row"><span class="fw-map-card__label">Management</span><span class="fw-map-card__val">${mg}</span></div>
+      <div class="fw-map-card__row"><span class="fw-map-card__label">Reporting</span><span class="fw-map-card__val">${rp}</span></div>
+      <div class="fw-map-card__row"><span class="fw-map-card__label">Tenant</span><span class="fw-map-card__val">${tn}</span></div>
+    </div>`;
+  }
+
+  function fwMapBaseOptions() {
+    return {
+      scrollWheelZoom: true,
+      touchZoom: true,
+      boxZoom: true,
+      doubleClickZoom: true,
+      keyboard: true,
+      zoomSnap: 0.5,
+      zoomDelta: 0.5,
+      wheelPxPerZoomLevel: 120,
+    };
+  }
+
+  function initDashFwMapIfNeeded() {
+    if (typeof L === "undefined" || dashFwMap) return;
+    const host = document.getElementById("panel-dashboard");
+    if (!host || host.hidden) return;
+    const el = document.getElementById("dash-fw-map");
+    if (!el) return;
+    dashFwMap = L.map(el, fwMapBaseOptions());
+    L.tileLayer(FW_OSM_TILE_URL, {
+      maxZoom: 19,
+      attribution: FW_OSM_ATTR,
+      noWrap: true,
+    }).addTo(dashFwMap);
+    dashFwLayer = L.layerGroup().addTo(dashFwMap);
+    attachFwMapViewPersistence(dashFwMap, FW_MAP_VIEW_KEY_DASH);
+  }
+
+  function initPanelFwMapIfNeeded() {
+    if (typeof L === "undefined" || panelFwMap) return;
+    const host = document.getElementById("panel-firewalls");
+    if (!host || host.hidden) return;
+    const el = document.getElementById("panel-fw-map");
+    if (!el) return;
+    panelFwMap = L.map(el, fwMapBaseOptions());
+    L.tileLayer(FW_OSM_TILE_URL, {
+      maxZoom: 19,
+      attribution: FW_OSM_ATTR,
+      noWrap: true,
+    }).addTo(panelFwMap);
+    panelFwLayer = L.layerGroup().addTo(panelFwMap);
+    attachFwMapViewPersistence(panelFwMap, FW_MAP_VIEW_KEY_PANEL);
+  }
+
+  function collectFwMapLatLngsFromRows(rows) {
+    const out = [];
+    rows.forEach((row) => {
+      if (row.geo_lat != null && row.geo_lon != null) out.push([row.geo_lat, row.geo_lon]);
+    });
+    return out;
+  }
+
+  function fwMapMarkerDataSignature(rows) {
+    if (!rows || rows.length === 0) return "0";
+    return `${rows.length}\u0001${rows
+      .map((r) =>
+        [
+          String(r.firewall_id ?? r._id ?? ""),
+          r.geo_lat != null ? String(r.geo_lat) : "",
+          r.geo_lon != null ? String(r.geo_lon) : "",
+          String(r.connected ?? ""),
+          String(r.suspended ?? ""),
+        ].join("\u0002")
+      )
+      .join("\u0001")}`;
+  }
+
+  function fwMapMarkerIconForRow(row) {
+    const conn = row.connected === 1;
+    const susp = row.suspended === 1 || row.suspended === true;
+    let color = "#1565c0";
+    if (!conn) color = "#c62828";
+    else if (susp) color = "#ef6c00";
+    return L.divIcon({
+      className: "fw-map-pin",
+      html: `<span class="fw-map-pin__dot" style="background-color:${color}"></span>`,
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+    });
+  }
+
+  function fitFwMapBounds(map, rowsForBounds) {
+    if (!map || typeof L === "undefined") return;
+    const rows = rowsForBounds === undefined ? fwPrepared : rowsForBounds;
+    const pts = collectFwMapLatLngsFromRows(rows);
+    if (pts.length === 0) {
+      map.setView([20, 0], 2, { animate: false });
+      return;
+    }
+    if (pts.length === 1) {
+      map.setView(pts[0], 6, { animate: false });
+      return;
+    }
+    const bounds = L.latLngBounds(pts);
+    const sw = bounds.getSouthWest();
+    const ne = bounds.getNorthEast();
+    let latSpan = Math.abs(ne.lat - sw.lat);
+    let lngSpan = Math.abs(ne.lng - sw.lng);
+    const eps = 1e-8;
+    if (latSpan < eps && lngSpan < eps) {
+      map.setView([sw.lat, sw.lng], 6, { animate: false });
+      return;
+    }
+    const minDeg = 0.12;
+    if (latSpan < minDeg || lngSpan < minDeg) {
+      const c = bounds.getCenter();
+      const halfLat = Math.max(latSpan / 2, minDeg / 2);
+      const halfLng = Math.max(lngSpan / 2, minDeg / 2);
+      const padded = L.latLngBounds(
+        [c.lat - halfLat, c.lng - halfLng],
+        [c.lat + halfLat, c.lng + halfLng]
+      );
+      map.fitBounds(padded, { padding: [64, 64], maxZoom: 8, animate: false });
+      return;
+    }
+    map.fitBounds(bounds, { padding: [64, 64], maxZoom: 8, animate: false });
+  }
+
+  const FW_HOVER_PORTAL_ID = "fw-map-hover-portal";
+
+  function ensureFwMapHoverPortal() {
+    let el = document.getElementById(FW_HOVER_PORTAL_ID);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = FW_HOVER_PORTAL_ID;
+      el.className = "fw-map-hover-portal";
+      el.hidden = true;
+      el.setAttribute("role", "tooltip");
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+
+  function wireFwMapHoverPortalOnce() {
+    const portal = ensureFwMapHoverPortal();
+    if (portal.dataset.fwHoverWired === "1") return;
+    portal.dataset.fwHoverWired = "1";
+    portal.addEventListener("mouseenter", () => {
+      if (fwHoverPortalHideTimer) {
+        clearTimeout(fwHoverPortalHideTimer);
+        fwHoverPortalHideTimer = null;
+      }
+    });
+    portal.addEventListener("mouseleave", () => {
+      scheduleHideFwMapHoverPortal();
+    });
+  }
+
+  function repositionFwMapHoverPortal(map, marker, portalEl) {
+    const icon = marker._icon;
+    if (!icon || !portalEl) return;
+    const ir = icon.getBoundingClientRect();
+    let w = portalEl.offsetWidth;
+    let h = portalEl.offsetHeight;
+    if (w < 16) w = 300;
+    if (h < 16) h = 160;
+    let left = ir.left + ir.width / 2 - w / 2;
+    let top = ir.top - h - 10;
+    const pad = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (left < pad) left = pad;
+    if (left + w > vw - pad) left = Math.max(pad, vw - pad - w);
+    if (top < pad) top = ir.bottom + 12;
+    if (top + h > vh - pad) top = Math.max(pad, vh - pad - h);
+    portalEl.style.left = `${Math.round(left)}px`;
+    portalEl.style.top = `${Math.round(top)}px`;
+  }
+
+  function repositionActiveFwMapPortal() {
+    const portal = document.getElementById(FW_HOVER_PORTAL_ID);
+    if (!portal || portal.hidden || !fwHoverActiveMap || !fwHoverActiveMarker) return;
+    repositionFwMapHoverPortal(fwHoverActiveMap, fwHoverActiveMarker, portal);
+  }
+
+  function addFwMapHoverViewportListeners() {
+    if (fwHoverViewportListeners) return;
+    fwHoverViewportListeners = true;
+    window.addEventListener("scroll", repositionActiveFwMapPortal, true);
+    window.addEventListener("resize", repositionActiveFwMapPortal);
+  }
+
+  function removeFwMapHoverViewportListeners() {
+    if (!fwHoverViewportListeners) return;
+    fwHoverViewportListeners = false;
+    window.removeEventListener("scroll", repositionActiveFwMapPortal, true);
+    window.removeEventListener("resize", repositionActiveFwMapPortal);
+  }
+
+  function hideFwMapHoverPortalNow() {
+    if (fwHoverPortalHideTimer) {
+      clearTimeout(fwHoverPortalHideTimer);
+      fwHoverPortalHideTimer = null;
+    }
+    removeFwMapHoverViewportListeners();
+    if (fwHoverActiveMap) {
+      fwHoverActiveMap.off("move zoom", repositionActiveFwMapPortal);
+    }
+    fwHoverActiveMap = null;
+    fwHoverActiveMarker = null;
+    const el = document.getElementById(FW_HOVER_PORTAL_ID);
+    if (el) {
+      el.hidden = true;
+      el.innerHTML = "";
+    }
+  }
+
+  function scheduleHideFwMapHoverPortal() {
+    if (fwHoverPortalHideTimer) clearTimeout(fwHoverPortalHideTimer);
+    fwHoverPortalHideTimer = setTimeout(() => {
+      fwHoverPortalHideTimer = null;
+      hideFwMapHoverPortalNow();
+    }, 160);
+  }
+
+  function attachFwMapMarkerHoverCard(map, marker, html) {
+    wireFwMapHoverPortalOnce();
+    marker.on("mouseover", () => {
+      if (fwHoverPortalHideTimer) {
+        clearTimeout(fwHoverPortalHideTimer);
+        fwHoverPortalHideTimer = null;
+      }
+      if (fwHoverActiveMap) {
+        fwHoverActiveMap.off("move zoom", repositionActiveFwMapPortal);
+      }
+      fwHoverActiveMap = map;
+      fwHoverActiveMarker = marker;
+      map.on("move zoom", repositionActiveFwMapPortal);
+      addFwMapHoverViewportListeners();
+      const portal = ensureFwMapHoverPortal();
+      portal.innerHTML = html;
+      portal.hidden = false;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          repositionFwMapHoverPortal(map, marker, portal);
+        });
+      });
+    });
+    marker.on("mouseout", () => {
+      scheduleHideFwMapHoverPortal();
+    });
+  }
+
+  function refreshFwMapMarkers(opts) {
+    const refit = opts?.refit !== false;
+    if (typeof L === "undefined") return;
+    const panelRows =
+      typeof fwController !== "undefined" && fwController?.getFullFilteredRows
+        ? fwController.getFullFilteredRows()
+        : fwPrepared;
+    if (!refit) {
+      const dSig = fwMapMarkerDataSignature(fwPrepared);
+      const pSig = fwMapMarkerDataSignature(panelRows);
+      if (dSig === _lastFwDashMapMarkerSig && pSig === _lastFwPanelMapMarkerSig) {
+        return;
+      }
+    }
+    hideFwMapHoverPortalNow();
+    initDashFwMapIfNeeded();
+    initPanelFwMapIfNeeded();
+    if (dashFwLayer) dashFwLayer.clearLayers();
+    if (panelFwLayer) panelFwLayer.clearLayers();
+    fwPrepared.forEach((row) => {
+      if (row.geo_lat == null || row.geo_lon == null) return;
+      const ll = [row.geo_lat, row.geo_lon];
+      const html = buildFwMapTooltipHtml(row);
+      const icon = fwMapMarkerIconForRow(row);
+      if (dashFwLayer) {
+        const m = L.marker(ll, { icon }).addTo(dashFwLayer);
+        attachFwMapMarkerHoverCard(dashFwMap, m, html);
+      }
+    });
+    panelRows.forEach((row) => {
+      if (row.geo_lat == null || row.geo_lon == null) return;
+      const ll = [row.geo_lat, row.geo_lon];
+      const html = buildFwMapTooltipHtml(row);
+      const icon = fwMapMarkerIconForRow(row);
+      if (panelFwLayer) {
+        const m2 = L.marker(ll, { icon }).addTo(panelFwLayer);
+        attachFwMapMarkerHoverCard(panelFwMap, m2, html);
+      }
+    });
+    if (refit) {
+      applySavedFwMapViewOrFit(dashFwMap, FW_MAP_VIEW_KEY_DASH);
+      applySavedFwMapViewOrFit(panelFwMap, FW_MAP_VIEW_KEY_PANEL, panelRows);
+    }
+    _lastFwDashMapMarkerSig = fwMapMarkerDataSignature(fwPrepared);
+    _lastFwPanelMapMarkerSig = fwMapMarkerDataSignature(panelRows);
+  }
+
+  function readFwMapSectionCollapsed(storageKey) {
+    try {
+      return localStorage.getItem(storageKey) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function writeFwMapSectionCollapsed(storageKey, collapsed) {
+    try {
+      localStorage.setItem(storageKey, collapsed ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function initFwMapSectionToggles() {
+    const pairs = [
+      { wrap: "dash-fw-map-wrap", btn: "dash-fw-map-toggle", key: "sophos-central-fw-map-dash-collapsed" },
+      { wrap: "panel-fw-map-wrap", btn: "panel-fw-map-toggle", key: "sophos-central-fw-map-panel-collapsed" },
+    ];
+    pairs.forEach(({ wrap, btn, key }) => {
+      const w = document.getElementById(wrap);
+      const b = document.getElementById(btn);
+      if (!w || !b) return;
+      const collapsed = readFwMapSectionCollapsed(key);
+      if (collapsed) {
+        w.classList.add("fw-map-section--collapsed");
+        b.setAttribute("aria-expanded", "false");
+      }
+      b.addEventListener("click", () => {
+        const willCollapse = !w.classList.contains("fw-map-section--collapsed");
+        w.classList.toggle("fw-map-section--collapsed", willCollapse);
+        b.setAttribute("aria-expanded", willCollapse ? "false" : "true");
+        writeFwMapSectionCollapsed(key, willCollapse);
+        invalidateFwMapSizes();
+        if (!willCollapse) {
+          requestAnimationFrame(() => {
+            refreshFwMapMarkers();
+          });
+        }
+      });
+    });
+  }
+
+  function destroyFwLocPickMap() {
+    if (fwLocPickMap) {
+      fwLocPickMap.remove();
+      fwLocPickMap = null;
+      fwLocPickMarker = null;
+    }
+  }
+
+  function syncFwLocInputsFromMarker() {
+    if (!fwLocPickMarker) return;
+    const ll = fwLocPickMarker.getLatLng();
+    const latEl = document.getElementById("fw-location-lat");
+    const lonEl = document.getElementById("fw-location-lon");
+    if (latEl) latEl.value = ll.lat.toFixed(6);
+    if (lonEl) lonEl.value = ll.lng.toFixed(6);
+  }
+
+  function ensureFwLocPickMap(lat0, lng0) {
+    const el = document.getElementById("fw-location-pick-map");
+    if (!el || typeof L === "undefined") return;
+    destroyFwLocPickMap();
+    const lat = Number.isFinite(lat0) ? lat0 : 20;
+    const lng = Number.isFinite(lng0) ? lng0 : 0;
+    const z = Number.isFinite(lat0) && Number.isFinite(lng0) ? 12 : 2;
+    fwLocPickMap = L.map(el, { scrollWheelZoom: true });
+    L.tileLayer(FW_OSM_TILE_URL, {
+      maxZoom: 19,
+      attribution: FW_OSM_ATTR,
+      noWrap: true,
+    }).addTo(fwLocPickMap);
+    fwLocPickMarker = L.marker([lat, lng], { draggable: true }).addTo(fwLocPickMap);
+    fwLocPickMap.setView([lat, lng], z);
+    fwLocPickMap.on("click", (e) => {
+      fwLocPickMarker.setLatLng(e.latlng);
+      syncFwLocInputsFromMarker();
+    });
+    fwLocPickMarker.on("dragend", syncFwLocInputsFromMarker);
+  }
+
+  function closeFwLocationModal() {
+    const m = document.getElementById("fw-location-modal");
+    if (!m || m.hidden) return;
+    if (fwLocSuggestTimer) {
+      clearTimeout(fwLocSuggestTimer);
+      fwLocSuggestTimer = null;
+    }
+    destroyFwLocPickMap();
+    m.hidden = true;
+    m.setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+    fwLocEditingId = null;
+    if (fwLocModalFocusBefore && typeof fwLocModalFocusBefore.focus === "function") {
+      fwLocModalFocusBefore.focus();
+    }
+    fwLocModalFocusBefore = null;
+  }
+
+  function openFwLocationModal(firewallId) {
+    const m = document.getElementById("fw-location-modal");
+    const titleEl = document.getElementById("fw-location-modal-title");
+    const addrEl = document.getElementById("fw-location-address");
+    const latEl = document.getElementById("fw-location-lat");
+    const lonEl = document.getElementById("fw-location-lon");
+    const stEl = document.getElementById("fw-location-modal-status");
+    const sugEl = document.getElementById("fw-location-suggestions");
+    if (!m || !titleEl || !addrEl || !latEl || !lonEl || !firewallId) return;
+    const row = fwPrepared.find((r) => r._id === firewallId);
+    if (!row) return;
+    fwLocModalFocusBefore = document.activeElement;
+    fwLocEditingId = firewallId;
+    m.hidden = false;
+    m.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+    titleEl.textContent = row.has_location === 1 ? "Update firewall location" : "Set firewall location";
+    addrEl.value = "";
+    latEl.value = row.geo_lat != null ? String(row.geo_lat) : "";
+    lonEl.value = row.geo_lon != null ? String(row.geo_lon) : "";
+    if (stEl) stEl.textContent = "";
+    if (sugEl) {
+      sugEl.hidden = true;
+      sugEl.innerHTML = "";
+    }
+    document.getElementById("fw-location-modal-close")?.focus();
+    requestAnimationFrame(() => {
+      const la = row.geo_lat;
+      const lo = row.geo_lon;
+      ensureFwLocPickMap(
+        la != null ? la : null,
+        lo != null ? lo : null
+      );
+      invalidateFwMapSizes();
+    });
+  }
+
+  function renderFwLocSuggestions(results) {
+    const sugEl = document.getElementById("fw-location-suggestions");
+    if (!sugEl) return;
+    sugEl.innerHTML = "";
+    if (!results.length) {
+      sugEl.hidden = true;
+      return;
+    }
+    results.forEach((r, idx) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "fw-location-suggest-item";
+      btn.setAttribute("role", "option");
+      btn.id = `fw-loc-sug-${idx}`;
+      btn.textContent = r.display_name || `${r.lat}, ${r.lon}`;
+      btn.addEventListener("click", () => {
+        const lat = Number(r.lat);
+        const lon = Number(r.lon);
+        const addrEl = document.getElementById("fw-location-address");
+        if (addrEl && r.display_name) addrEl.value = r.display_name;
+        const latEl = document.getElementById("fw-location-lat");
+        const lonEl = document.getElementById("fw-location-lon");
+        if (latEl) latEl.value = Number.isFinite(lat) ? String(lat) : "";
+        if (lonEl) lonEl.value = Number.isFinite(lon) ? String(lon) : "";
+        if (fwLocPickMarker && Number.isFinite(lat) && Number.isFinite(lon)) {
+          fwLocPickMarker.setLatLng([lat, lon]);
+          fwLocPickMap?.setView([lat, lon], 14);
+        }
+        sugEl.hidden = true;
+        sugEl.innerHTML = "";
+      });
+      sugEl.appendChild(btn);
+    });
+    sugEl.hidden = false;
+  }
+
+  function initFwLocationModal() {
+    const m = document.getElementById("fw-location-modal");
+    const addrEl = document.getElementById("fw-location-address");
+    if (!m || !addrEl) return;
+    m.querySelector(".fw-location-modal__backdrop")?.addEventListener("click", closeFwLocationModal);
+    document.getElementById("fw-location-modal-close")?.addEventListener("click", closeFwLocationModal);
+    document.getElementById("fw-location-cancel")?.addEventListener("click", closeFwLocationModal);
+    m.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeFwLocationModal();
+    });
+    addrEl.addEventListener("input", () => {
+      if (fwLocSuggestTimer) clearTimeout(fwLocSuggestTimer);
+      const sugEl = document.getElementById("fw-location-suggestions");
+      if (sugEl) {
+        sugEl.hidden = true;
+        sugEl.innerHTML = "";
+      }
+      const q = addrEl.value.trim();
+      if (q.length < 3) return;
+      fwLocSuggestTimer = setTimeout(async () => {
+        try {
+          const data = await loadJson(`/api/geocode/search?q=${encodeURIComponent(q)}&limit=8`);
+          renderFwLocSuggestions(Array.isArray(data.results) ? data.results : []);
+        } catch {
+          /* ignore */
+        }
+      }, 450);
+    });
+    document.getElementById("fw-location-save")?.addEventListener("click", async () => {
+      const stEl = document.getElementById("fw-location-modal-status");
+      const addr = (document.getElementById("fw-location-address")?.value || "").trim();
+      const latStr = (document.getElementById("fw-location-lat")?.value || "").trim();
+      const lonStr = (document.getElementById("fw-location-lon")?.value || "").trim();
+      if (!fwLocEditingId) return;
+      let payload;
+      if (addr) {
+        payload = { address: addr };
+      } else {
+        const lat = parseFloat(latStr);
+        const lon = parseFloat(lonStr);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          if (stEl) stEl.textContent = "Enter a street address or both latitude and longitude.";
+          return;
+        }
+        payload = { latitude: lat, longitude: lon };
+      }
+      if (stEl) stEl.textContent = "Saving…";
+      try {
+        await apiRequestJson(`/api/firewalls/${encodeURIComponent(fwLocEditingId)}/location`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+        const updated = await loadJson("/api/firewalls");
+        fwRaw = updated;
+        fwPrepared = fwRaw.map(prepareFirewall);
+        buildFirewallFilters();
+        fwController.render();
+        refreshFwMapMarkers();
+        closeFwLocationModal();
+      } catch (err) {
+        if (stEl) stEl.textContent = err.message || "Could not save location.";
+      }
+    });
+  }
+
+  function distinctValues(rows, key, limit = 60) {
+    const set = new Set();
+    rows.forEach((r) => {
+      const v = r[key];
+      const s = v == null || v === "" ? "—" : String(v);
+      set.add(s);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b)).slice(0, limit);
+  }
+
+  function buildFirewallFilters() {
+    const host = document.getElementById("firewall-filters");
+    const groups = [
+      { key: "status", label: "Status" },
+      { key: "group_name", label: "Group" },
+      { key: "hostname", label: "Host name" },
+      { key: "serial_number", label: "Serial number" },
+      { key: "model", label: "Model" },
+      { key: "firmware_version", label: "Firmware" },
+      { key: "firmware_update", label: "Firmware updates", useFirmwareCatalog: true },
+      { key: "connected_label", label: "Connected" },
+      { key: "suspended_label", label: "Suspended" },
+      { key: "external_ips", label: "External IPs" },
+      { key: "tenant_name", label: "Tenant" },
+    ];
+
+    const enriched = fwPrepared.map((r) => ({
+      ...r,
+      connected_label: yesNo(r.connected),
+      suspended_label: yesNo(r.suspended),
+    }));
+
+    host.innerHTML = groups
+      .map((g, idx) => {
+        const opts = g.useFirmwareCatalog
+          ? [...fwFirmwareVersionCatalog]
+            .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+            .concat("None")
+          : distinctValues(enriched, g.key, 80);
+        fwFilterState[g.key] = new Set();
+        const open = idx < 3 ? "is-open" : "";
+        const optsHtml = opts
+          .map(
+            (o) => `
+          <label class="filter-opt">
+            <input type="checkbox" data-cat="${escapeHtml(g.key)}" value="${escapeHtml(o)}" />
+            <span>${escapeHtml(o)}</span>
+          </label>`
+          )
+          .join("");
+        return `
+        <div class="filter-group ${open}" data-cat-wrap="${escapeHtml(g.key)}">
+          <button type="button" class="filter-group__head" aria-expanded="${idx < 3}">
+            <span>${escapeHtml(g.label)}</span>
+            <span class="filter-group__chev">▼</span>
+          </button>
+          <div class="filter-group__body">${optsHtml}</div>
+        </div>`;
+      })
+      .join("");
+
+    host.querySelectorAll(".filter-group__head").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const g = btn.closest(".filter-group");
+        g.classList.toggle("is-open");
+        btn.setAttribute("aria-expanded", g.classList.contains("is-open"));
+      });
+    });
+
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const cat = cb.dataset.cat;
+        const st = fwFilterState[cat];
+        if (!st) return;
+        if (cb.checked) st.add(cb.value);
+        else st.delete(cb.value);
+        fwController.render();
+      });
+    });
+    updateFirewallFiltersChrome();
+  }
+
+  function firewallFacetFilterCount() {
+    let n = fwLinkMode === "offline" || fwLinkMode === "suspended" ? 1 : 0;
+    for (const st of Object.values(fwFilterState)) {
+      if (st instanceof Set) n += st.size;
+    }
+    return n;
+  }
+
+  function updateFirewallFiltersChrome() {
+    const wrap = document.getElementById("fw-filters-head-actions");
+    const countEl = document.getElementById("fw-facet-count");
+    const resetBtn = document.getElementById("fw-facet-reset");
+    if (!wrap || !countEl || !resetBtn) return;
+    const n = firewallFacetFilterCount();
+    resetBtn.hidden = n === 0;
+    if (n === 0) {
+      wrap.hidden = true;
+      countEl.textContent = "";
+      return;
+    }
+    wrap.hidden = false;
+    countEl.innerHTML = `<span class="filters__facet-count-num">${n}</span> applied`;
+  }
+
+  function syncFirewallFilterCheckboxesFromState() {
+    const host = document.getElementById("firewall-filters");
+    if (!host) return;
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      const cat = cb.dataset.cat;
+      const st = fwFilterState[cat];
+      if (!st) return;
+      cb.checked = st.has(cb.value);
+    });
+  }
+
+  function clearFirewallFilters() {
+    fwLinkMode = null;
+    const host = document.getElementById("firewall-filters");
+    for (const st of Object.values(fwFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    if (host) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        cb.checked = false;
+      });
+    }
+    const search = document.getElementById("fw-search");
+    if (search) search.value = "";
+    updateFirewallFiltersChrome();
+  }
+
+  function resetFirewallFacetFilters() {
+    fwLinkMode = null;
+    const host = document.getElementById("firewall-filters");
+    for (const st of Object.values(fwFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    if (host) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        cb.checked = false;
+      });
+    }
+    fwController.render();
+    setFiltersPanelCollapsed(document.querySelector("#panel-firewalls .filters"), true);
+    schedulePersistUiState();
+  }
+
+  function firewallFiltered() {
+    const enriched = fwPrepared.map((r) => ({
+      ...r,
+      connected_label: yesNo(r.connected),
+      suspended_label: yesNo(r.suspended),
+    }));
+
+    return enriched.filter((row) => {
+      if (fwLinkMode === "offline") {
+        if (row.connected === 1 && row.suspended === 0) return false;
+      } else if (fwLinkMode === "suspended") {
+        if (row.suspended !== 1 && row.suspended !== true) return false;
+      }
+      for (const [cat, selected] of Object.entries(fwFilterState)) {
+        if (!selected || selected.size === 0) continue;
+        if (cat === "firmware_update") {
+          const avail = row.firmware_available_updates || [];
+          const hasNone = avail.length === 0;
+          const any = [...selected].some((opt) =>
+            opt === "None" ? hasNone : avail.includes(opt)
+          );
+          if (!any) return false;
+          continue;
+        }
+        const val =
+          cat === "connected_label"
+            ? yesNo(row.connected)
+            : cat === "suspended_label"
+              ? yesNo(row.suspended)
+              : row[cat] == null || row[cat] === ""
+                ? "—"
+                : String(row[cat]);
+        if (!selected.has(val)) return false;
+      }
+      return true;
+    });
+  }
+
+  const fwTableEl = document.getElementById("fw-table");
+  const fwTbody = document.getElementById("fw-tbody");
+  buildFwThead();
+
+  const fwController = createTableController({
+    tbody: fwTbody,
+    countEl: document.getElementById("fw-count"),
+    rangeEl: document.getElementById("fw-lazy-hint"),
+    pageSizeEl: document.getElementById("fw-page-size"),
+    searchInput: document.getElementById("fw-search"),
+    selectAllInput: document.getElementById("fw-select-all"),
+    sortHeaders: [],
+    sortDelegateRoot: fwTableEl,
+    getFilteredRows: firewallFiltered,
+    getRowSearchText: (row) =>
+      [
+        row.status,
+        row.hostname,
+        row.group_name,
+        row.serial_number,
+        row.model,
+        row.firmware_version,
+        (row.firmware_available_updates || []).join(" "),
+        yesNo(row.connected),
+        yesNo(row.suspended),
+        row.external_ips,
+        row.tenant_name,
+        row.state_changed_at,
+        row.tagsPlain,
+        row.alert_count > 0 ? String(row.alert_count) : "",
+        row.firmware_upgrade_count > 0 ? "firmware upgrade" : "",
+        row.firewall_name,
+        row.tenant_id,
+        row.managing_status,
+        row.reporting_status,
+        row.firewall_id,
+        row.capabilities_sort,
+        row.has_location ? "location set update coordinates" : "location set",
+        row.geo_lat != null ? String(row.geo_lat) : "",
+        row.geo_lon != null ? String(row.geo_lon) : "",
+      ]
+        .join(" ")
+        .toLowerCase(),
+    renderRow: (row, selected) => renderFirewallDataRow(row, selected),
+    afterRender: () => {
+      updateFirewallFiltersChrome();
+      refreshFwMapMarkers({ refit: false });
+    },
+  });
+
+  initFwColumnPicker();
+  initFwFirmwareUpgradeModal();
+
+  fwTbody.addEventListener("click", (e) => {
+    const locBtn = e.target.closest("button.fw-loc-btn");
+    if (locBtn) {
+      e.preventDefault();
+      const fid = locBtn.getAttribute("data-fw-id");
+      if (fid) openFwLocationModal(fid);
+      return;
+    }
+    const upBtn = e.target.closest("button.fw-firmware-upgrade-btn");
+    if (upBtn) {
+      e.preventDefault();
+      const fid = upBtn.getAttribute("data-fw-id");
+      if (fid) openFwFirmwareUpgradeModal(fid);
+      return;
+    }
+    const dashBtn = e.target.closest("button.fw-alerts-dash-link");
+    if (dashBtn) {
+      e.preventDefault();
+      const enc = dashBtn.getAttribute("data-fw-host");
+      if (enc == null || enc === "") return;
+      try {
+        goToDashboardAlertsForFirewall(decodeURIComponent(enc));
+      } catch {
+        /* ignore malformed data-fw-host */
+      }
+      return;
+    }
+    const a = e.target.closest("a.cell-link");
+    if (a) e.preventDefault();
+  });
+
+  function openFirewallTenantFilterGroup() {
+    expandFirewallFiltersPanel();
+    const wrap = document.querySelector(
+      '#firewall-filters .filter-group[data-cat-wrap="tenant_name"]'
+    );
+    if (!wrap) return;
+    wrap.classList.add("is-open");
+    const head = wrap.querySelector(".filter-group__head");
+    if (head) head.setAttribute("aria-expanded", "true");
+  }
+
+  function goToFirewallsFilteredByTenant(tenantName) {
+    if (tenantName == null || tenantName === "") return;
+    clearFirewallFilters();
+    const tn = fwFilterState.tenant_name;
+    if (tn) {
+      tn.clear();
+      tn.add(tenantName);
+    }
+    syncFirewallFilterCheckboxesFromState();
+    openFirewallTenantFilterGroup();
+    fwController.resetSort();
+    fwController.resetPage();
+    activateTab("firewalls");
+  }
+
+  function openFirewallHostnameFilterGroup() {
+    expandFirewallFiltersPanel();
+    const wrap = document.querySelector(
+      '#firewall-filters .filter-group[data-cat-wrap="hostname"]'
+    );
+    if (!wrap) return;
+    wrap.classList.add("is-open");
+    const head = wrap.querySelector(".filter-group__head");
+    if (head) head.setAttribute("aria-expanded", "true");
+  }
+
+  function goToFirewallsFilteredByHostname(hostname) {
+    if (hostname == null || hostname === "" || hostname === "—") return;
+    const hs = fwFilterState.hostname;
+    if (!hs) return;
+    clearFirewallFilters();
+    hs.clear();
+    hs.add(hostname);
+    syncFirewallFilterCheckboxesFromState();
+    openFirewallHostnameFilterGroup();
+    fwController.resetSort();
+    fwController.resetPage();
+    closeAlertFlyout();
+    activateTab("firewalls");
+  }
+
+  function openFirewallSerialFilterGroup() {
+    expandFirewallFiltersPanel();
+    const wrap = document.querySelector(
+      '#firewall-filters .filter-group[data-cat-wrap="serial_number"]'
+    );
+    if (!wrap) return;
+    wrap.classList.add("is-open");
+    const head = wrap.querySelector(".filter-group__head");
+    if (head) head.setAttribute("aria-expanded", "true");
+  }
+
+  /** Filter firewalls to the row whose serial matches (same value as license serial). */
+  function goToFirewallsFilteredBySerial(serial) {
+    if (serial == null || String(serial).trim() === "" || serial === "—") return;
+    const sn = fwFilterState.serial_number;
+    if (!sn) return;
+    clearFirewallFilters();
+    sn.clear();
+    sn.add(String(serial));
+    syncFirewallFilterCheckboxesFromState();
+    openFirewallSerialFilterGroup();
+    fwController.resetSort();
+    fwController.resetPage();
+    closeAlertFlyout();
+    activateTab("firewalls");
+  }
+
+  function goToFirewallsUnfiltered() {
+    clearFirewallFilters();
+    fwController.resetSort();
+    fwController.resetPage();
+    activateTab("firewalls");
+  }
+
+  function openFirewallConnectedAndSuspendedGroups() {
+    expandFirewallFiltersPanel();
+    for (const key of ["connected_label", "suspended_label"]) {
+      const wrap = document.querySelector(
+        `#firewall-filters .filter-group[data-cat-wrap="${key}"]`
+      );
+      if (!wrap) continue;
+      wrap.classList.add("is-open");
+      const head = wrap.querySelector(".filter-group__head");
+      if (head) head.setAttribute("aria-expanded", "true");
+    }
+  }
+
+  function goToFirewallsOnline() {
+    const c = fwFilterState.connected_label;
+    const s = fwFilterState.suspended_label;
+    if (!c || !s) return;
+    clearFirewallFilters();
+    c.clear();
+    c.add("Yes");
+    s.clear();
+    s.add("No");
+    syncFirewallFilterCheckboxesFromState();
+    openFirewallConnectedAndSuspendedGroups();
+    fwController.resetSort();
+    fwController.resetPage();
+    activateTab("firewalls");
+  }
+
+  function goToFirewallsOffline() {
+    expandFirewallFiltersPanel();
+    clearFirewallFilters();
+    fwLinkMode = "offline";
+    fwController.resetSort();
+    fwController.resetPage();
+    activateTab("firewalls");
+  }
+
+  function goToFirewallsSuspended() {
+    expandFirewallFiltersPanel();
+    clearFirewallFilters();
+    fwLinkMode = "suspended";
+    fwController.resetSort();
+    fwController.resetPage();
+    activateTab("firewalls");
+  }
+
+  async function loadFirewalls(opts = {}) {
+    const preserve = opts.preserve === true;
+    const [fwList, fvPayload] = await Promise.all([
+      loadJson("/api/firewalls"),
+      loadJson("/api/firmware-versions").catch(() => ({ versions: [] })),
+    ]);
+    fwRaw = fwList;
+    fwFirmwareVersionCatalog = Array.isArray(fvPayload?.versions)
+      ? fvPayload.versions.map(String)
+      : [];
+    fwPrepared = fwRaw.map(prepareFirewall);
+    buildFirewallFilters();
+    if (!preserve) {
+      fwController.clearSelection();
+      fwController.resetPage();
+    }
+    refreshFwMapMarkers();
+  }
+
+  /* ---------- Tenants ---------- */
+  let tnPrepared = [];
+  const tnFilterState = {};
+
+  const TN_COL_VISIBILITY_KEY = "sophos-central-tn-columns-v1";
+  const TN_COLUMNS = [
+    { id: "name", label: "Name", sortKey: "name", thClass: "th-sortable" },
+    { id: "firewall_count", label: "Firewalls", sortKey: "firewall_count", thClass: "th-sortable tn-col-firewalls" },
+    { id: "show_as", label: "Show as", sortKey: "show_as", thClass: "th-sortable" },
+    { id: "status", label: "Status", sortKey: "status", thClass: "th-sortable" },
+    { id: "data_region", label: "Region", sortKey: "data_region", thClass: "th-sortable" },
+    { id: "billing_type", label: "Billing", sortKey: "billing_type", thClass: "th-sortable" },
+    { id: "api_host", label: "API host", sortKey: "api_host", thClass: "th-sortable" },
+    { id: "updated_at", label: "Updated", sortKey: "updated_at", thClass: "th-sortable" },
+    {
+      id: "tenant_id",
+      label: "Tenant ID",
+      sortKey: "tenant_id",
+      thClass: "th-sortable fw-col-code",
+      defaultVisible: false,
+    },
+  ];
+
+  function defaultTnColumnVisibility() {
+    const o = {};
+    TN_COLUMNS.forEach((c) => {
+      o[c.id] = c.defaultVisible !== false;
+    });
+    return o;
+  }
+
+  function loadTnColumnVisibility() {
+    const d = defaultTnColumnVisibility();
+    try {
+      const raw = localStorage.getItem(TN_COL_VISIBILITY_KEY);
+      if (!raw) return d;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        TN_COLUMNS.forEach((c) => {
+          if (typeof parsed[c.id] === "boolean") d[c.id] = parsed[c.id];
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+    return d;
+  }
+
+  let tnColVisible = loadTnColumnVisibility();
+
+  function persistTnColumnVisibility() {
+    try {
+      localStorage.setItem(TN_COL_VISIBILITY_KEY, JSON.stringify(tnColVisible));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function buildTnThead() {
+    const tr = document.getElementById("tn-thead-row");
+    if (!tr) return;
+    tr.innerHTML = "";
+    TN_COLUMNS.forEach((col) => {
+      if (!tnColVisible[col.id]) return;
+      const th = document.createElement("th");
+      th.scope = "col";
+      th.textContent = col.label;
+      if (col.sortKey) {
+        th.dataset.sort = col.sortKey;
+        th.className = col.thClass || "th-sortable";
+      } else {
+        th.className = col.thClass || "";
+      }
+      tr.appendChild(th);
+    });
+  }
+
+  function filterTnColumnMenuList() {
+    const q = (document.getElementById("tn-cols-filter")?.value || "").trim().toLowerCase();
+    const list = document.getElementById("tn-cols-list");
+    if (!list) return;
+    list.querySelectorAll("li[data-col-label]").forEach((li) => {
+      const lab = (li.dataset.colLabel || "").toLowerCase();
+      li.hidden = q !== "" && !lab.includes(q);
+    });
+  }
+
+  function buildTnColumnMenuList() {
+    const list = document.getElementById("tn-cols-list");
+    if (!list) return;
+    list.innerHTML = TN_COLUMNS.map(
+      (c) => `
+      <li class="toolbar__cols-item" data-col-id="${escapeHtml(c.id)}" data-col-label="${escapeHtml(c.label.toLowerCase())}">
+        <label class="toolbar__cols-label">
+          <input type="checkbox" data-tn-col="${escapeHtml(c.id)}" ${tnColVisible[c.id] ? "checked" : ""} />
+          <span>${escapeHtml(c.label)}</span>
+        </label>
+      </li>`
+    ).join("");
+    filterTnColumnMenuList();
+  }
+
+  function positionTnColsDropdown() {
+    const btn = document.getElementById("tn-cols-trigger");
+    const panel = document.getElementById("tn-cols-panel");
+    const modal = document.getElementById("tn-cols-modal");
+    if (!btn || !panel || !modal || modal.hidden) return;
+    panel.style.maxHeight = "";
+    const r = btn.getBoundingClientRect();
+    const gap = 6;
+    const margin = 8;
+    const pw = panel.offsetWidth || Math.min(380, window.innerWidth - 2 * margin);
+    let left = r.left;
+    if (left + pw > window.innerWidth - margin) {
+      left = window.innerWidth - margin - pw;
+    }
+    left = Math.max(margin, left);
+    const topBelow = r.bottom + gap;
+    panel.style.left = `${left}px`;
+    panel.style.top = `${topBelow}px`;
+    const after = panel.getBoundingClientRect();
+    if (after.bottom > window.innerHeight - margin) {
+      const aboveTop = r.top - gap - after.height;
+      if (aboveTop >= margin) {
+        panel.style.top = `${aboveTop}px`;
+      } else {
+        panel.style.top = `${margin}px`;
+        panel.style.maxHeight = `${Math.max(120, window.innerHeight - 2 * margin)}px`;
+      }
+    }
+  }
+
+  function setTnColumnPanelOpen(open) {
+    const modal = document.getElementById("tn-cols-modal");
+    const btn = document.getElementById("tn-cols-trigger");
+    const panel = document.getElementById("tn-cols-panel");
+    if (!modal || !btn) return;
+    modal.hidden = !open;
+    modal.setAttribute("aria-hidden", open ? "false" : "true");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!open && panel) {
+      panel.style.top = "";
+      panel.style.left = "";
+      panel.style.maxHeight = "";
+    }
+    if (open) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => positionTnColsDropdown());
+      });
+    }
+  }
+
+  function initTnColumnPicker() {
+    buildTnColumnMenuList();
+    const btn = document.getElementById("tn-cols-trigger");
+    const modal = document.getElementById("tn-cols-modal");
+    const panel = document.getElementById("tn-cols-panel");
+    const filterIn = document.getElementById("tn-cols-filter");
+    const list = document.getElementById("tn-cols-list");
+    const closeBtn = document.getElementById("tn-cols-close");
+    if (!btn || !modal || !panel) return;
+    list?.addEventListener("change", (e) => {
+      const cb = e.target.closest("input[data-tn-col]");
+      if (!cb) return;
+      const id = cb.dataset.tnCol;
+      if (!id || !Object.prototype.hasOwnProperty.call(tnColVisible, id)) return;
+      const col = TN_COLUMNS.find((c) => c.id === id);
+      if (col && !cb.checked && tnController.getSortKey() === col.sortKey) {
+        tnController.resetSort();
+      }
+      tnColVisible[id] = cb.checked;
+      persistTnColumnVisibility();
+      buildTnThead();
+      tnController.render();
+    });
+    function openTnColsModalFromTrigger() {
+      const willOpen = modal.hidden;
+      setTnColumnPanelOpen(willOpen);
+      if (willOpen) {
+        buildTnColumnMenuList();
+        filterIn?.focus();
+      }
+    }
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openTnColsModalFromTrigger();
+    });
+    btn.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openTnColsModalFromTrigger();
+      }
+    });
+    filterIn?.addEventListener("input", () => filterTnColumnMenuList());
+    closeBtn?.addEventListener("click", () => {
+      setTnColumnPanelOpen(false);
+      btn.focus();
+    });
+    modal.querySelector(".fw-cols-modal__backdrop")?.addEventListener("click", () => {
+      setTnColumnPanelOpen(false);
+      btn.focus();
+    });
+    document.addEventListener("mousedown", (e) => {
+      if (modal.hidden) return;
+      if (btn.contains(e.target) || panel.contains(e.target)) return;
+      setTnColumnPanelOpen(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !modal.hidden) {
+        setTnColumnPanelOpen(false);
+        btn.focus();
+      }
+    });
+
+    function repositionTnColsIfOpen() {
+      if (!modal.hidden) positionTnColsDropdown();
+    }
+    window.addEventListener("resize", repositionTnColsIfOpen);
+    window.addEventListener("scroll", repositionTnColsIfOpen, true);
+  }
+
+  function prepareTenant(row) {
+    return {
+      _id: row.id,
+      tenant_id: row.id || "—",
+      name: row.name || "—",
+      firewall_count: row.firewall_count ?? 0,
+      show_as: row.show_as || "—",
+      status: row.status || "—",
+      data_region: row.data_region || row.data_geography || "—",
+      billing_type: row.billing_type || "—",
+      api_host: row.api_host || "—",
+      updated_at: row.updated_at || "",
+    };
+  }
+
+  function tenantFiltered() {
+    return tnPrepared.filter((row) => {
+      for (const [cat, selected] of Object.entries(tnFilterState)) {
+        if (!selected || selected.size === 0) continue;
+        const val =
+          cat === "firewall_count"
+            ? String(row.firewall_count ?? 0)
+            : row[cat] == null || row[cat] === ""
+              ? "—"
+              : String(row[cat]);
+        if (!selected.has(val)) return false;
+      }
+      return true;
+    });
+  }
+
+  function buildTenantFilters() {
+    const host = document.getElementById("tenant-filters");
+    if (!host) return;
+    const groups = [
+      { key: "name", label: "Name" },
+      { key: "show_as", label: "Show as" },
+      { key: "status", label: "Status" },
+      { key: "data_region", label: "Region" },
+      { key: "billing_type", label: "Billing" },
+      { key: "api_host", label: "API host" },
+      { key: "firewall_count", label: "Firewalls" },
+    ];
+
+    host.innerHTML = groups
+      .map((g, idx) => {
+        const opts = distinctValues(tnPrepared, g.key, 80);
+        tnFilterState[g.key] = new Set();
+        const open = idx < 3 ? "is-open" : "";
+        const optsHtml = opts
+          .map(
+            (o) => `
+          <label class="filter-opt">
+            <input type="checkbox" data-cat="${escapeHtml(g.key)}" value="${escapeHtml(o)}" />
+            <span>${escapeHtml(o)}</span>
+          </label>`
+          )
+          .join("");
+        return `
+        <div class="filter-group ${open}" data-cat-wrap="${escapeHtml(g.key)}">
+          <button type="button" class="filter-group__head" aria-expanded="${idx < 3}">
+            <span>${escapeHtml(g.label)}</span>
+            <span class="filter-group__chev">▼</span>
+          </button>
+          <div class="filter-group__body">${optsHtml}</div>
+        </div>`;
+      })
+      .join("");
+
+    host.querySelectorAll(".filter-group__head").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const g = btn.closest(".filter-group");
+        g.classList.toggle("is-open");
+        btn.setAttribute("aria-expanded", g.classList.contains("is-open"));
+      });
+    });
+
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const cat = cb.dataset.cat;
+        const st = tnFilterState[cat];
+        if (!st) return;
+        if (cb.checked) st.add(cb.value);
+        else st.delete(cb.value);
+        tnDashBilling = null;
+        tnController.render();
+        refreshDashboardStatCards();
+      });
+    });
+    updateTenantFiltersChrome();
+  }
+
+  function tenantFacetFilterCount() {
+    let n = 0;
+    for (const st of Object.values(tnFilterState)) {
+      if (st instanceof Set) n += st.size;
+    }
+    return n;
+  }
+
+  function updateTenantFiltersChrome() {
+    const wrap = document.getElementById("tn-filters-head-actions");
+    const countEl = document.getElementById("tn-facet-count");
+    const resetBtn = document.getElementById("tn-facet-reset");
+    if (!wrap || !countEl || !resetBtn) return;
+    const n = tenantFacetFilterCount();
+    resetBtn.hidden = n === 0;
+    if (n === 0) {
+      wrap.hidden = true;
+      countEl.textContent = "";
+      return;
+    }
+    wrap.hidden = false;
+    countEl.innerHTML = `<span class="filters__facet-count-num">${n}</span> applied`;
+  }
+
+  function syncTenantFilterCheckboxesFromState() {
+    const host = document.getElementById("tenant-filters");
+    if (!host) return;
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      const cat = cb.dataset.cat;
+      const st = tnFilterState[cat];
+      if (!st) return;
+      cb.checked = st.has(cb.value);
+    });
+  }
+
+  function resetTenantFacetFilters() {
+    tnDashBilling = null;
+    const host = document.getElementById("tenant-filters");
+    for (const st of Object.values(tnFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    if (host) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        cb.checked = false;
+      });
+    }
+    tnController.render();
+    setFiltersPanelCollapsed(document.querySelector("#panel-tenants .filters"), true);
+    schedulePersistUiState();
+    refreshDashboardStatCards();
+  }
+
+  function renderTnDataCell(colId, row) {
+    switch (colId) {
+      case "name": {
+        const nameCell =
+          row.name && row.name !== "—"
+            ? `<button type="button" class="cell-link tenant-to-firewalls" data-tenant-name="${escapeHtml(row.name)}" title="Show firewalls for this tenant">${escapeHtml(row.name)}</button>`
+            : `<span>${escapeHtml(row.name)}</span>`;
+        return `<td>${nameCell}</td>`;
+      }
+      case "firewall_count": {
+        const n = row.firewall_count ?? 0;
+        const countStr = escapeHtml(String(n));
+        const canLink = row.name && row.name !== "—";
+        const inner = canLink
+          ? `<button type="button" class="cell-link tenant-to-firewalls" data-tenant-name="${escapeAttr(row.name)}" title="Show firewalls for this tenant">${countStr}</button>`
+          : countStr;
+        return `<td class="tn-col-firewalls">${inner}</td>`;
+      }
+      case "show_as":
+        return `<td>${escapeHtml(row.show_as)}</td>`;
+      case "status":
+        return `<td>${escapeHtml(row.status)}</td>`;
+      case "data_region":
+        return `<td>${escapeHtml(row.data_region)}</td>`;
+      case "billing_type":
+        return `<td>${escapeHtml(row.billing_type)}</td>`;
+      case "api_host":
+        return `<td class="muted">${escapeHtml(row.api_host)}</td>`;
+      case "updated_at":
+        return `<td class="muted">${fmtDate(row.updated_at)}</td>`;
+      case "tenant_id":
+        return `<td class="fw-col-code">${escapeHtml(row.tenant_id)}</td>`;
+      default:
+        return "<td></td>";
+    }
+  }
+
+  function renderTenantDataRow(row) {
+    const cells = TN_COLUMNS.filter((c) => tnColVisible[c.id])
+      .map((c) => renderTnDataCell(c.id, row))
+      .join("");
+    return `<tr>${cells}</tr>`;
+  }
+
+  buildTnThead();
+
+  const tnTableEl = document.getElementById("tn-table");
+  const tnController = createTableController({
+    tbody: document.getElementById("tn-tbody"),
+    countEl: document.getElementById("tn-count"),
+    rangeEl: document.getElementById("tn-lazy-hint"),
+    pageSizeEl: document.getElementById("tn-page-size"),
+    searchInput: document.getElementById("tn-search"),
+    selectAllInput: null,
+    sortHeaders: [],
+    sortDelegateRoot: tnTableEl,
+    getFilteredRows: tenantFiltered,
+    getRowSearchText: (row) =>
+      [
+        row.name,
+        String(row.firewall_count),
+        row.show_as,
+        row.status,
+        row.data_region,
+        row.billing_type,
+        row.api_host,
+        row.updated_at,
+        row.tenant_id,
+      ]
+        .join(" ")
+        .toLowerCase(),
+    renderRow: (row) => renderTenantDataRow(row),
+    afterRender: updateTenantFiltersChrome,
+  });
+
+  initTnColumnPicker();
+
+  document.getElementById("tn-tbody").addEventListener("click", (e) => {
+    const btn = e.target.closest("button.tenant-to-firewalls");
+    if (!btn) return;
+    const tenantName = btn.getAttribute("data-tenant-name");
+    if (tenantName) goToFirewallsFilteredByTenant(tenantName);
+  });
+
+  async function loadTenants(opts = {}) {
+    const preserve = opts.preserve === true;
+    const rows = await loadJson("/api/tenants");
+    tnPrepared = rows.map(prepareTenant);
+    buildTenantFilters();
+    if (!preserve) {
+      tnController.clearSelection();
+      tnController.resetPage();
+    }
+  }
+
+  /* ---------- Licenses ---------- */
+  let lcPrepared = [];
+  let lcDetailPrepared = [];
+  const lcFilterState = {};
+  let lcViewMode = "summary";
+
+  const lcEndDatePresetSelections = new Set();
+  let lcEndDateCustomFrom = "";
+  let lcEndDateCustomTo = "";
+  const lcStartDatePresetSelections = new Set();
+  let lcStartDateCustomFrom = "";
+  let lcStartDateCustomTo = "";
+
+  const LC_COL_KEYS = {
+    summary: "sophos-central-lc-columns-v1",
+    details: "sophos-central-lc-columns-v1-details",
+  };
+
+  const LC_COLUMNS_SUMMARY = [
+    { id: "serial_number", label: "Serial number", sortKey: "serial_number", thClass: "th-sortable" },
+    {
+      id: "firewall_hostname",
+      label: "Hostname",
+      sortKey: "firewall_hostname",
+      thClass: "th-sortable",
+    },
+    {
+      id: "managed_by_tenant",
+      label: "Manage By",
+      sortKey: "managed_by_tenant",
+      thClass: "th-sortable",
+    },
+    { id: "tenant_name", label: "Tenant", sortKey: "tenant_name", thClass: "th-sortable" },
+    { id: "model", label: "Model", sortKey: "model", thClass: "th-sortable" },
+    { id: "model_type", label: "Model type", sortKey: "model_type", thClass: "th-sortable" },
+    { id: "last_seen_at", label: "Last seen", sortKey: "last_seen_at", thClass: "th-sortable" },
+    {
+      id: "subscription_count",
+      label: "Subscriptions",
+      sortKey: "subscription_count",
+      thClass: "th-sortable lc-col-subscriptions",
+    },
+    { id: "state", label: "State", sortKey: "state", thClass: "th-sortable" },
+    {
+      id: "tenant_id",
+      label: "Tenant ID",
+      sortKey: "tenant_id",
+      thClass: "th-sortable fw-col-code",
+      defaultVisible: false,
+    },
+    {
+      id: "partner_id",
+      label: "Partner ID",
+      sortKey: "partner_id",
+      thClass: "th-sortable fw-col-code",
+      defaultVisible: false,
+    },
+    {
+      id: "organization_id",
+      label: "Organization ID",
+      sortKey: "organization_id",
+      thClass: "th-sortable fw-col-code",
+      defaultVisible: false,
+    },
+  ];
+
+  const LC_COLUMNS_DETAILS = [
+    {
+      id: "serial_number",
+      label: "Serial number",
+      sortKey: "serial_number",
+      thClass: "th-sortable",
+    },
+    {
+      id: "license_identifier",
+      label: "License identifier",
+      sortKey: "license_identifier",
+      thClass: "th-sortable fw-col-code",
+    },
+    { id: "product_name", label: "Product", sortKey: "product_name", thClass: "th-sortable" },
+    {
+      id: "product_code",
+      label: "Product code",
+      sortKey: "product_code",
+      thClass: "th-sortable fw-col-code",
+    },
+    {
+      id: "subscription_type",
+      label: "Subscription type",
+      sortKey: "subscription_type",
+      thClass: "th-sortable",
+    },
+    { id: "start_date", label: "Start", sortKey: "start_date", thClass: "th-sortable" },
+    { id: "end_date", label: "End", sortKey: "end_date", thClass: "th-sortable" },
+    { id: "perpetual", label: "Perpetual", sortKey: "perpetual", thClass: "th-sortable" },
+    { id: "unlimited", label: "Unlimited", sortKey: "unlimited", thClass: "th-sortable" },
+    { id: "quantity", label: "Quantity", sortKey: "quantity", thClass: "th-sortable" },
+    { id: "usage_count", label: "Usage", sortKey: "usage_count", thClass: "th-sortable" },
+    {
+      id: "subscription_state",
+      label: "Subscription state",
+      sortKey: "subscription_state",
+      thClass: "th-sortable",
+    },
+    {
+      id: "license_state",
+      label: "License state",
+      sortKey: "license_state",
+      thClass: "th-sortable",
+    },
+    { id: "tenant_name", label: "Tenant", sortKey: "tenant_name", thClass: "th-sortable" },
+    { id: "model", label: "Model", sortKey: "model", thClass: "th-sortable" },
+    {
+      id: "firewall_hostname",
+      label: "Hostname",
+      sortKey: "firewall_hostname",
+      thClass: "th-sortable",
+    },
+    {
+      id: "managed_by_tenant",
+      label: "Manage By",
+      sortKey: "managed_by_tenant",
+      thClass: "th-sortable",
+      defaultVisible: false,
+    },
+    {
+      id: "model_type",
+      label: "Model type",
+      sortKey: "model_type",
+      thClass: "th-sortable",
+      defaultVisible: false,
+    },
+    {
+      id: "last_seen_at",
+      label: "Last seen",
+      sortKey: "last_seen_at",
+      thClass: "th-sortable",
+      defaultVisible: false,
+    },
+  ];
+
+  function getLcColumns() {
+    return lcViewMode === "details" ? LC_COLUMNS_DETAILS : LC_COLUMNS_SUMMARY;
+  }
+
+  function defaultLcColVisFor(columns) {
+    const o = {};
+    columns.forEach((c) => {
+      o[c.id] = c.defaultVisible !== false;
+    });
+    return o;
+  }
+
+  function loadLcColumnVisibilitySnapshot(mode) {
+    const columns = mode === "details" ? LC_COLUMNS_DETAILS : LC_COLUMNS_SUMMARY;
+    const d = defaultLcColVisFor(columns);
+    const key = LC_COL_KEYS[mode];
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return d;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        columns.forEach((c) => {
+          if (typeof parsed[c.id] === "boolean") d[c.id] = parsed[c.id];
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+    return d;
+  }
+
+  let lcColVisible = loadLcColumnVisibilitySnapshot("summary");
+
+  function persistLcColumnVisibilityNow() {
+    try {
+      localStorage.setItem(LC_COL_KEYS[lcViewMode], JSON.stringify(lcColVisible));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function buildLcThead() {
+    const tr = document.getElementById("lc-thead-row");
+    if (!tr) return;
+    tr.replaceChildren();
+    getLcColumns().forEach((col) => {
+      if (!lcColVisible[col.id]) return;
+      const th = document.createElement("th");
+      th.scope = "col";
+      th.textContent = col.label;
+      if (col.sortKey) {
+        th.dataset.sort = col.sortKey;
+        th.className = col.thClass || "th-sortable";
+      } else {
+        th.className = col.thClass || "";
+      }
+      tr.appendChild(th);
+    });
+  }
+
+  function updateLcViewToggleUi() {
+    const sum = document.getElementById("lc-view-summary");
+    const det = document.getElementById("lc-view-details");
+    if (!sum || !det) return;
+    sum.setAttribute("aria-pressed", lcViewMode === "summary" ? "true" : "false");
+    det.setAttribute("aria-pressed", lcViewMode === "details" ? "true" : "false");
+  }
+
+  function filterLcColumnMenuList() {
+    const q = (document.getElementById("lc-cols-filter")?.value || "").trim().toLowerCase();
+    const list = document.getElementById("lc-cols-list");
+    if (!list) return;
+    list.querySelectorAll("li[data-col-label]").forEach((li) => {
+      const lab = (li.dataset.colLabel || "").toLowerCase();
+      li.hidden = q !== "" && !lab.includes(q);
+    });
+  }
+
+  function buildLcColumnMenuList() {
+    const list = document.getElementById("lc-cols-list");
+    if (!list) return;
+    list.innerHTML = getLcColumns().map(
+      (c) => `
+      <li class="toolbar__cols-item" data-col-id="${escapeHtml(c.id)}" data-col-label="${escapeHtml(c.label.toLowerCase())}">
+        <label class="toolbar__cols-label">
+          <input type="checkbox" data-lc-col="${escapeHtml(c.id)}" ${lcColVisible[c.id] ? "checked" : ""} />
+          <span>${escapeHtml(c.label)}</span>
+        </label>
+      </li>`
+    ).join("");
+    filterLcColumnMenuList();
+  }
+
+  function positionLcColsDropdown() {
+    const btn = document.getElementById("lc-cols-trigger");
+    const panel = document.getElementById("lc-cols-panel");
+    const modal = document.getElementById("lc-cols-modal");
+    if (!btn || !panel || !modal || modal.hidden) return;
+    panel.style.maxHeight = "";
+    const r = btn.getBoundingClientRect();
+    const gap = 6;
+    const margin = 8;
+    const pw = panel.offsetWidth || Math.min(380, window.innerWidth - 2 * margin);
+    let left = r.left;
+    if (left + pw > window.innerWidth - margin) {
+      left = window.innerWidth - margin - pw;
+    }
+    left = Math.max(margin, left);
+    const topBelow = r.bottom + gap;
+    panel.style.left = `${left}px`;
+    panel.style.top = `${topBelow}px`;
+    const after = panel.getBoundingClientRect();
+    if (after.bottom > window.innerHeight - margin) {
+      const aboveTop = r.top - gap - after.height;
+      if (aboveTop >= margin) {
+        panel.style.top = `${aboveTop}px`;
+      } else {
+        panel.style.top = `${margin}px`;
+        panel.style.maxHeight = `${Math.max(120, window.innerHeight - 2 * margin)}px`;
+      }
+    }
+  }
+
+  function setLcColumnPanelOpen(open) {
+    const modal = document.getElementById("lc-cols-modal");
+    const btn = document.getElementById("lc-cols-trigger");
+    const panel = document.getElementById("lc-cols-panel");
+    if (!modal || !btn) return;
+    modal.hidden = !open;
+    modal.setAttribute("aria-hidden", open ? "false" : "true");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!open && panel) {
+      panel.style.top = "";
+      panel.style.left = "";
+      panel.style.maxHeight = "";
+    }
+    if (open) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => positionLcColsDropdown());
+      });
+    }
+  }
+
+  function initLcColumnPicker() {
+    buildLcColumnMenuList();
+    const btn = document.getElementById("lc-cols-trigger");
+    const modal = document.getElementById("lc-cols-modal");
+    const panel = document.getElementById("lc-cols-panel");
+    const filterIn = document.getElementById("lc-cols-filter");
+    const list = document.getElementById("lc-cols-list");
+    const closeBtn = document.getElementById("lc-cols-close");
+    if (!btn || !modal || !panel) return;
+    list?.addEventListener("change", (e) => {
+      const cb = e.target.closest("input[data-lc-col]");
+      if (!cb) return;
+      const id = cb.dataset.lcCol;
+      if (!id || !Object.prototype.hasOwnProperty.call(lcColVisible, id)) return;
+      const col = getLcColumns().find((c) => c.id === id);
+      if (col && !cb.checked && lcController.getSortKey() === col.sortKey) {
+        lcController.resetSort();
+      }
+      lcColVisible[id] = cb.checked;
+      persistLcColumnVisibilityNow();
+      buildLcThead();
+      lcController.render();
+    });
+    function openLcColsModalFromTrigger() {
+      const willOpen = modal.hidden;
+      setLcColumnPanelOpen(willOpen);
+      if (willOpen) {
+        buildLcColumnMenuList();
+        filterIn?.focus();
+      }
+    }
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openLcColsModalFromTrigger();
+    });
+    btn.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openLcColsModalFromTrigger();
+      }
+    });
+    filterIn?.addEventListener("input", () => filterLcColumnMenuList());
+    closeBtn?.addEventListener("click", () => {
+      setLcColumnPanelOpen(false);
+      btn.focus();
+    });
+    modal.querySelector(".fw-cols-modal__backdrop")?.addEventListener("click", () => {
+      setLcColumnPanelOpen(false);
+      btn.focus();
+    });
+    document.addEventListener("mousedown", (e) => {
+      if (modal.hidden) return;
+      if (btn.contains(e.target) || panel.contains(e.target)) return;
+      setLcColumnPanelOpen(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !modal.hidden) {
+        setLcColumnPanelOpen(false);
+        btn.focus();
+      }
+    });
+
+    function repositionLcColsIfOpen() {
+      if (!modal.hidden) positionLcColsDropdown();
+    }
+    window.addEventListener("resize", repositionLcColsIfOpen);
+    window.addEventListener("scroll", repositionLcColsIfOpen, true);
+  }
+
+  function prepareLicense(row) {
+    const hostLabel =
+      row.firewall_host_label != null && String(row.firewall_host_label).trim() !== ""
+        ? String(row.firewall_host_label).trim()
+        : "";
+    const managedBy =
+      row.managed_by_tenant != null && String(row.managed_by_tenant).trim() !== ""
+        ? String(row.managed_by_tenant).trim()
+        : "";
+    return {
+      _id: row.serial_number,
+      _licenseSerial: row.serial_number != null && String(row.serial_number).trim() !== "" ? String(row.serial_number).trim() : "",
+      serial_number: row.serial_number || "—",
+      firewall_hostname: hostLabel,
+      managed_by_tenant: managedBy,
+      tenant_name: row.tenant_name || "—",
+      tenant_id: row.tenant_id || "—",
+      partner_id: row.partner_id || "—",
+      organization_id: row.organization_id || "—",
+      model: row.model || "—",
+      model_type: row.model_type || "—",
+      last_seen_at: row.last_seen_at || "",
+      subscription_count: row.subscription_count ?? 0,
+      state: row.state === "Active" ? "Active" : "Expired",
+    };
+  }
+
+  function prepareLicenseDetail(row) {
+    const hostLabel =
+      row.firewall_host_label != null && String(row.firewall_host_label).trim() !== ""
+        ? String(row.firewall_host_label).trim()
+        : "";
+    const managedBy =
+      row.managed_by_tenant != null && String(row.managed_by_tenant).trim() !== ""
+        ? String(row.managed_by_tenant).trim()
+        : "";
+    const serialRaw = row.serial_number != null && String(row.serial_number).trim() !== "" ? String(row.serial_number).trim() : "";
+    const serial = serialRaw || "—";
+    const subId =
+      row.subscription_id != null && String(row.subscription_id).trim() !== ""
+        ? String(row.subscription_id).trim()
+        : "";
+    const subStateRaw = row.subscription_state;
+    let subscription_state = "—";
+    if (subId) {
+      subscription_state = subStateRaw === "Active" ? "Active" : "Expired";
+    }
+    const qty = row.quantity;
+    const usage = row.usage_count;
+    return {
+      _id: subId ? `${serialRaw}|${subId}` : `${serialRaw}|`,
+      _licenseSerial: serialRaw,
+      serial_number: serial,
+      firewall_hostname: hostLabel,
+      managed_by_tenant: managedBy,
+      tenant_name: row.tenant_name || "—",
+      tenant_id: row.tenant_id || "—",
+      partner_id: row.partner_id || "—",
+      organization_id: row.organization_id || "—",
+      model: row.model || "—",
+      model_type: row.model_type || "—",
+      last_seen_at: row.last_seen_at || "",
+      license_state: row.license_state === "Active" ? "Active" : "Expired",
+      subscription_id: subId,
+      license_identifier:
+        row.license_identifier != null && String(row.license_identifier).trim() !== ""
+          ? String(row.license_identifier).trim()
+          : "—",
+      product_code: row.product_code || "—",
+      product_name: row.product_name || "—",
+      start_date: row.start_date || "",
+      end_date: row.end_date || "",
+      perpetual: row.perpetual === 1 || row.perpetual === true ? "Yes" : "No",
+      unlimited: row.unlimited === 1 || row.unlimited === true ? "Yes" : "No",
+      subscription_type:
+        row.subscription_type != null && String(row.subscription_type).trim() !== ""
+          ? String(row.subscription_type).trim()
+          : "—",
+      quantity: qty != null && qty !== "" ? Number(qty) : null,
+      usage_count: usage != null && usage !== "" ? Number(usage) : null,
+      subscription_state,
+    };
+  }
+
+  function licenseFacetValue(row, cat) {
+    if (cat === "subscription_count") return String(row.subscription_count ?? 0);
+    if (cat === "quantity" || cat === "usage_count") {
+      const v = row[cat];
+      if (v == null || Number.isNaN(v)) return "—";
+      return String(v);
+    }
+    const v = row[cat];
+    if (v == null || v === "") return "—";
+    return String(v);
+  }
+
+  function lcAddDaysCalendar(d, n) {
+    const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    x.setDate(x.getDate() + n);
+    return x;
+  }
+
+  function lcDayNormMs(d) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  }
+
+  function lcDayBetweenInclusive(d, minD, maxD) {
+    const t = lcDayNormMs(d);
+    return t >= lcDayNormMs(minD) && t <= lcDayNormMs(maxD);
+  }
+
+  function lcEndDateFacetEffectivePresets() {
+    const out = [];
+    for (const p of lcEndDatePresetSelections) {
+      if (p === "custom") {
+        if (lcEndDateCustomFrom.trim() && lcEndDateCustomTo.trim()) out.push("custom");
+      } else {
+        out.push(p);
+      }
+    }
+    return out;
+  }
+
+  function lcStartDateFacetEffectivePresets() {
+    const out = [];
+    for (const p of lcStartDatePresetSelections) {
+      if (p === "custom") {
+        if (lcStartDateCustomFrom.trim() && lcStartDateCustomTo.trim()) out.push("custom");
+      } else {
+        out.push(p);
+      }
+    }
+    return out;
+  }
+
+  function licenseMatchLcEndDateFacet(row) {
+    const presets = lcEndDateFacetEffectivePresets();
+    if (presets.length === 0) return true;
+    const today = startOfTodayLocal();
+    const end = parseLicenseDay(row.end_date);
+    let ok = false;
+    for (const p of presets) {
+      if (p === "custom") {
+        const fromD = parseLicenseDay(lcEndDateCustomFrom.trim());
+        const toD = parseLicenseDay(lcEndDateCustomTo.trim());
+        if (!end || !fromD || !toD) continue;
+        if (lcDayBetweenInclusive(end, fromD, toD)) ok = true;
+      } else if (!end) {
+        continue;
+      } else if (p === "past30") {
+        const minD = lcAddDaysCalendar(today, -30);
+        if (lcDayBetweenInclusive(end, minD, today)) ok = true;
+      } else if (p === "next30") {
+        const lo = lcAddDaysCalendar(today, 1);
+        const hi = lcAddDaysCalendar(today, 30);
+        if (lcDayBetweenInclusive(end, lo, hi)) ok = true;
+      } else if (p === "next60") {
+        const lo = lcAddDaysCalendar(today, 1);
+        const hi = lcAddDaysCalendar(today, 60);
+        if (lcDayBetweenInclusive(end, lo, hi)) ok = true;
+      } else if (p === "next90") {
+        const lo = lcAddDaysCalendar(today, 1);
+        const hi = lcAddDaysCalendar(today, 90);
+        if (lcDayBetweenInclusive(end, lo, hi)) ok = true;
+      }
+    }
+    return ok;
+  }
+
+  function licenseMatchLcStartDateFacet(row) {
+    const presets = lcStartDateFacetEffectivePresets();
+    if (presets.length === 0) return true;
+    const today = startOfTodayLocal();
+    const start = parseLicenseDay(row.start_date);
+    let ok = false;
+    for (const p of presets) {
+      if (p === "custom") {
+        const fromD = parseLicenseDay(lcStartDateCustomFrom.trim());
+        const toD = parseLicenseDay(lcStartDateCustomTo.trim());
+        if (!start || !fromD || !toD) continue;
+        if (lcDayBetweenInclusive(start, fromD, toD)) ok = true;
+      } else if (!start) {
+        continue;
+      } else if (p === "started") {
+        if (lcDayNormMs(start) <= lcDayNormMs(today)) ok = true;
+      } else if (p === "future") {
+        if (lcDayNormMs(start) > lcDayNormMs(today)) ok = true;
+      }
+    }
+    return ok;
+  }
+
+  function licenseFiltered() {
+    const rows = lcViewMode === "details" ? lcDetailPrepared : lcPrepared;
+    return rows.filter((row) => {
+      if (lcViewMode === "details") {
+        if (!licenseMatchLcEndDateFacet(row)) return false;
+        if (!licenseMatchLcStartDateFacet(row)) return false;
+      }
+      for (const [cat, selected] of Object.entries(lcFilterState)) {
+        if (!selected || selected.size === 0) continue;
+        const val = licenseFacetValue(row, cat);
+        if (!selected.has(val)) return false;
+      }
+      return true;
+    });
+  }
+
+  function clearLcDateFacetSelections() {
+    lcEndDatePresetSelections.clear();
+    lcStartDatePresetSelections.clear();
+    lcEndDateCustomFrom = "";
+    lcEndDateCustomTo = "";
+    lcStartDateCustomFrom = "";
+    lcStartDateCustomTo = "";
+  }
+
+  function lcEndDateFacetGroupHtml(idx) {
+    const open = idx < 3 ? "is-open" : "";
+    const opts = [
+      ["past30", "Past 30 days"],
+      ["next30", "Next 30 days"],
+      ["next60", "Next 60 days"],
+      ["next90", "Next 90 days"],
+      ["custom", "Custom"],
+    ];
+    const checks = opts
+      .map(
+        ([val, label]) => `
+          <label class="filter-opt">
+            <input type="checkbox" data-lc-end-preset="${escapeHtml(val)}" />
+            <span>${escapeHtml(label)}</span>
+          </label>`
+      )
+      .join("");
+    return `
+        <div class="filter-group ${open}" data-cat-wrap="lc_end_date_facet">
+          <button type="button" class="filter-group__head" aria-expanded="${idx < 3}">
+            <span>End date</span>
+            <span class="filter-group__chev">▼</span>
+          </button>
+          <div class="filter-group__body filter-group__body--date-facet">${checks}
+            <div class="filter-date-custom" data-lc-end-custom hidden>
+              <div class="filter-date-custom__row">
+                <label class="filter-date-custom__lab">From</label>
+                <input type="date" class="filter-date-custom__input" data-lc-end-from />
+              </div>
+              <div class="filter-date-custom__row">
+                <label class="filter-date-custom__lab">To</label>
+                <input type="date" class="filter-date-custom__input" data-lc-end-to />
+              </div>
+            </div>
+          </div>
+        </div>`;
+  }
+
+  function lcStartDateFacetGroupHtml(idx) {
+    const open = idx < 3 ? "is-open" : "";
+    const opts = [
+      ["started", "Already started"],
+      ["future", "Future start date"],
+      ["custom", "Custom"],
+    ];
+    const checks = opts
+      .map(
+        ([val, label]) => `
+          <label class="filter-opt">
+            <input type="checkbox" data-lc-start-preset="${escapeHtml(val)}" />
+            <span>${escapeHtml(label)}</span>
+          </label>`
+      )
+      .join("");
+    return `
+        <div class="filter-group ${open}" data-cat-wrap="lc_start_date_facet">
+          <button type="button" class="filter-group__head" aria-expanded="${idx < 3}">
+            <span>Start date</span>
+            <span class="filter-group__chev">▼</span>
+          </button>
+          <div class="filter-group__body filter-group__body--date-facet">${checks}
+            <div class="filter-date-custom" data-lc-start-custom hidden>
+              <div class="filter-date-custom__row">
+                <label class="filter-date-custom__lab">From</label>
+                <input type="date" class="filter-date-custom__input" data-lc-start-from />
+              </div>
+              <div class="filter-date-custom__row">
+                <label class="filter-date-custom__lab">To</label>
+                <input type="date" class="filter-date-custom__input" data-lc-start-to />
+              </div>
+            </div>
+          </div>
+        </div>`;
+  }
+
+  function updateLcEndCustomVisibility(host) {
+    const wrap = host.querySelector("[data-lc-end-custom]");
+    if (wrap) wrap.hidden = !lcEndDatePresetSelections.has("custom");
+  }
+
+  function updateLcStartCustomVisibility(host) {
+    const wrap = host.querySelector("[data-lc-start-custom]");
+    if (wrap) wrap.hidden = !lcStartDatePresetSelections.has("custom");
+  }
+
+  function readLcDateInputsFromDom(host) {
+    lcEndDateCustomFrom = host.querySelector("[data-lc-end-from]")?.value?.trim() || "";
+    lcEndDateCustomTo = host.querySelector("[data-lc-end-to]")?.value?.trim() || "";
+    lcStartDateCustomFrom = host.querySelector("[data-lc-start-from]")?.value?.trim() || "";
+    lcStartDateCustomTo = host.querySelector("[data-lc-start-to]")?.value?.trim() || "";
+  }
+
+  function syncLcDateFacetUi() {
+    const host = document.getElementById("license-filters");
+    if (!host || lcViewMode !== "details") return;
+    host.querySelectorAll("[data-lc-end-preset]").forEach((cb) => {
+      const v = cb.getAttribute("data-lc-end-preset");
+      if (v) cb.checked = lcEndDatePresetSelections.has(v);
+    });
+    host.querySelectorAll("[data-lc-start-preset]").forEach((cb) => {
+      const v = cb.getAttribute("data-lc-start-preset");
+      if (v) cb.checked = lcStartDatePresetSelections.has(v);
+    });
+    const ef = host.querySelector("[data-lc-end-from]");
+    const et = host.querySelector("[data-lc-end-to]");
+    const sf = host.querySelector("[data-lc-start-from]");
+    const st = host.querySelector("[data-lc-start-to]");
+    if (ef) ef.value = lcEndDateCustomFrom;
+    if (et) et.value = lcEndDateCustomTo;
+    if (sf) sf.value = lcStartDateCustomFrom;
+    if (st) st.value = lcStartDateCustomTo;
+    updateLcEndCustomVisibility(host);
+    updateLcStartCustomVisibility(host);
+  }
+
+  function wireLcDateFacetFilters(host) {
+    if (lcViewMode !== "details") return;
+    host.querySelectorAll("[data-lc-end-preset]").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const v = cb.getAttribute("data-lc-end-preset");
+        if (!v) return;
+        if (cb.checked) lcEndDatePresetSelections.add(v);
+        else lcEndDatePresetSelections.delete(v);
+        readLcDateInputsFromDom(host);
+        updateLcEndCustomVisibility(host);
+        lcDashState = null;
+        lcController.render();
+        refreshDashboardStatCards();
+        updateLicenseFiltersChrome();
+        schedulePersistUiState();
+      });
+    });
+    host.querySelectorAll("[data-lc-start-preset]").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const v = cb.getAttribute("data-lc-start-preset");
+        if (!v) return;
+        if (cb.checked) lcStartDatePresetSelections.add(v);
+        else lcStartDatePresetSelections.delete(v);
+        readLcDateInputsFromDom(host);
+        updateLcStartCustomVisibility(host);
+        lcDashState = null;
+        lcController.render();
+        refreshDashboardStatCards();
+        updateLicenseFiltersChrome();
+        schedulePersistUiState();
+      });
+    });
+    const onDateChange = () => {
+      readLcDateInputsFromDom(host);
+      lcDashState = null;
+      lcController.render();
+      refreshDashboardStatCards();
+      updateLicenseFiltersChrome();
+      schedulePersistUiState();
+    };
+    host.querySelectorAll("[data-lc-end-from], [data-lc-end-to], [data-lc-start-from], [data-lc-start-to]").forEach((inp) => {
+      inp.addEventListener("change", onDateChange);
+    });
+  }
+
+  function buildLicenseFilters() {
+    const host = document.getElementById("license-filters");
+    if (!host) return;
+    clearLcDateFacetSelections();
+    const dataRows = lcViewMode === "details" ? lcDetailPrepared : lcPrepared;
+    const groups =
+      lcViewMode === "details"
+        ? [
+            { key: "tenant_name", label: "Tenant" },
+            { key: "model", label: "Model" },
+            { key: "product_name", label: "Product" },
+            { key: "product_code", label: "Product code" },
+            { key: "subscription_type", label: "Subscription type" },
+            { key: "subscription_state", label: "Subscription state" },
+            { special: "lcStartDates" },
+            { special: "lcEndDates" },
+            { key: "perpetual", label: "Perpetual" },
+            { key: "license_state", label: "License state" },
+          ]
+        : [
+            { key: "tenant_name", label: "Tenant" },
+            { key: "model", label: "Model" },
+            { key: "model_type", label: "Model type" },
+            { key: "state", label: "State" },
+            { key: "subscription_count", label: "Subscriptions" },
+          ];
+
+    host.innerHTML = groups
+      .map((g, idx) => {
+        if (g.special === "lcEndDates") return lcEndDateFacetGroupHtml(idx);
+        if (g.special === "lcStartDates") return lcStartDateFacetGroupHtml(idx);
+        const opts = distinctValues(dataRows, g.key, 80);
+        lcFilterState[g.key] = new Set();
+        const open = idx < 3 ? "is-open" : "";
+        const optsHtml = opts
+          .map(
+            (o) => `
+          <label class="filter-opt">
+            <input type="checkbox" data-cat="${escapeHtml(g.key)}" value="${escapeHtml(o)}" />
+            <span>${escapeHtml(o)}</span>
+          </label>`
+          )
+          .join("");
+        return `
+        <div class="filter-group ${open}" data-cat-wrap="${escapeHtml(g.key)}">
+          <button type="button" class="filter-group__head" aria-expanded="${idx < 3}">
+            <span>${escapeHtml(g.label)}</span>
+            <span class="filter-group__chev">▼</span>
+          </button>
+          <div class="filter-group__body">${optsHtml}</div>
+        </div>`;
+      })
+      .join("");
+
+    host.querySelectorAll(".filter-group__head").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const g = btn.closest(".filter-group");
+        g.classList.toggle("is-open");
+        btn.setAttribute("aria-expanded", g.classList.contains("is-open"));
+      });
+    });
+
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const cat = cb.dataset.cat;
+        const st = lcFilterState[cat];
+        if (!st) return;
+        if (cb.checked) st.add(cb.value);
+        else st.delete(cb.value);
+        lcDashState = null;
+        lcController.render();
+        refreshDashboardStatCards();
+      });
+    });
+    wireLcDateFacetFilters(host);
+    updateLicenseFiltersChrome();
+  }
+
+  function licenseFacetFilterCount() {
+    let n = 0;
+    for (const st of Object.values(lcFilterState)) {
+      if (st instanceof Set) n += st.size;
+    }
+    if (lcViewMode === "details") {
+      n += lcEndDatePresetSelections.size + lcStartDatePresetSelections.size;
+    }
+    return n;
+  }
+
+  function updateLicenseFiltersChrome() {
+    const wrap = document.getElementById("lc-filters-head-actions");
+    const countEl = document.getElementById("lc-facet-count");
+    const resetBtn = document.getElementById("lc-facet-reset");
+    if (!wrap || !countEl || !resetBtn) return;
+    const n = licenseFacetFilterCount();
+    resetBtn.hidden = n === 0;
+    if (n === 0) {
+      wrap.hidden = true;
+      countEl.textContent = "";
+      return;
+    }
+    wrap.hidden = false;
+    countEl.innerHTML = `<span class="filters__facet-count-num">${n}</span> applied`;
+  }
+
+  function syncLicenseFilterCheckboxesFromState() {
+    const host = document.getElementById("license-filters");
+    if (!host) return;
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      const cat = cb.dataset.cat;
+      const st = lcFilterState[cat];
+      if (!st) return;
+      cb.checked = st.has(cb.value);
+    });
+  }
+
+  function resetLicenseFacetFilters() {
+    lcDashState = null;
+    clearLcDateFacetSelections();
+    const host = document.getElementById("license-filters");
+    for (const st of Object.values(lcFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    if (host) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        cb.checked = false;
+      });
+      host.querySelectorAll("[data-lc-end-preset], [data-lc-start-preset]").forEach((cb) => {
+        cb.checked = false;
+      });
+      host.querySelectorAll("[data-lc-end-from], [data-lc-end-to], [data-lc-start-from], [data-lc-start-to]").forEach((inp) => {
+        inp.value = "";
+      });
+      updateLcEndCustomVisibility(host);
+      updateLcStartCustomVisibility(host);
+    }
+    lcController.render();
+    setFiltersPanelCollapsed(document.querySelector("#panel-licenses .filters"), true);
+    schedulePersistUiState();
+    refreshDashboardStatCards();
+  }
+
+  function renderLcDataCell(colId, row) {
+    switch (colId) {
+      case "serial_number":
+        return `<td>${escapeHtml(row.serial_number)}</td>`;
+      case "firewall_hostname": {
+        if (!row.firewall_hostname) return "<td></td>";
+        const ser = row.serial_number === "—" ? "" : String(row.serial_number);
+        const serialAttr = escapeAttr(ser);
+        const label = escapeHtml(row.firewall_hostname);
+        return `<td><button type="button" class="cell-link lc-to-firewall" data-fw-serial="${serialAttr}" title="Show this firewall in Firewalls">${label}</button></td>`;
+      }
+      case "managed_by_tenant":
+        return row.managed_by_tenant
+          ? `<td>${escapeHtml(row.managed_by_tenant)}</td>`
+          : "<td></td>";
+      case "tenant_name":
+        return `<td>${escapeHtml(row.tenant_name)}</td>`;
+      case "model":
+        return `<td>${escapeHtml(row.model)}</td>`;
+      case "model_type":
+        return `<td>${escapeHtml(row.model_type)}</td>`;
+      case "last_seen_at":
+        return `<td class="muted">${fmtDate(row.last_seen_at)}</td>`;
+      case "subscription_count":
+        return `<td class="lc-col-subscriptions">${escapeHtml(String(row.subscription_count))}</td>`;
+      case "state": {
+        const active = row.state === "Active";
+        const cls = active ? "lc-state lc-state--active" : "lc-state lc-state--expired";
+        return `<td><span class="${cls}">${escapeHtml(row.state)}</span></td>`;
+      }
+      case "tenant_id":
+        return `<td class="fw-col-code">${escapeHtml(row.tenant_id)}</td>`;
+      case "partner_id":
+        return `<td class="fw-col-code">${escapeHtml(row.partner_id)}</td>`;
+      case "organization_id":
+        return `<td class="fw-col-code">${escapeHtml(row.organization_id)}</td>`;
+      case "license_identifier":
+        return `<td class="fw-col-code">${escapeHtml(row.license_identifier || "—")}</td>`;
+      case "product_name":
+        return `<td>${escapeHtml(row.product_name || "—")}</td>`;
+      case "product_code":
+        return `<td class="fw-col-code">${escapeHtml(row.product_code || "—")}</td>`;
+      case "subscription_type":
+        return `<td>${escapeHtml(row.subscription_type || "—")}</td>`;
+      case "start_date":
+        return `<td class="muted">${fmtDate(row.start_date)}</td>`;
+      case "end_date":
+        return `<td class="muted">${fmtDate(row.end_date)}</td>`;
+      case "perpetual":
+        return `<td>${escapeHtml(row.perpetual || "—")}</td>`;
+      case "unlimited":
+        return `<td>${escapeHtml(row.unlimited || "—")}</td>`;
+      case "quantity": {
+        const q = row.quantity;
+        if (q == null || Number.isNaN(q)) return "<td></td>";
+        return `<td>${escapeHtml(String(q))}</td>`;
+      }
+      case "usage_count": {
+        const u = row.usage_count;
+        if (u == null || Number.isNaN(u)) return "<td></td>";
+        return `<td>${escapeHtml(String(u))}</td>`;
+      }
+      case "subscription_state": {
+        if (!row.subscription_state || row.subscription_state === "—") return "<td></td>";
+        const active = row.subscription_state === "Active";
+        const cls = active ? "lc-state lc-state--active" : "lc-state lc-state--expired";
+        return `<td><span class="${cls}">${escapeHtml(row.subscription_state)}</span></td>`;
+      }
+      case "license_state": {
+        const active = row.license_state === "Active";
+        const cls = active ? "lc-state lc-state--active" : "lc-state lc-state--expired";
+        return `<td><span class="${cls}">${escapeHtml(row.license_state || "—")}</span></td>`;
+      }
+      default:
+        return "<td></td>";
+    }
+  }
+
+  function parseLicenseDay(s) {
+    const raw = String(s || "").trim();
+    if (!raw) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw);
+    if (m) {
+      const y = +m[1];
+      const mo = +m[2] - 1;
+      const d = +m[3];
+      const dt = new Date(y, mo, d);
+      if (dt.getFullYear() !== y || dt.getMonth() !== mo || dt.getDate() !== d) return null;
+      return dt;
+    }
+    const t = Date.parse(raw);
+    if (Number.isNaN(t)) return null;
+    const x = new Date(t);
+    const dt = new Date(x.getFullYear(), x.getMonth(), x.getDate());
+    return dt;
+  }
+
+  function startOfTodayLocal() {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  }
+
+  function dayAfter(d) {
+    const x = new Date(d.getTime());
+    x.setDate(x.getDate() + 1);
+    return x;
+  }
+
+  function noonLocal(d) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
+  }
+
+  function mergeOverlappingLicenseIntervals(intervals) {
+    if (!intervals.length) return [];
+    const sorted = intervals.slice().sort((a, b) => a.s.getTime() - b.s.getTime());
+    const out = [{ s: sorted[0].s, e: sorted[0].e }];
+    for (let i = 1; i < sorted.length; i++) {
+      const cur = sorted[i];
+      const last = out[out.length - 1];
+      if (cur.s.getTime() <= last.e.getTime()) {
+        if (cur.e.getTime() > last.e.getTime()) last.e = cur.e;
+      } else {
+        out.push({ s: cur.s, e: cur.e });
+      }
+    }
+    return out;
+  }
+
+  function buildLicenseGanttModel(subs) {
+    const byName = new Map();
+    const allStarts = [];
+    const allEnds = [];
+
+    for (const sub of subs) {
+      const start = parseLicenseDay(sub.start_date);
+      const end = parseLicenseDay(sub.end_date);
+      if (!start || !end || start.getTime() > end.getTime()) continue;
+      const nameRaw = sub.product_name;
+      const key =
+        nameRaw == null || String(nameRaw).trim() === "" ? "—" : String(nameRaw).trim();
+      if (!byName.has(key)) {
+        byName.set(key, { key, types: new Set(), intervals: [] });
+      }
+      const g = byName.get(key);
+      if (sub.type != null && String(sub.type).trim() !== "") {
+        g.types.add(String(sub.type).trim());
+      }
+      g.intervals.push({ s: start, e: end });
+      allStarts.push(start);
+      allEnds.push(end);
+    }
+
+    const groups = [];
+    for (const g of byName.values()) {
+      const merged = mergeOverlappingLicenseIntervals(g.intervals);
+      const types = [...g.types].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+      groups.push({
+        name: g.key,
+        types,
+        merged,
+      });
+    }
+    groups.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+
+    if (!allStarts.length) {
+      return {
+        groups: [],
+        minMs: null,
+        maxMs: null,
+        markers: [],
+        axisCapped: false,
+        fadeHorizonMs: null,
+      };
+    }
+
+    let segMinMs = Infinity;
+    let segMaxMs = -Infinity;
+    for (const g of groups) {
+      for (const seg of g.merged) {
+        const t0 = seg.s.getTime();
+        const t1 = dayAfter(seg.e).getTime();
+        if (t0 < segMinMs) segMinMs = t0;
+        if (t1 > segMaxMs) segMaxMs = t1;
+      }
+    }
+
+    const earliest = allStarts.reduce((a, b) => (a.getTime() <= b.getTime() ? a : b));
+    const furthestEnd = allEnds.reduce((a, b) => (a.getTime() >= b.getTime() ? a : b));
+    const today0 = startOfTodayLocal();
+    const todayMs = noonLocal(today0).getTime();
+
+    const upcomingEnds = allEnds.filter((e) => e.getTime() >= today0.getTime());
+    let nextExpiry = null;
+    if (upcomingEnds.length) {
+      nextExpiry = upcomingEnds.reduce((a, b) => (a.getTime() <= b.getTime() ? a : b));
+    }
+
+    /* Axis stops at ~5y past today; bar tails beyond that fade (no 2099-scale). */
+    const MS_DAY = 86400000;
+    const FADE_YEARS = 5;
+    const fadeHorizonMs = noonLocal(
+      (() => {
+        const d = new Date(today0);
+        d.setFullYear(d.getFullYear() + FADE_YEARS);
+        return d;
+      })()
+    ).getTime();
+    let axisCapped = segMaxMs > fadeHorizonMs;
+    let maxMs = axisCapped
+      ? Math.max(fadeHorizonMs, segMinMs + MS_DAY * 30, todayMs + MS_DAY)
+      : segMaxMs;
+    let minMs = Math.min(segMinMs, noonLocal(earliest).getTime());
+
+    const markerDates = [today0];
+    if (nextExpiry) markerDates.push(nextExpiry);
+    markerDates.push(furthestEnd);
+
+    for (const t of markerDates) {
+      const ms = noonLocal(t).getTime();
+      if (ms < minMs) minMs = ms;
+      if (axisCapped) {
+        if (ms > maxMs && ms <= fadeHorizonMs) maxMs = ms;
+      } else if (ms > maxMs) {
+        maxMs = ms;
+      }
+    }
+
+    let span = maxMs - minMs;
+    const pad = Math.max(86400000 * 2, span * 0.04);
+    minMs -= pad;
+    maxMs += pad;
+    span = maxMs - minMs;
+    if (span <= 0) {
+      minMs -= 86400000;
+      maxMs += 86400000;
+      span = maxMs - minMs;
+    }
+
+    const markers = [
+      {
+        kind: "start",
+        ms: noonLocal(earliest).getTime(),
+        label: "Earliest start",
+      },
+      { kind: "today", ms: todayMs, label: "Today" },
+    ];
+    if (nextExpiry) {
+      markers.push({
+        kind: "expiry-next",
+        ms: noonLocal(nextExpiry).getTime(),
+        label: "Next expiry",
+      });
+    }
+    const showFurthest =
+      !nextExpiry || furthestEnd.getTime() !== nextExpiry.getTime();
+    if (showFurthest) {
+      markers.push({
+        kind: "expiry-far",
+        ms: noonLocal(furthestEnd).getTime(),
+        label: "Furthest expiry",
+      });
+    }
+
+    return {
+      groups,
+      minMs,
+      maxMs,
+      span,
+      markers,
+      axisCapped,
+      fadeHorizonMs,
+    };
+  }
+
+  function renderLicenseGanttHtml(model) {
+    if (!model.groups.length) {
+      return '<p class="muted">No subscriptions with valid start and end dates.</p>';
+    }
+    const { groups, minMs, maxMs, span, fadeHorizonMs, axisCapped } = model;
+    const minLabel = minMs != null ? escapeHtml(new Date(minMs).toLocaleDateString()) : "—";
+    const maxLabel = maxMs != null ? escapeHtml(new Date(maxMs).toLocaleDateString()) : "—";
+
+    const VB_W = 1000;
+    const ROW = 40;
+    const BAR_H = 18;
+    const n = groups.length;
+    const vbH = n * ROW;
+
+    function xAt(ms) {
+      return ((ms - minMs) / span) * VB_W;
+    }
+
+    function clampBarX(x, w, maxW) {
+      const cx = Math.min(maxW, Math.max(0, x));
+      let cw = Math.max(0.5, w);
+      if (cx + cw > maxW) cw = Math.max(0.5, maxW - cx);
+      return { x: cx, w: cw };
+    }
+
+    const strokeByKind = {
+      start: { stroke: "#6a6a6a", dash: "5 4" },
+      today: { stroke: "#0066cc", dash: null },
+      "expiry-next": { stroke: "#c05600", dash: null },
+      "expiry-far": { stroke: "#6a1b9a", dash: null },
+    };
+
+    const markerLines = model.markers
+      .map((m) => {
+        const x = Math.min(VB_W, Math.max(0, xAt(m.ms)));
+        const spec = strokeByKind[m.kind] || strokeByKind.today;
+        const dash = spec.dash ? ` stroke-dasharray="${spec.dash}"` : "";
+        return `<line class="lc-gantt__svg-line lc-gantt__svg-line--${escapeAttr(m.kind)}" x1="${x.toFixed(2)}" x2="${x.toFixed(2)}" y1="0" y2="${vbH}" stroke="${escapeAttr(spec.stroke)}" stroke-width="2" vector-effect="non-scaling-stroke"${dash} />`;
+      })
+      .join("");
+
+    const rowBands = groups
+      .map(
+        (_, i) =>
+          `<rect class="lc-gantt__svg-row-bg" x="0" y="${i * ROW}" width="${VB_W}" height="${ROW}" fill="${i % 2 === 0 ? "#f7f7f7" : "#efefef"}" />`
+      )
+      .join("");
+
+    const fadeDefs = [];
+    const barsSvg = groups
+      .map((g, i) => {
+        const y = i * ROW + (ROW - BAR_H) / 2;
+        return g.merged
+          .map((seg, j) => {
+            const t0 = seg.s.getTime();
+            const t1 = dayAfter(seg.e).getTime();
+            const xStartRaw = xAt(t0);
+            const xEndRaw = Math.min(VB_W, Math.max(0, xAt(t1)));
+            const xFade =
+              fadeHorizonMs != null
+                ? Math.min(VB_W, Math.max(0, xAt(fadeHorizonMs)))
+                : VB_W;
+            const tailFades =
+              fadeHorizonMs != null &&
+              axisCapped &&
+              t1 > fadeHorizonMs &&
+              xEndRaw > xFade + 0.5;
+
+            if (!tailFades) {
+              let w = xEndRaw - xStartRaw;
+              const c = clampBarX(xStartRaw, w, VB_W);
+              return `<rect class="lc-gantt__svg-bar" x="${c.x.toFixed(2)}" y="${y.toFixed(2)}" width="${c.w.toFixed(2)}" height="${BAR_H}" rx="3" />`;
+            }
+
+            const xSolidEnd = Math.min(xFade, xEndRaw);
+            let parts = "";
+            if (xSolidEnd > xStartRaw + 0.25) {
+              const c = clampBarX(xStartRaw, xSolidEnd - xStartRaw, VB_W);
+              parts += `<rect class="lc-gantt__svg-bar" x="${c.x.toFixed(2)}" y="${y.toFixed(2)}" width="${c.w.toFixed(2)}" height="${BAR_H}" rx="3" />`;
+            }
+            const fadeW = xEndRaw - xFade;
+            if (fadeW > 0.5) {
+              const gid = `lcg-fade-${i}-${j}`;
+              fadeDefs.push(
+                `<linearGradient id="${gid}" gradientUnits="userSpaceOnUse" x1="${xFade.toFixed(2)}" y1="${y.toFixed(2)}" x2="${xEndRaw.toFixed(2)}" y2="${y.toFixed(2)}"><stop offset="0%" stop-color="#2d7dcc" stop-opacity="0.92"/><stop offset="100%" stop-color="#2d7dcc" stop-opacity="0"/></linearGradient>`
+              );
+              parts += `<rect class="lc-gantt__svg-bar lc-gantt__svg-bar--fade" fill="url(#${gid})" x="${xFade.toFixed(2)}" y="${y.toFixed(2)}" width="${fadeW.toFixed(2)}" height="${BAR_H}" rx="3" />`;
+            }
+            return parts;
+          })
+          .join("");
+      })
+      .join("");
+
+    const defsBlock =
+      fadeDefs.length > 0 ? `<defs>${fadeDefs.join("")}</defs>` : "";
+
+    const svgChart = `<svg class="lc-gantt__svg" viewBox="0 0 ${VB_W} ${vbH}" preserveAspectRatio="none" width="100%" height="100%" role="img" aria-label="Subscription timeline by product">
+        ${defsBlock}
+        ${rowBands}
+        ${barsSvg}
+        ${markerLines}
+      </svg>`;
+
+    const rowsHtml = groups
+      .map((g, i) => {
+        const row = i + 1;
+        const nameText = g.name && String(g.name).trim() ? String(g.name).trim() : "—";
+        const pills = (g.types || [])
+          .map((t) => `<span class="lc-gantt__type-pill">${escapeHtml(t)}</span>`)
+          .join("");
+        return `<div class="lc-gantt__label" style="grid-row:${row}"><span class="lc-gantt__label-text">${escapeHtml(nameText)}</span>${pills}</div>`;
+      })
+      .join("");
+    const chartCell = `<div class="lc-gantt__chart-cell" style="grid-row:1 / span ${n}">${svgChart}</div>`;
+
+    const legendByLabel = {
+      "Earliest start": '<span class="lc-gantt__legend-swatch lc-gantt__legend-swatch--start"></span>',
+      Today: '<span class="lc-gantt__legend-swatch lc-gantt__legend-swatch--today"></span>',
+      "Next expiry": '<span class="lc-gantt__legend-swatch lc-gantt__legend-swatch--expiry-next"></span>',
+      "Furthest expiry": '<span class="lc-gantt__legend-swatch lc-gantt__legend-swatch--expiry-far"></span>',
+    };
+    const legendItems = model.markers
+      .map((m) => {
+        const sw = legendByLabel[m.label] || "";
+        return `<span class="lc-gantt__legend-item">${sw}<span>${escapeHtml(m.label)}</span></span>`;
+      })
+      .join("");
+
+    const capNote =
+      model.axisCapped && model.fadeHorizonMs != null
+        ? `<p class="lc-gantt__cap-note muted">The time axis runs to ${escapeHtml(new Date(model.fadeHorizonMs).toLocaleDateString())} (about five years from today). Licenses with later placeholder ends fade out after that; see the table for exact end dates.</p>`
+        : "";
+
+    return `<div class="lc-gantt">
+      <p class="lc-gantt__bounds">Timeline: ${minLabel} — ${maxLabel}</p>
+      ${capNote}
+      <div class="lc-gantt__main">
+        <div class="lc-gantt__grid" style="grid-template-rows: repeat(${n}, var(--lc-gantt-row))">${rowsHtml}${chartCell}</div>
+      </div>
+      <div class="lc-gantt__legend">
+        <div class="lc-gantt__legend-title">Timeline markers</div>
+        <div class="lc-gantt__legend-items">${legendItems}</div>
+      </div>
+    </div>`;
+  }
+
+  function closeLicenseSubscriptionsFlyout() {
+    const backdrop = document.getElementById("license-flyout-backdrop");
+    const panel = document.getElementById("license-flyout");
+    if (backdrop) backdrop.hidden = true;
+    if (panel) {
+      panel.hidden = true;
+      panel.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  async function openLicenseSubscriptionsFlyout(serial) {
+    const backdrop = document.getElementById("license-flyout-backdrop");
+    const panel = document.getElementById("license-flyout");
+    const body = document.getElementById("license-flyout-body");
+    const title = document.getElementById("license-flyout-title");
+    if (!backdrop || !panel || !body || !title) return;
+
+    const safeSerial = serial == null ? "" : String(serial);
+    title.textContent = "License subscriptions";
+    body.innerHTML = '<p class="muted">Loading subscriptions…</p>';
+    backdrop.hidden = false;
+    panel.hidden = false;
+    panel.setAttribute("aria-hidden", "false");
+
+    const closeBtn = panel.querySelector(".flyout__close-btn");
+    closeBtn?.focus();
+
+    let subs;
+    try {
+      const q = encodeURIComponent(safeSerial);
+      subs = await loadJson(`/api/license-subscriptions?serial=${q}`);
+    } catch (e) {
+      console.error(e);
+      body.innerHTML =
+        '<p class="muted">Could not load subscriptions. Check the console or try again.</p>';
+      return;
+    }
+
+    if (!Array.isArray(subs)) subs = [];
+
+    const lic = lcPrepared.find((r) => r._id === safeSerial);
+    const serialHtml = escapeHtml(lic?.serial_number || safeSerial || "—");
+    const metaBits = [];
+    if (lic?.model && lic.model !== "—") metaBits.push(escapeHtml(lic.model));
+    if (lic?.tenant_name && lic.tenant_name !== "—") metaBits.push(escapeHtml(lic.tenant_name));
+    const meta = metaBits.length ? ` · ${metaBits.join(" · ")}` : "";
+
+    title.textContent = `Subscriptions — ${lic?.serial_number || safeSerial || "—"}`;
+    const model = buildLicenseGanttModel(subs);
+    const ganttHtml = renderLicenseGanttHtml(model);
+
+    const listRows = subs
+      .map((s) => {
+        const pc = escapeHtml(s.product_code || "—");
+        const pn = escapeHtml(s.product_name || "—");
+        const sd = escapeHtml(s.start_date || "—");
+        const ed = escapeHtml(s.end_date || "—");
+        return `<tr><td>${pc}</td><td>${pn}</td><td class="muted">${sd}</td><td class="muted">${ed}</td></tr>`;
+      })
+      .join("");
+
+    body.innerHTML = `
+      <p class="lc-gantt__lead">Serial <code>${serialHtml}</code>${meta}</p>
+      ${subs.length === 0 ? '<p class="muted">No subscriptions for this license.</p>' : ""}
+      ${subs.length ? ganttHtml : ""}
+      ${subs.length
+        ? `<h3 class="lc-gantt__legend-title" style="margin-top:24px">All subscriptions (${subs.length})</h3>
+      <div class="table-scroll" style="max-height:240px;margin-top:8px">
+        <table class="data-table data-table--dense">
+          <thead><tr><th>Product code</th><th>Product</th><th>Start</th><th>End</th></tr></thead>
+          <tbody>${listRows}</tbody>
+        </table>
+      </div>`
+        : ""
+      }
+    `;
+  }
+
+  function initLicenseSubscriptionsFlyout() {
+    document.getElementById("license-flyout-backdrop")?.addEventListener("click", closeLicenseSubscriptionsFlyout);
+    document.querySelector("#license-flyout .flyout__close-btn")?.addEventListener("click", closeLicenseSubscriptionsFlyout);
+
+    const lcTbody = document.getElementById("lc-tbody");
+    if (lcTbody) {
+      lcTbody.addEventListener("click", (e) => {
+        const fwBtn = e.target.closest("button.lc-to-firewall");
+        if (fwBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          const ser = fwBtn.getAttribute("data-fw-serial");
+          if (ser == null || ser === "") return;
+          goToFirewallsFilteredBySerial(ser);
+          schedulePersistUiState();
+          return;
+        }
+        const tr = e.target.closest("tr.lc-row");
+        if (!tr) return;
+        const serial = tr.getAttribute("data-serial");
+        if (serial == null || serial === "") return;
+        openLicenseSubscriptionsFlyout(serial).catch(console.error);
+      });
+      lcTbody.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        if (e.target.closest("button.lc-to-firewall")) return;
+        const tr = e.target.closest("tr.lc-row");
+        if (!tr) return;
+        e.preventDefault();
+        const serial = tr.getAttribute("data-serial");
+        if (serial == null || serial === "") return;
+        openLicenseSubscriptionsFlyout(serial).catch(console.error);
+      });
+    }
+  }
+
+  function renderLicenseDataRow(row) {
+    const cells = getLcColumns()
+      .filter((c) => lcColVisible[c.id])
+      .map((c) => renderLcDataCell(c.id, row))
+      .join("");
+    const serialForFlyout =
+      row._licenseSerial != null && String(row._licenseSerial).trim() !== ""
+        ? String(row._licenseSerial).trim()
+        : row.serial_number !== "—"
+          ? String(row.serial_number)
+          : "";
+    const serialAttr = escapeAttr(serialForFlyout);
+    return `<tr class="lc-row" tabindex="0" data-serial="${serialAttr}" aria-label="View subscriptions for this license">
+        ${cells}
+      </tr>`;
+  }
+
+  buildLcThead();
+
+  const lcTableEl = document.getElementById("lc-table");
+  const lcController = createTableController({
+    tbody: document.getElementById("lc-tbody"),
+    countEl: document.getElementById("lc-count"),
+    rangeEl: document.getElementById("lc-lazy-hint"),
+    pageSizeEl: document.getElementById("lc-page-size"),
+    searchInput: document.getElementById("lc-search"),
+    selectAllInput: null,
+    sortHeaders: [],
+    sortDelegateRoot: lcTableEl,
+    getFilteredRows: licenseFiltered,
+    getRowSearchText: (row) => {
+      if (lcViewMode === "details") {
+        return [
+          row.serial_number,
+          row.license_identifier,
+          row.product_name,
+          row.product_code,
+          row.subscription_type,
+          row.start_date,
+          row.end_date,
+          row.perpetual,
+          row.unlimited,
+          row.quantity != null && !Number.isNaN(row.quantity) ? String(row.quantity) : "",
+          row.usage_count != null && !Number.isNaN(row.usage_count) ? String(row.usage_count) : "",
+          row.subscription_state,
+          row.license_state,
+          row.tenant_name,
+          row.model,
+          row.model_type,
+          row.firewall_hostname,
+          row.managed_by_tenant,
+          row.last_seen_at,
+        ]
+          .join(" ")
+          .toLowerCase();
+      }
+      return [
+        row.serial_number,
+        row.firewall_hostname,
+        row.managed_by_tenant,
+        row.tenant_name,
+        row.tenant_id,
+        row.partner_id,
+        row.organization_id,
+        row.model,
+        row.model_type,
+        row.last_seen_at,
+        String(row.subscription_count),
+        row.state,
+      ]
+        .join(" ")
+        .toLowerCase();
+    },
+    renderRow: (row) => renderLicenseDataRow(row),
+    afterRender: updateLicenseFiltersChrome,
+  });
+
+  initLcColumnPicker();
+
+  function setLicenseViewMode(mode) {
+    if (mode !== "summary" && mode !== "details") return;
+    if (mode === lcViewMode) return;
+    if (mode === "summary") {
+      lcDashState = null;
+      refreshDashboardStatCards();
+    }
+    persistLcColumnVisibilityNow();
+    lcViewMode = mode;
+    lcColVisible = loadLcColumnVisibilitySnapshot(mode);
+    updateLcViewToggleUi();
+    buildLcThead();
+    buildLcColumnMenuList();
+    buildLicenseFilters();
+    lcController.resetSort();
+    lcController.clearSelection();
+    lcController.resetPage();
+    lcController.render(true);
+    schedulePersistUiState();
+  }
+
+  function expandLicenseFiltersPanel() {
+    setFiltersPanelCollapsed(document.querySelector("#panel-licenses .filters"), false);
+  }
+
+  function openLicenseFilterGroup(cat) {
+    expandLicenseFiltersPanel();
+    const wrap = document.querySelector(`#license-filters .filter-group[data-cat-wrap="${cat}"]`);
+    if (!wrap) return;
+    wrap.classList.add("is-open");
+    const head = wrap.querySelector(".filter-group__head");
+    if (head) head.setAttribute("aria-expanded", "true");
+  }
+
+  async function goToLicensesUnfiltered() {
+    lcDashState = null;
+    clearLcDateFacetSelections();
+    if (Object.keys(lcFilterState).length === 0) {
+      await loadLicenses();
+    }
+    for (const st of Object.values(lcFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    const host = document.getElementById("license-filters");
+    if (host) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        cb.checked = false;
+      });
+    }
+    syncLcDateFacetUi();
+    lcController.resetSort();
+    lcController.resetPage();
+    lcController.clearSelection();
+    activateTab("licenses");
+    lcController.render(true);
+    updateLicenseFiltersChrome();
+    schedulePersistUiState();
+    refreshDashboardStatCards();
+  }
+
+  async function goToLicensesFilteredBySubscriptionState(state) {
+    if (state !== "Active" && state !== "Expired") return;
+    if (Object.keys(lcFilterState).length === 0) {
+      await loadLicenses();
+    }
+    setLicenseViewMode("details");
+    lcDashState = state;
+    for (const st of Object.values(lcFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    clearLcDateFacetSelections();
+    const subSet = lcFilterState.subscription_state;
+    if (!subSet) return;
+    subSet.clear();
+    subSet.add(state);
+    syncLicenseFilterCheckboxesFromState();
+    syncLcDateFacetUi();
+    openLicenseFilterGroup("subscription_state");
+    lcController.resetSort();
+    lcController.resetPage();
+    lcController.clearSelection();
+    activateTab("licenses");
+    lcController.render(true);
+    updateLicenseFiltersChrome();
+    schedulePersistUiState();
+    refreshDashboardStatCards();
+  }
+
+  /** Dashboard expiring count: same window as API (past 30 / next 90 end dates); applies End date Past 30 + Next 90. */
+  async function goToLicensesDashboardExpiring() {
+    if (Object.keys(lcFilterState).length === 0) {
+      await loadLicenses();
+    }
+    lcDashState = "Expiring";
+    setLicenseViewMode("details");
+    for (const st of Object.values(lcFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    clearLcDateFacetSelections();
+    lcEndDatePresetSelections.add("past30");
+    lcEndDatePresetSelections.add("next90");
+    syncLicenseFilterCheckboxesFromState();
+    syncLcDateFacetUi();
+    openLicenseFilterGroup("lc_end_date_facet");
+    lcController.resetSort();
+    lcController.resetPage();
+    lcController.clearSelection();
+    activateTab("licenses");
+    lcController.render(true);
+    updateLicenseFiltersChrome();
+    schedulePersistUiState();
+    refreshDashboardStatCards();
+  }
+
+  function initLcViewToggle() {
+    document.getElementById("lc-view-summary")?.addEventListener("click", () => setLicenseViewMode("summary"));
+    document.getElementById("lc-view-details")?.addEventListener("click", () => setLicenseViewMode("details"));
+  }
+
+  initLcViewToggle();
+  initLicenseSubscriptionsFlyout();
+
+  /* ---------- Table export (CSV / JSON / XLSX) ---------- */
+  let tableExportKind = null;
+  let tableExportAnchor = null;
+
+  function exportTimestampForFilename() {
+    return new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  }
+
+  function triggerDownloadText(filename, mime, text) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function csvEscapeCell(val) {
+    const s = val == null ? "" : String(val);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  }
+
+  function downloadXlsxFile(filename, sheetName, aoa) {
+    const XLSX = window.XLSX;
+    if (!XLSX?.utils?.aoa_to_sheet) {
+      window.alert(
+        "Excel export is not available (spreadsheet library failed to load). Use CSV or JSON instead."
+      );
+      return;
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    const sn = (sheetName || "Export").slice(0, 31) || "Sheet1";
+    XLSX.utils.book_append_sheet(wb, ws, sn);
+    XLSX.writeFile(wb, filename);
+  }
+
+  function deliverTableExport(format, labels, dataRows, objectsForJson, baseName, sheetName) {
+    const ts = exportTimestampForFilename();
+    if (format === "json") {
+      triggerDownloadText(
+        `${baseName}-${ts}.json`,
+        "application/json;charset=utf-8",
+        JSON.stringify(objectsForJson, null, 2)
+      );
+      return;
+    }
+    if (format === "csv") {
+      const lines = [labels.map(csvEscapeCell).join(",")];
+      for (const row of dataRows) lines.push(row.map(csvEscapeCell).join(","));
+      triggerDownloadText(`${baseName}-${ts}.csv`, "text/csv;charset=utf-8", `\uFEFF${lines.join("\r\n")}`);
+      return;
+    }
+    downloadXlsxFile(`${baseName}-${ts}.xlsx`, sheetName, [labels, ...dataRows]);
+  }
+
+  function exportPlainDateTime(s) {
+    if (!s) return "";
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? String(s) : d.toLocaleString();
+  }
+
+  function fwExportCell(row, colId) {
+    switch (colId) {
+      case "status":
+        return row.status || "";
+      case "firmware_upgrade":
+        return String(row.firmware_upgrade_count ?? 0);
+      case "alert_count":
+        return String(row.alert_count ?? 0);
+      case "model":
+        return fwModelDisplay(row.model);
+      case "firmware_version":
+        return fwFirmwareDisplay(row.firmware_version);
+      case "connected":
+        return yesNo(row.connected);
+      case "suspended":
+        return yesNo(row.suspended);
+      case "state_changed_at":
+        return exportPlainDateTime(row.state_changed_at);
+      case "tagsPlain":
+        return row.tagsPlain || "";
+      case "capabilities_json":
+        return row.capabilities_display != null ? String(row.capabilities_display) : "";
+      case "location":
+        return row.has_location === 1 && row.geo_lat != null && row.geo_lon != null
+          ? `${row.geo_lat}, ${row.geo_lon}`
+          : "";
+      default: {
+        const v = row[colId];
+        return v == null || v === "" ? "" : String(v);
+      }
+    }
+  }
+
+  function tnExportCell(row, colId) {
+    if (colId === "updated_at") return exportPlainDateTime(row.updated_at);
+    if (colId === "firewall_count") return String(row.firewall_count ?? 0);
+    const v = row[colId];
+    return v == null || v === "" ? "" : String(v);
+  }
+
+  function lcExportCell(colId, row) {
+    switch (colId) {
+      case "last_seen_at":
+      case "start_date":
+      case "end_date":
+        return exportPlainDateTime(row[colId]);
+      case "subscription_count":
+        return String(row.subscription_count ?? 0);
+      case "quantity":
+      case "usage_count": {
+        const v = row[colId];
+        if (v == null || Number.isNaN(v)) return "";
+        return String(v);
+      }
+      case "state":
+      case "subscription_state":
+      case "license_state":
+        return row[colId] ? String(row[colId]) : "";
+      default: {
+        const v = row[colId];
+        return v == null || v === "" ? "" : String(v);
+      }
+    }
+  }
+
+  function buildDashboardAlertExportParams() {
+    const params = new URLSearchParams();
+    params.set("page_size", "200");
+    if (daState.severity && daState.severity !== "all") params.set("severity", daState.severity);
+    daFilterState.tenant_name.forEach((v) => params.append("tenant_name", v));
+    daFilterState.firewall_hostname.forEach((v) => params.append("firewall_hostname", v));
+    const q = getDashboardAlertsSearchQuery();
+    if (q) params.set("q", q);
+    return params;
+  }
+
+  async function fetchAllDashboardAlertsForExport() {
+    const params = buildDashboardAlertExportParams();
+    const all = [];
+    let page = 1;
+    let total = Infinity;
+    while (all.length < total) {
+      params.set("page", String(page));
+      const data = await loadJson(`/api/alerts?${params.toString()}`);
+      total = data.total ?? 0;
+      const items = data.items || [];
+      if (!items.length) break;
+      all.push(...items);
+      page += 1;
+      if (items.length < 200) break;
+    }
+    return all;
+  }
+
+  function alertRowDisplayCell(r, col) {
+    if (col === "raised_at") return exportPlainDateTime(r.raised_at);
+    const v = r[col];
+    return v == null || v === "" ? "—" : String(v);
+  }
+
+  async function exportDashboardAlertsTable(format) {
+    const all = await fetchAllDashboardAlertsForExport();
+    const headers = [
+      { id: "severity", label: "Severity" },
+      { id: "tenant_name", label: "Tenant" },
+      { id: "firewall_hostname", label: "Firewall" },
+      { id: "description", label: "Description" },
+      { id: "raised_at", label: "Raised" },
+    ];
+    const labels = headers.map((h) => h.label);
+    const dataRows = all.map((r) => headers.map((h) => alertRowDisplayCell(r, h.id)));
+    const objectsForJson = all.map((r) => {
+      const o = {};
+      headers.forEach((h) => {
+        o[h.label] = alertRowDisplayCell(r, h.id);
+      });
+      return o;
+    });
+    deliverTableExport(format, labels, dataRows, objectsForJson, "alerts", "Alerts");
+  }
+
+  function closeTableExportPopover() {
+    const pop = document.getElementById("table-export-popover");
+    if (pop) {
+      pop.hidden = true;
+      pop.style.visibility = "";
+    }
+    tableExportKind = null;
+    tableExportAnchor = null;
+    document.querySelectorAll(".toolbar__export-btn").forEach((b) => b.setAttribute("aria-expanded", "false"));
+  }
+
+  function positionTableExportPopover(anchor) {
+    const pop = document.getElementById("table-export-popover");
+    if (!pop || !anchor) return;
+    pop.hidden = false;
+    pop.style.visibility = "hidden";
+    requestAnimationFrame(() => {
+      const r = anchor.getBoundingClientRect();
+      const pw = pop.offsetWidth;
+      const ph = pop.offsetHeight;
+      let left = r.right - pw;
+      if (left < 8) left = 8;
+      if (left + pw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - 8 - pw);
+      let top = r.bottom + 6;
+      if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+      pop.style.position = "fixed";
+      pop.style.left = `${left}px`;
+      pop.style.top = `${top}px`;
+      pop.style.zIndex = "400";
+      pop.style.visibility = "";
+    });
+  }
+
+  function openTableExportPopover(anchor, kind) {
+    const pop = document.getElementById("table-export-popover");
+    if (!pop) return;
+    tableExportKind = kind;
+    tableExportAnchor = anchor;
+    document.querySelectorAll(".toolbar__export-btn").forEach((b) => b.setAttribute("aria-expanded", "false"));
+    anchor.setAttribute("aria-expanded", "true");
+    positionTableExportPopover(anchor);
+  }
+
+  function bindExportButton(id, kind) {
+    document.getElementById(id)?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      const pop = document.getElementById("table-export-popover");
+      if (!pop) return;
+      if (!pop.hidden && tableExportAnchor === btn) closeTableExportPopover();
+      else openTableExportPopover(btn, kind);
+    });
+  }
+
+  async function runTableExport(format) {
+    const kind = tableExportKind;
+    closeTableExportPopover();
+    if (!kind || !["csv", "json", "xlsx"].includes(format)) return;
+    try {
+      if (kind === "da") {
+        await exportDashboardAlertsTable(format);
+        return;
+      }
+      if (kind === "fw") {
+        const rows = fwController.getFullFilteredRows();
+        const headers = FW_COLUMNS.filter((c) => fwColVisible[c.id]).map((c) => ({ id: c.id, label: c.label }));
+        const labels = headers.map((h) => h.label);
+        const dataRows = rows.map((r) => headers.map((h) => fwExportCell(r, h.id)));
+        const objectsForJson = rows.map((r) => {
+          const o = {};
+          headers.forEach((h) => {
+            o[h.label] = fwExportCell(r, h.id);
+          });
+          return o;
+        });
+        deliverTableExport(format, labels, dataRows, objectsForJson, "firewalls", "Firewalls");
+        return;
+      }
+      if (kind === "tn") {
+        const rows = tnController.getFullFilteredRows();
+        const headers = TN_COLUMNS.filter((c) => tnColVisible[c.id]).map((c) => ({ id: c.id, label: c.label }));
+        const labels = headers.map((h) => h.label);
+        const dataRows = rows.map((r) => headers.map((h) => tnExportCell(r, h.id)));
+        const objectsForJson = rows.map((r) => {
+          const o = {};
+          headers.forEach((h) => {
+            o[h.label] = tnExportCell(r, h.id);
+          });
+          return o;
+        });
+        deliverTableExport(format, labels, dataRows, objectsForJson, "tenants", "Tenants");
+        return;
+      }
+      if (kind === "lc") {
+        const rows = lcController.getFullFilteredRows();
+        const headers = getLcColumns()
+          .filter((c) => lcColVisible[c.id])
+          .map((c) => ({ id: c.id, label: c.label }));
+        const labels = headers.map((h) => h.label);
+        const dataRows = rows.map((r) => headers.map((h) => lcExportCell(h.id, r)));
+        const objectsForJson = rows.map((r) => {
+          const o = {};
+          headers.forEach((h) => {
+            o[h.label] = lcExportCell(h.id, r);
+          });
+          return o;
+        });
+        const base = lcViewMode === "details" ? "licenses-details" : "licenses";
+        deliverTableExport(format, labels, dataRows, objectsForJson, base, "Licenses");
+      }
+    } catch (err) {
+      console.error(err);
+      window.alert("Export failed. See the console for details.");
+    }
+  }
+
+  function initTableExportUi() {
+    const pop = document.getElementById("table-export-popover");
+    if (!pop) return;
+
+    bindExportButton("da-export-btn", "da");
+    bindExportButton("fw-export-btn", "fw");
+    bindExportButton("tn-export-btn", "tn");
+    bindExportButton("lc-export-btn", "lc");
+
+    pop.querySelectorAll("[data-export-format]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const fmt = b.getAttribute("data-export-format");
+        if (fmt) runTableExport(fmt).catch(console.error);
+      });
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !pop.hidden) closeTableExportPopover();
+    });
+    document.addEventListener("mousedown", (e) => {
+      if (pop.hidden) return;
+      if (pop.contains(e.target)) return;
+      if (e.target.closest(".toolbar__export-btn")) return;
+      closeTableExportPopover();
+    });
+
+    window.addEventListener("resize", () => {
+      if (!pop.hidden && tableExportAnchor) positionTableExportPopover(tableExportAnchor);
+    });
+  }
+
+  initTableExportUi();
+
+  function collectUiState() {
+    const daPageSizeEl = document.getElementById("da-page-size");
+    const daSearchEl = document.getElementById("da-search");
+    const fwSearch = document.getElementById("fw-search");
+    const fwPageSizeEl = document.getElementById("fw-page-size");
+    const tnSearch = document.getElementById("tn-search");
+    const tnPageSizeEl = document.getElementById("tn-page-size");
+    const lcSearch = document.getElementById("lc-search");
+    const lcPageSizeEl = document.getElementById("lc-page-size");
+    const dashFiltersAside = document.querySelector("#panel-dashboard .filters");
+    const fwFiltersAside = document.querySelector("#panel-firewalls .filters");
+    const tnFiltersAside = document.querySelector("#panel-tenants .filters");
+    const lcFiltersAside = document.querySelector("#panel-licenses .filters");
+
+    const fwFilters = {};
+    for (const [k, st] of Object.entries(fwFilterState)) {
+      if (st instanceof Set) fwFilters[k] = [...st];
+    }
+    const tnFilters = {};
+    for (const [k, st] of Object.entries(tnFilterState)) {
+      if (st instanceof Set) tnFilters[k] = [...st];
+    }
+    const lcFilters = {};
+    for (const [k, st] of Object.entries(lcFilterState)) {
+      if (st instanceof Set) lcFilters[k] = [...st];
+    }
+
+    return {
+      tab: getActiveTabName(),
+      dashboard: {
+        severity: daState.severity,
+        search: daSearchEl ? daSearchEl.value : "",
+        pageSize: daPageSizeEl
+          ? Math.max(1, parseInt(daPageSizeEl.value, 10) || daState.pageSize)
+          : daState.pageSize,
+        tenant_names: [...daFilterState.tenant_name],
+        firewall_hostnames: [...daFilterState.firewall_hostname],
+        filtersExpanded: dashFiltersAside
+          ? !dashFiltersAside.classList.contains("filters--collapsed")
+          : undefined,
+      },
+      firewalls: {
+        linkMode: fwLinkMode,
+        search: fwSearch ? fwSearch.value : "",
+        pageSize: fwPageSizeEl ? Math.max(1, parseInt(fwPageSizeEl.value, 10) || 50) : 50,
+        filters: fwFilters,
+        table: fwController.getTableState(),
+        filtersExpanded: fwFiltersAside
+          ? !fwFiltersAside.classList.contains("filters--collapsed")
+          : undefined,
+      },
+      tenants: {
+        search: tnSearch ? tnSearch.value : "",
+        pageSize: tnPageSizeEl ? Math.max(1, parseInt(tnPageSizeEl.value, 10) || 50) : 50,
+        filters: tnFilters,
+        table: tnController.getTableState(),
+        filtersExpanded: tnFiltersAside
+          ? !tnFiltersAside.classList.contains("filters--collapsed")
+          : undefined,
+      },
+      licenses: {
+        viewMode: lcViewMode,
+        search: lcSearch ? lcSearch.value : "",
+        pageSize: lcPageSizeEl ? Math.max(1, parseInt(lcPageSizeEl.value, 10) || 50) : 50,
+        filters: lcFilters,
+        endDateFacet: {
+          presets: [...lcEndDatePresetSelections],
+          customFrom: lcEndDateCustomFrom,
+          customTo: lcEndDateCustomTo,
+        },
+        startDateFacet: {
+          presets: [...lcStartDatePresetSelections],
+          customFrom: lcStartDateCustomFrom,
+          customTo: lcStartDateCustomTo,
+        },
+        table: lcController.getTableState(),
+        filtersExpanded: lcFiltersAside
+          ? !lcFiltersAside.classList.contains("filters--collapsed")
+          : undefined,
+      },
+    };
+  }
+
+  function applyFirewallSaved(s) {
+    if (!s || typeof s !== "object") return;
+    fwLinkMode =
+      s.linkMode === "offline" || s.linkMode === "suspended" ? s.linkMode : null;
+    const search = document.getElementById("fw-search");
+    if (search && typeof s.search === "string") search.value = s.search;
+    const psEl = document.getElementById("fw-page-size");
+    if (psEl && s.pageSize != null) {
+      const v = String(s.pageSize);
+      if ([...psEl.options].some((o) => o.value === v)) psEl.value = v;
+    }
+    const filters = s.filters && typeof s.filters === "object" ? s.filters : {};
+    for (const [k, arr] of Object.entries(filters)) {
+      const st = fwFilterState[k];
+      if (!st || !(st instanceof Set) || !Array.isArray(arr)) continue;
+      st.clear();
+      arr.forEach((x) => st.add(String(x)));
+    }
+    syncFirewallFilterCheckboxesFromState();
+    if (s.table && typeof s.table === "object") fwController.setTableState(s.table);
+    if (typeof s.filtersExpanded === "boolean") {
+      const aside = document.querySelector("#panel-firewalls .filters");
+      if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
+    }
+  }
+
+  function applyTenantSaved(s) {
+    if (!s || typeof s !== "object") return;
+    const el = document.getElementById("tn-search");
+    if (el && typeof s.search === "string") el.value = s.search;
+    const psEl = document.getElementById("tn-page-size");
+    if (psEl && s.pageSize != null) {
+      const v = String(s.pageSize);
+      if ([...psEl.options].some((o) => o.value === v)) psEl.value = v;
+    }
+    const filters = s.filters && typeof s.filters === "object" ? s.filters : {};
+    for (const [k, arr] of Object.entries(filters)) {
+      const st = tnFilterState[k];
+      if (!st || !(st instanceof Set) || !Array.isArray(arr)) continue;
+      st.clear();
+      arr.forEach((x) => st.add(String(x)));
+    }
+    syncTenantFilterCheckboxesFromState();
+    if (s.table && typeof s.table === "object") tnController.setTableState(s.table);
+    if (typeof s.filtersExpanded === "boolean") {
+      const aside = document.querySelector("#panel-tenants .filters");
+      if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
+    }
+  }
+
+  function applyLicenseSaved(s) {
+    if (!s || typeof s !== "object") return;
+    const el = document.getElementById("lc-search");
+    if (el && typeof s.search === "string") el.value = s.search;
+    const psEl = document.getElementById("lc-page-size");
+    if (psEl && s.pageSize != null) {
+      const v = String(s.pageSize);
+      if ([...psEl.options].some((o) => o.value === v)) psEl.value = v;
+    }
+    if (s.viewMode === "details" || s.viewMode === "summary") {
+      if (s.viewMode !== lcViewMode) {
+        persistLcColumnVisibilityNow();
+        lcViewMode = s.viewMode;
+        lcColVisible = loadLcColumnVisibilitySnapshot(lcViewMode);
+        updateLcViewToggleUi();
+        buildLcThead();
+        buildLcColumnMenuList();
+      }
+    }
+    const filters = s.filters && typeof s.filters === "object" ? s.filters : {};
+    buildLicenseFilters();
+    for (const [k, arr] of Object.entries(filters)) {
+      const st = lcFilterState[k];
+      if (!st || !(st instanceof Set) || !Array.isArray(arr)) continue;
+      arr.forEach((x) => st.add(String(x)));
+    }
+    const ed = s.endDateFacet;
+    if (ed && typeof ed === "object" && Array.isArray(ed.presets)) {
+      lcEndDatePresetSelections.clear();
+      ed.presets.forEach((x) => {
+        if (typeof x === "string") lcEndDatePresetSelections.add(x);
+      });
+      if (typeof ed.customFrom === "string") lcEndDateCustomFrom = ed.customFrom;
+      if (typeof ed.customTo === "string") lcEndDateCustomTo = ed.customTo;
+    }
+    const sd = s.startDateFacet;
+    if (sd && typeof sd === "object" && Array.isArray(sd.presets)) {
+      lcStartDatePresetSelections.clear();
+      sd.presets.forEach((x) => {
+        if (typeof x === "string") lcStartDatePresetSelections.add(x);
+      });
+      if (typeof sd.customFrom === "string") lcStartDateCustomFrom = sd.customFrom;
+      if (typeof sd.customTo === "string") lcStartDateCustomTo = sd.customTo;
+    }
+    syncLicenseFilterCheckboxesFromState();
+    syncLcDateFacetUi();
+    if (s.table && typeof s.table === "object") lcController.setTableState(s.table);
+    if (typeof s.filtersExpanded === "boolean") {
+      const aside = document.querySelector("#panel-licenses .filters");
+      if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
+    }
+  }
+
+  async function loadLicenses(opts = {}) {
+    const preserve = opts.preserve === true;
+    const [rows, detailRows] = await Promise.all([
+      loadJson("/api/licenses"),
+      loadJson("/api/licenses-detailed"),
+    ]);
+    lcPrepared = rows.map(prepareLicense);
+    lcDetailPrepared = detailRows.map(prepareLicenseDetail);
+    buildLicenseFilters();
+    if (!preserve) {
+      lcController.clearSelection();
+      lcController.resetPage();
+    }
+  }
+
+  function captureMainScrollSnapshot() {
+    const scrollEls = Array.from(document.querySelectorAll("main.main .table-scroll"));
+    return {
+      winX: window.scrollX,
+      winY: window.scrollY,
+      tableScrolls: scrollEls.map((el) => ({
+        el,
+        top: el.scrollTop,
+        left: el.scrollLeft,
+      })),
+    };
+  }
+
+  function restoreMainScrollSnapshot(snap) {
+    if (!snap) return;
+    window.scrollTo(snap.winX ?? 0, snap.winY ?? 0);
+    snap.tableScrolls?.forEach(({ el, top, left }) => {
+      if (el && el.isConnected) {
+        el.scrollTop = top ?? 0;
+        el.scrollLeft = left ?? 0;
+      }
+    });
+  }
+
+  async function performSilentDataRefresh() {
+    if (silentDataRefreshInFlight) return;
+    silentDataRefreshInFlight = true;
+    const snap = captureMainScrollSnapshot();
+    const ae = document.activeElement;
+    const fwVis = fwController.getVisibleCount();
+    const tnVis = tnController.getVisibleCount();
+    const lcVis = lcController.getVisibleCount();
+    try {
+      await Promise.all([
+        loadDashboard({ preserve: true }),
+        loadFirewalls({ preserve: true }),
+        loadTenants({ preserve: true }),
+        loadLicenses({ preserve: true }),
+      ]);
+      fwController.render();
+      tnController.render();
+      lcController.render();
+      fwController.restoreVisibleSlice(fwVis);
+      tnController.restoreVisibleSlice(tnVis);
+      lcController.restoreVisibleSlice(lcVis);
+      refreshSettingsSyncIfVisible();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      silentDataRefreshInFlight = false;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          restoreMainScrollSnapshot(snap);
+          if (ae && typeof ae.focus === "function" && ae.isConnected) {
+            try {
+              ae.focus({ preventScroll: true });
+            } catch {
+              ae.focus();
+            }
+          }
+        });
+      });
+    }
+  }
+
+  onSuccessfulDataSyncTimestampChange = () => {
+    void performSilentDataRefresh();
+  };
+
+  /* ---------- Boot ---------- */
+  initAuthForms();
+  initUserMenu();
+  initProfileModal();
+  initCollapsibleFilterPanels();
+  initFacetFilterResetControls();
+  initSettingsModal();
+  initDashboardAlertsUi();
+  initFwMapHeightsAndResizeHandles();
+  initFwMapSectionToggles();
+  initFwLocationModal();
+
+  async function init() {
+    const saved = readUiState();
+    if (saved?.dashboard) hydrateDashboardFromSaved(saved.dashboard);
+    if (saved?.tab && TITLES[saved.tab]) activateTab(saved.tab, false);
+
+    try {
+      await Promise.all([loadDashboard(), loadFirewalls(), loadTenants(), loadLicenses()]);
+
+      if (saved?.firewalls) applyFirewallSaved(saved.firewalls);
+      if (saved?.tenants) applyTenantSaved(saved.tenants);
+      if (saved?.licenses) applyLicenseSaved(saved.licenses);
+
+      fwController.render();
+      tnController.render();
+      lcController.render();
+
+      schedulePersistUiState();
+    } catch (e) {
+      console.error(e);
+      pageTitle.textContent = "Error loading data";
+    }
+  }
+
+  bootAuth();
+})();
+
