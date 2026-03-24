@@ -1,6 +1,6 @@
 [project]
 name = "sophos-central-gui"
-version = "0.1.0"
+version = "0.1.1"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,6 +14,10 @@ dependencies = [
     "itsdangerous>=2.2.0",
 ]
 
+[project.optional-dependencies]
+bundle = ["pyinstaller>=6.6"]
+dev = ["bandit>=1.8.0"]
+
 [project.scripts]
 sophos-gui-clear-admin-password = "cli:main"
 
@@ -24,3 +28,8 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = ["cli", "credential_store"]
 packages = []
+
+[tool.bandit]
+# SQL: ? placeholders; fragments use allowlisted columns or validated identifiers.
+skips = ["B608"]
+exclude_dirs = [".venv", "dist", "build", ".git", "packaging/stage"]
