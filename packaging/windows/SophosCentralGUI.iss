@@ -2,7 +2,7 @@
 ; Install tree is fully self-contained (embedded Python); no dependency on system Python.
 
 #define MyAppName "Sophos Central GUI"
-#define MyAppVersion "0.1.1"
+#define MyAppVersion "0.1.2"
 #define MyAppPublisher "Sophos Central GUI"
 #define MyAppExeName "SophosCentralGUI.exe"
 #define BundledDist "..\..\dist\SophosCentralGUI"
