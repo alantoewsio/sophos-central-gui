@@ -71,4 +71,37 @@ jobs:
         with:
           name: sophos-central-gui-${{ matrix.artifact }}
           path: dist/installers/*
-          if-no-files-found: warn
+          if-no-files-found: error
+
+  publish:
+    name: Attach installers to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'release' && github.event.action == 'published') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download all installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: installers
+          pattern: sophos-central-gui-*
+          merge-multiple: true
+
+      - name: List files
+        run: ls -la installers
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: >-
+            ${{ github.event_name == 'release'
+            && github.event.release.tag_name
+            || github.ref_name }}
+          files: installers/*
+          fail_on_unmatched_files: true
+          draft: false
+          generate_release_notes: false
