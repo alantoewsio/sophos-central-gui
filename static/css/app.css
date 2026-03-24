@@ -32,6 +32,18 @@
   font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 *,
 *::before,
 *::after {
@@ -456,6 +468,30 @@ body {
 
 .user-menu__link:hover {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.user-menu__link--external {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
+.user-menu__link-text {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
+.user-menu__external-icon {
+  flex-shrink: 0;
+  opacity: 0.78;
+}
+
+.user-menu__link--external:hover .user-menu__external-icon {
+  opacity: 1;
 }
 
 .user-menu__footer {
@@ -2513,7 +2549,7 @@ button.cell-link.fw-firmware-upgrade-btn:hover {
   flex-direction: row;
   flex-wrap: nowrap;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   padding: 6px 10px 6px 12px;
   border-right: none;
@@ -2544,6 +2580,22 @@ button.cell-link.fw-firmware-upgrade-btn:hover {
   min-height: 2.5rem;
   padding: 10px 12px;
   border-bottom: none;
+}
+
+/* Donut tiles: clip inner panels to the card radius so the frame matches Firewalls / Licenses. */
+.stat-card.stat-card--alerts.stat-card--dash-compact,
+.stat-card.stat-card--fw.stat-card--tenants-dash.stat-card--dash-compact {
+  overflow: hidden;
+}
+
+.stat-card.stat-card--alerts.stat-card--dash-compact > .stat-card__main,
+.stat-card.stat-card--fw.stat-card--tenants-dash.stat-card--dash-compact > .stat-card__main {
+  border-radius: 6px 0 0 6px;
+}
+
+.stat-card.stat-card--alerts.stat-card--dash-compact > .stat-card__alert-row,
+.stat-card.stat-card--fw.stat-card--tenants-dash.stat-card--dash-compact > .stat-card__alert-row {
+  border-radius: 0 6px 6px 0;
 }
 
 @media (max-width: 520px) {
@@ -2602,6 +2654,16 @@ button.cell-link.fw-firmware-upgrade-btn:hover {
     flex: 1 1 100%;
     min-height: 0;
     width: 100%;
+  }
+
+  .stat-card.stat-card--alerts.stat-card--dash-compact > .stat-card__main,
+  .stat-card.stat-card--fw.stat-card--tenants-dash.stat-card--dash-compact > .stat-card__main {
+    border-radius: 6px 6px 0 0;
+  }
+
+  .stat-card.stat-card--alerts.stat-card--dash-compact > .stat-card__alert-row,
+  .stat-card.stat-card--fw.stat-card--tenants-dash.stat-card--dash-compact > .stat-card__alert-row {
+    border-radius: 0 0 6px 6px;
   }
 }
 
@@ -2677,6 +2739,94 @@ button.cell-link.fw-firmware-upgrade-btn:hover {
 .stat-card--alerts .stat-card__main.stat-card--alert.is-active {
   background: #f5f9fc;
   box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Dashboard “All alerts” severity donut + legend swatches */
+.stat-card__main--alert-donut {
+  position: relative;
+}
+
+.dash-alert-donut-stack {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  margin: 6px auto 0;
+  flex-shrink: 0;
+}
+
+.dash-alert-donut {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+}
+
+.dash-alert-donut::after {
+  content: "";
+  position: absolute;
+  inset: 20%;
+  border-radius: 50%;
+  background: #fafafa;
+}
+
+.stat-card--alerts .stat-card__main.stat-card--alert.is-active .dash-alert-donut::after {
+  background: #f5f9fc;
+}
+
+.stat-card--tenants-dash .stat-card__main.stat-card__main--tenant-donut.is-active {
+  background: #f5f9fc;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.stat-card--tenants-dash .stat-card__main.stat-card__main--tenant-donut.is-active .dash-alert-donut::after {
+  background: #f5f9fc;
+}
+
+.dash-alert-donut__value {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.stat-card__main--alert-donut .dash-alert-donut__value .stat-card__value {
+  font-size: clamp(1.05rem, 2.8vw, 1.45rem);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.stat-card__seg-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stat-card__seg-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+.stat-card__seg-swatch--high {
+  background: var(--status-bad);
+}
+
+.stat-card__seg-swatch--medium {
+  background: var(--accent);
+}
+
+.stat-card__seg-swatch--low {
+  background: var(--text-muted);
+}
+
+.stat-card__seg-swatch--billing {
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
 }
 
 .stat-card__alert-row {

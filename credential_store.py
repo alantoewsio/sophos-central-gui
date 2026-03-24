@@ -11,11 +11,11 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app_paths import runtime_root
 from cryptography.fernet import Fernet, InvalidToken
 
-ROOT = Path(__file__).resolve().parent
-SECRETS_DB_PATH = ROOT / "sophos_secrets.db"
-FERNET_KEY_PATH = ROOT / "sophos_credential_key"
+SECRETS_DB_PATH = runtime_root() / "sophos_secrets.db"
+FERNET_KEY_PATH = runtime_root() / "sophos_credential_key"
 FERNET_ENV = "SOPHOS_CENTRAL_GUI_FERNET_KEY"
 
 

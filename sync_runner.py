@@ -7,8 +7,8 @@ import threading
 import time as time_module
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
+from app_paths import runtime_root
 from central.db import init_schema
 from central.session import CentralSession
 from central.sync_to_db import CentralSyncAuthError, sync_client_credentials_to_database
@@ -22,8 +22,7 @@ from credential_store import (
     whoami_dict_from_session,
 )
 
-ROOT = Path(__file__).resolve().parent
-LOGS_DIR = ROOT / "logs"
+LOGS_DIR = runtime_root() / "logs"
 SYNC_LOG = LOGS_DIR / "sync.log"
 
 _sync_logger_configured = False

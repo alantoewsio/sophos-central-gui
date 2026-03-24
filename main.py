@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sqlite3
@@ -12,8 +13,10 @@ from urllib.parse import urlencode, urljoin
 
 import requests
 from contextlib import asynccontextmanager, contextmanager
+import sys
 from pathlib import Path
 
+from app_paths import bundle_root, runtime_root
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -68,13 +71,33 @@ from credential_store import (
     update_credential_whoami,
     whoami_dict_from_session,
 )
+from audit_log import audit_event, mask_oauth_client_id
 from sync_runner import configure_sync_file_logging, get_public_sync_activity, run_credential_sync
 from sync_scheduler import start_scheduler_thread
 
-ROOT = Path(__file__).resolve().parent
-DB_PATH = ROOT / "sophos_central.db"
-TEMPLATES = ROOT / "templates"
-STATIC = ROOT / "static"
+DB_PATH = runtime_root() / "sophos_central.db"
+
+
+def _actor_for_audit(user_id: str | None) -> tuple[str | None, str | None]:
+    if not user_id:
+        return None, None
+    with get_secrets_db() as conn:
+        row = get_app_user_by_id(conn, user_id)
+    if not row:
+        return user_id, None
+    un = str(row["username"] or "").strip()
+    return user_id, un or None
+
+
+def _audit_err(msg: str | None) -> str | None:
+    if not msg:
+        return None
+    s = str(msg).strip()
+    if len(s) > 240:
+        return s[:240] + "…"
+    return s
+TEMPLATES = bundle_root() / "templates"
+STATIC = bundle_root() / "static"
 
 jinja = Environment(
     loader=FileSystemLoader(str(TEMPLATES)),
@@ -474,7 +497,15 @@ class ProtectApiMiddleware(BaseHTTPMiddleware):
         if not uid:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
         idle_sec = _session_idle_timeout_seconds()
-        if evaluate_session_idle(request, idle_sec) == "expired":
+        idle_state, expired_uid = evaluate_session_idle(request, idle_sec)
+        if idle_state == "expired":
+            u_exp, n_exp = _actor_for_audit(expired_uid)
+            audit_event(
+                action="session.idle_timeout",
+                actor_user_id=u_exp,
+                actor_username=n_exp,
+                request=request,
+            )
             return JSONResponse(
                 {"detail": "Session expired due to inactivity."},
                 status_code=401,
@@ -580,7 +611,8 @@ def api_auth_status(request: Request):
         uid = session_user_id(request)
         if uid:
             idle_sec = _session_idle_timeout_seconds()
-            if evaluate_session_idle(request, idle_sec) == "expired":
+            idle_state, _ = evaluate_session_idle(request, idle_sec)
+            if idle_state == "expired":
                 uid = None
             else:
                 touch_session_activity(request)
@@ -618,12 +650,27 @@ def api_auth_login(request: Request, body: LoginBody):
                 detail="Set the administrator password first (initial setup).",
             )
         row = get_app_user_by_username(conn, body.username)
+    uname_attempt = body.username.strip()
     if not row or not verify_password(body.password, row["password_hash"]):
+        audit_event(
+            action="auth.login",
+            outcome="failure",
+            actor_username=uname_attempt,
+            request=request,
+            detail={"reason": "invalid_credentials"},
+        )
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     request.session[SESSION_USER_ID_KEY] = row["id"]
     touch_session_activity(request)
     with get_secrets_db() as conn:
         row2 = get_app_user_by_id(conn, row["id"])
+    au, an = _actor_for_audit(row["id"])
+    audit_event(
+        action="auth.login",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+    )
     return {"ok": True, "user": user_row_public(row2) if row2 else user_row_public(row)}
 
 
@@ -648,6 +695,13 @@ def api_auth_setup_admin_password(request: Request, body: SetupAdminPasswordBody
     touch_session_activity(request)
     with get_secrets_db() as conn:
         row2 = get_app_user_by_id(conn, uid)
+    au, an = _actor_for_audit(uid)
+    audit_event(
+        action="user.initial_admin_password_set",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+    )
     return {"ok": True, "user": user_row_public(row2) if row2 else None}
 
 
@@ -659,7 +713,15 @@ def api_auth_activity():
 
 @app.post("/api/auth/logout")
 def api_auth_logout(request: Request):
+    uid = session_user_id(request)
+    au, an = _actor_for_audit(uid)
     request.session.clear()
+    audit_event(
+        action="auth.logout",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+    )
     return {"ok": True}
 
 
@@ -690,6 +752,14 @@ def api_auth_profile_patch(
         if row is None:
             request.session.clear()
             raise HTTPException(status_code=401, detail="Session is no longer valid.")
+    au, an = _actor_for_audit(uid)
+    audit_event(
+        action="user.profile_self_update",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={"fields": sorted(updates.keys())},
+    )
     return {"ok": True, "user": row}
 
 
@@ -713,6 +783,13 @@ def api_auth_change_password(
                 raise HTTPException(status_code=400, detail="Current password is incorrect.")
         if not update_app_user_password_hash(conn, uid, hash_password(body.new_password)):
             raise HTTPException(status_code=500, detail="Could not update password.")
+    au, an = _actor_for_audit(uid)
+    audit_event(
+        action="user.password_change_self",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+    )
     return {"ok": True}
 
 
@@ -723,14 +800,18 @@ def api_settings_users_list(_: str = Depends(current_user_id_dep)):
 
 
 @app.post("/api/settings/users")
-def api_settings_users_create(body: CreateAppUserBody, _: str = Depends(admin_user_id_dep)):
+def api_settings_users_create(
+    request: Request,
+    body: CreateAppUserBody,
+    admin_uid: str = Depends(admin_user_id_dep),
+):
     validate_new_password(body.password)
     uname = body.username.strip()
     with get_secrets_db() as conn:
         if get_app_user_by_username(conn, uname):
             raise HTTPException(status_code=400, detail="That username is already taken.")
         ph = hash_password(body.password)
-        return insert_app_user(
+        created = insert_app_user(
             conn,
             username=uname,
             role=body.role,
@@ -739,13 +820,27 @@ def api_settings_users_create(body: CreateAppUserBody, _: str = Depends(admin_us
             email=body.email,
             mobile=body.mobile,
         )
+    au, an = _actor_for_audit(admin_uid)
+    audit_event(
+        action="user.create",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "new_user_id": created.get("id"),
+            "new_username": uname,
+            "new_user_role": body.role,
+        },
+    )
+    return created
 
 
 @app.patch("/api/settings/users/{user_id}")
 def api_settings_users_patch(
+    request: Request,
     user_id: str,
     body: PatchAppUserBody,
-    _: str = Depends(admin_user_id_dep),
+    admin_uid: str = Depends(admin_user_id_dep),
 ):
     profile_updates = _app_user_profile_updates_from_body(body)
     if body.role is None and body.password is None and not profile_updates:
@@ -775,6 +870,21 @@ def api_settings_users_patch(
             if updated is None:
                 raise HTTPException(status_code=404, detail="User not found.")
         row2 = get_app_user_by_id(conn, user_id)
+    au, an = _actor_for_audit(admin_uid)
+    adetail: dict = {"target_user_id": user_id}
+    if body.role is not None:
+        adetail["role"] = body.role
+    if body.password is not None:
+        adetail["password_reset"] = True
+    if profile_updates:
+        adetail["profile_fields"] = sorted(profile_updates.keys())
+    audit_event(
+        action="user.update_by_admin",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail=adetail,
+    )
     return user_row_public(row2) if row2 else None
 
 
@@ -798,6 +908,17 @@ def api_settings_users_delete(
             )
         if not delete_app_user(conn, user_id):
             raise HTTPException(status_code=404, detail="User not found.")
+    au, an = _actor_for_audit(admin_uid)
+    audit_event(
+        action="user.delete",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "deleted_user_id": user_id,
+            "deleted_username": str(row["username"] or "").strip() or None,
+        },
+    )
     if user_id == admin_uid:
         request.session.clear()
     return {"ok": True}
@@ -1120,13 +1241,15 @@ def api_firewalls_delete_local_batch(
 
 @app.post("/api/firewalls/approve-batch")
 def api_firewalls_approve_batch(
+    request: Request,
     body: FirewallApproveBatchBody,
-    _: str = Depends(admin_user_id_dep),
+    admin_uid: str = Depends(admin_user_id_dep),
 ):
     """Approve selected firewalls via Central API, then sync each credential that had a success."""
     ids = [str(x).strip() for x in body.firewall_ids if x is not None and str(x).strip()]
     if not ids:
         raise HTTPException(status_code=400, detail="firewall_ids must not be empty.")
+    au_adm, an_adm = _actor_for_audit(admin_uid)
     approved: list[dict] = []
     skipped: list[dict] = []
     errors: list[dict] = []
@@ -1187,6 +1310,17 @@ def api_firewalls_approve_batch(
                 errors.append({"id": fw_id, "detail": msg})
                 continue
 
+            audit_event(
+                action="central.firewall_approve_management",
+                actor_user_id=au_adm,
+                actor_username=an_adm,
+                request=request,
+                detail={
+                    "firewall_id": fw_id,
+                    "tenant_id": fw_tenant_id,
+                    "oauth_client_id_mask": mask_oauth_client_id(oauth_cid),
+                },
+            )
             label = row["hostname"] or row["name"] or fw_id
             approved.append({"id": fw_id, "label": str(label)[:500]})
             if cred_row_id:
@@ -1223,13 +1357,15 @@ def api_firewalls_approve_batch(
 
 @app.post("/api/firewalls/firmware-upgrade-batch")
 def api_firewalls_firmware_upgrade_batch(
+    request: Request,
     body: FirewallFirmwareUpgradeBatchBody,
-    _: str = Depends(admin_user_id_dep),
+    admin_uid: str = Depends(admin_user_id_dep),
 ):
     """Schedule or run firmware upgrades on Central for selected firewalls (grouped by OAuth client + tenant)."""
     scheduled_utc = _parse_scheduled_at_iso_to_utc(body.scheduled_at)
     upgrade_at_str = _sophos_upgrade_at_string(scheduled_utc) if scheduled_utc else None
 
+    au_adm, an_adm = _actor_for_audit(admin_uid)
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     skipped: list[dict] = []
     errors: list[dict] = []
@@ -1338,6 +1474,19 @@ def api_firewalls_firmware_upgrade_batch(
         for cid in cred_ids:
             if cid:
                 sync_cred_ids.add(str(cid))
+        audit_event(
+            action="central.firewall_firmware_upgrade",
+            actor_user_id=au_adm,
+            actor_username=an_adm,
+            request=request,
+            detail={
+                "tenant_id": fw_tenant_id,
+                "oauth_client_id_mask": mask_oauth_client_id(oauth_cid),
+                "firewall_count": len(upgrade_dicts),
+                "scheduled": upgrade_at_str is not None,
+                "http_status": cresp.status_code,
+            },
+        )
 
     sync_results: list[dict] = []
     for cred_id in sorted(sync_cred_ids):
@@ -1665,9 +1814,10 @@ def _push_firewall_geolocation_to_central(
 
 @app.patch("/api/firewalls/{firewall_id}/location")
 def api_firewall_patch_location(
+    request: Request,
     firewall_id: str,
     body: FirewallLocationBody,
-    _: str = Depends(current_user_id_dep),
+    uid: str = Depends(current_user_id_dep),
 ):
     addr = (body.address or "").strip()
     lat: float | None = body.latitude
@@ -1736,14 +1886,27 @@ def api_firewall_patch_location(
         )
         conn.commit()
 
+    au, an = _actor_for_audit(uid)
+    audit_event(
+        action="central.firewall_patch_geo",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "firewall_id": firewall_id,
+            "tenant_id": fw_tenant_id,
+            "oauth_client_id_mask": mask_oauth_client_id(oauth_cid),
+        },
+    )
     return {"ok": True, "geo_latitude": lat_s, "geo_longitude": lon_s}
 
 
 @app.patch("/api/firewalls/{firewall_id}/label")
 def api_firewall_patch_label(
+    request: Request,
     firewall_id: str,
     body: FirewallLabelBody,
-    _: str = Depends(current_user_id_dep),
+    uid: str = Depends(current_user_id_dep),
 ):
     """Set firewall display name on Sophos Central (PATCH ``name``) and update the local cache."""
     new_name = body.name.strip()
@@ -1792,6 +1955,19 @@ def api_firewall_patch_label(
         )
         conn.commit()
 
+    au, an = _actor_for_audit(uid)
+    audit_event(
+        action="central.firewall_patch_name",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "firewall_id": firewall_id,
+            "tenant_id": fw_tenant_id,
+            "name": new_name,
+            "oauth_client_id_mask": mask_oauth_client_id(oauth_cid),
+        },
+    )
     return {"ok": True, "name": new_name}
 
 
@@ -2499,8 +2675,9 @@ def api_settings_ui_get(_: str = Depends(current_user_id_dep)):
 
 @app.patch("/api/settings/ui")
 def api_settings_ui_patch(
+    request: Request,
     body: AppUiSettingsBody,
-    _: str = Depends(current_user_id_dep),
+    uid: str = Depends(current_user_id_dep),
 ):
     if not DB_PATH.exists():
         raise HTTPException(status_code=503, detail="Database not available")
@@ -2522,6 +2699,18 @@ def api_settings_ui_patch(
         )
         conn.commit()
     invalidate_session_idle_timeout_cache()
+    au, an = _actor_for_audit(uid)
+    audit_event(
+        action="settings.ui_update",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "fw_new_max_age_hours": body.fw_new_max_age_hours,
+            "fw_updated_max_age_hours": body.fw_updated_max_age_hours,
+            "session_idle_timeout_minutes": body.session_idle_timeout_minutes,
+        },
+    )
     return {
         "fw_new_max_age_hours": body.fw_new_max_age_hours,
         "fw_updated_max_age_hours": body.fw_updated_max_age_hours,
@@ -2537,24 +2726,74 @@ def api_settings_credentials_list(_: str = Depends(admin_user_id_dep)):
 
 @app.post("/api/settings/credentials/test")
 def api_settings_credentials_test(
+    request: Request,
     body: CentralCredentialSecretBody,
-    _: str = Depends(admin_user_id_dep),
+    admin_uid: str = Depends(admin_user_id_dep),
 ):
     ok, msg, whoami = _verify_central_login(body.client_id, body.client_secret)
+    au, an = _actor_for_audit(admin_uid)
     if not ok:
+        audit_event(
+            action="central.oauth_authenticate",
+            outcome="failure",
+            actor_user_id=au,
+            actor_username=an,
+            request=request,
+            detail={
+                "context": "credentials_test",
+                "oauth_client_id_mask": mask_oauth_client_id(body.client_id),
+                "error": _audit_err(msg),
+            },
+        )
         raise HTTPException(status_code=400, detail=msg or "Credential test failed")
+    audit_event(
+        action="central.oauth_authenticate",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "context": "credentials_test",
+            "oauth_client_id_mask": mask_oauth_client_id(body.client_id),
+            "id_type": whoami.get("idType") if whoami else None,
+        },
+    )
     return {"ok": True, "whoami": whoami, "id_type": whoami.get("idType") if whoami else None}
 
 
 @app.post("/api/settings/credentials")
 def api_settings_credentials_create(
+    request: Request,
     body: CentralCredentialBody,
-    _: str = Depends(admin_user_id_dep),
+    admin_uid: str = Depends(admin_user_id_dep),
 ):
     ok, msg, whoami = _verify_central_login(body.client_id, body.client_secret)
+    au, an = _actor_for_audit(admin_uid)
     if not ok:
+        audit_event(
+            action="central.oauth_authenticate",
+            outcome="failure",
+            actor_user_id=au,
+            actor_username=an,
+            request=request,
+            detail={
+                "context": "credential_create",
+                "oauth_client_id_mask": mask_oauth_client_id(body.client_id),
+                "error": _audit_err(msg),
+            },
+        )
         raise HTTPException(status_code=400, detail=msg or "Credential test failed")
     if not whoami or not whoami.get("idType"):
+        audit_event(
+            action="credential.create",
+            outcome="failure",
+            actor_user_id=au,
+            actor_username=an,
+            request=request,
+            detail={
+                "oauth_client_id_mask": mask_oauth_client_id(body.client_id),
+                "reason": "whoami_missing_id_type",
+            },
+        )
         raise HTTPException(status_code=400, detail="Whoami did not return idType")
     with get_secrets_db() as conn:
         row = insert_credential(
@@ -2564,13 +2803,37 @@ def api_settings_credentials_create(
             client_secret=body.client_secret,
             whoami=whoami,
         )
+    audit_event(
+        action="central.oauth_authenticate",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "context": "credential_create",
+            "oauth_client_id_mask": mask_oauth_client_id(body.client_id),
+            "id_type": whoami.get("idType"),
+        },
+    )
+    audit_event(
+        action="credential.create",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "credential_id": row.get("id"),
+            "credential_name": body.name.strip(),
+            "oauth_client_id_mask": mask_oauth_client_id(body.client_id),
+            "id_type": whoami.get("idType"),
+        },
+    )
     return row
 
 
 @app.post("/api/settings/credentials/{cred_id}/test")
 def api_settings_credentials_retest_stored(
+    request: Request,
     cred_id: str,
-    _: str = Depends(admin_user_id_dep),
+    admin_uid: str = Depends(admin_user_id_dep),
 ):
     with get_secrets_db() as conn:
         try:
@@ -2585,28 +2848,82 @@ def api_settings_credentials_retest_stored(
         client_id, client_secret = pair
 
     ok, msg, whoami = _verify_central_login(client_id, client_secret)
+    au, an = _actor_for_audit(admin_uid)
     if not ok:
+        audit_event(
+            action="central.oauth_authenticate",
+            outcome="failure",
+            actor_user_id=au,
+            actor_username=an,
+            request=request,
+            detail={
+                "context": "credentials_retest_stored",
+                "credential_id": cred_id,
+                "oauth_client_id_mask": mask_oauth_client_id(client_id),
+                "error": _audit_err(msg),
+            },
+        )
         raise HTTPException(status_code=400, detail=msg or "Credential test failed")
     if not whoami or not whoami.get("idType"):
+        audit_event(
+            action="central.oauth_authenticate",
+            outcome="failure",
+            actor_user_id=au,
+            actor_username=an,
+            request=request,
+            detail={
+                "context": "credentials_retest_stored",
+                "credential_id": cred_id,
+                "reason": "whoami_missing_id_type",
+            },
+        )
         raise HTTPException(status_code=400, detail="Whoami did not return idType")
 
     with get_secrets_db() as conn:
         row = update_credential_whoami(conn, cred_id, whoami)
     if row is None:
         raise HTTPException(status_code=404, detail="Credential not found")
+    audit_event(
+        action="central.oauth_authenticate",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "context": "credentials_retest_stored",
+            "credential_id": cred_id,
+            "oauth_client_id_mask": mask_oauth_client_id(client_id),
+            "id_type": whoami.get("idType"),
+        },
+    )
+    audit_event(
+        action="credential.whoami_refresh",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={"credential_id": cred_id, "id_type": whoami.get("idType")},
+    )
     return {"ok": True, "credential": row}
 
 
 @app.patch("/api/settings/credentials/{cred_id}")
 def api_settings_credentials_rename(
+    request: Request,
     cred_id: str,
     body: CentralCredentialRenameBody,
-    _: str = Depends(admin_user_id_dep),
+    admin_uid: str = Depends(admin_user_id_dep),
 ):
     with get_secrets_db() as conn:
         row = update_credential_name(conn, cred_id, body.name)
     if row is None:
         raise HTTPException(status_code=404, detail="Credential not found")
+    au, an = _actor_for_audit(admin_uid)
+    audit_event(
+        action="credential.rename",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={"credential_id": cred_id, "new_name": body.name.strip()},
+    )
     return row
 
 
@@ -2630,14 +2947,23 @@ def api_sync_status(_: str = Depends(current_user_id_dep)):
 
 @app.patch("/api/settings/credentials/{cred_id}/sync-interval")
 def api_settings_credentials_sync_interval(
+    request: Request,
     cred_id: str,
     body: CentralCredentialSyncIntervalBody,
-    _: str = Depends(admin_user_id_dep),
+    admin_uid: str = Depends(admin_user_id_dep),
 ):
     with get_secrets_db() as conn:
         row = update_credential_sync_interval(conn, cred_id, body.sync_interval)
     if row is None:
         raise HTTPException(status_code=404, detail="Credential not found")
+    au, an = _actor_for_audit(admin_uid)
+    audit_event(
+        action="credential.sync_interval_change",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={"credential_id": cred_id, "sync_interval": body.sync_interval},
+    )
     return row
 
 
@@ -2664,13 +2990,22 @@ def api_settings_credentials_sync_now(
 
 @app.delete("/api/settings/credentials/{cred_id}")
 def api_settings_credentials_delete(
+    request: Request,
     cred_id: str,
-    _: str = Depends(admin_user_id_dep),
+    admin_uid: str = Depends(admin_user_id_dep),
 ):
     with get_secrets_db() as conn:
         ok = delete_credential(conn, cred_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Credential not found")
+    au, an = _actor_for_audit(admin_uid)
+    audit_event(
+        action="credential.delete",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={"credential_id": cred_id},
+    )
     return {"ok": True}
 
 
@@ -2704,14 +3039,42 @@ def api_license_subscriptions(
         return [row_to_dict(r) for r in cur.fetchall()]
 
 
+def _uvicorn_log_config() -> dict:
+    """Uvicorn dictConfig plus rotating file log under logs/ (same pattern as sync_runner)."""
+    from uvicorn.config import LOGGING_CONFIG
+
+    log_dir = runtime_root() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "uvicorn.log"
+
+    cfg = copy.deepcopy(LOGGING_CONFIG)
+    cfg["formatters"]["file_plain"] = {
+        "format": "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        "datefmt": "%Y-%m-%d %H:%M:%S",
+    }
+    cfg["handlers"]["file"] = {
+        "class": "logging.handlers.RotatingFileHandler",
+        "formatter": "file_plain",
+        "filename": str(log_path),
+        "maxBytes": 2_000_000,
+        "backupCount": 5,
+        "encoding": "utf-8",
+    }
+    cfg["loggers"]["uvicorn"]["handlers"] = ["default", "file"]
+    cfg["loggers"]["uvicorn.access"]["handlers"] = ["access", "file"]
+    return cfg
+
+
 def main():
     import uvicorn
 
+    frozen = bool(getattr(sys, "frozen", False))
     uvicorn.run(
         "main:app",
         host="127.0.0.1",
         port=8765,
-        reload=True,
+        reload=not frozen,
+        log_config=_uvicorn_log_config(),
     )
 
 

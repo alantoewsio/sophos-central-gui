@@ -13,7 +13,7 @@ This document summarizes automated scans, dependency checks, and a manual read o
 
 | Activity | Tool / approach | Notes |
 |----------|-----------------|--------|
-| Python static analysis | Bandit 1.9.4 (`bandit -r . -x ./.venv -i`); project `.bandit` skips **B608** | Low through high severity; see §2. |
+| Python static analysis | Bandit 1.9.4 (`uv run bandit -r . -c pyproject.toml -ll`); **`[tool.bandit]`** skips **B608** | Low through high severity; see §2. |
 | Dependency CVE scan | pip-audit (via `uv run --with pip-audit`) | Requirements exported with `uv export --no-dev --no-editable --no-hashes` (local project name `sophos-central-gui` is not on PyPI and was skipped by the auditor). |
 | Manual review | Source inspection | Auth, crypto, storage, middleware, high-risk API patterns. |
 
@@ -25,14 +25,14 @@ This document summarizes automated scans, dependency checks, and a manual read o
 
 **Result:** **No issues reported** (0 High, 0 Medium, 0 Low) with the project’s default configuration.
 
-**Configuration:** Repository root **`.bandit`** sets `skips = B608`. Without that skip, Bandit reports B608 on almost any SQL string built outside a single static literal (including safe patterns: `IN` clauses whose expansion is only `?` characters, tenant-label fragments after identifier validation, and profile `UPDATE` sets built from a fixed column map). The skip documents an explicit acceptance: **all** user-supplied values in SQL are passed as **`?` bindings**; dynamic text is limited to **allowlisted** `SET` fragments (`_PROFILE_SET_CLAUSE_BY_COL`), **validated** table/column identifiers (`str.isalnum()` / `_TENANT_ID_COL_RE`), or subquery text produced only by those helpers.
+**Configuration:** **`pyproject.toml`** **`[tool.bandit]`** sets `skips = ["B608"]`. Without that skip, Bandit reports B608 on almost any SQL string built outside a single static literal (including safe patterns: `IN` clauses whose expansion is only `?` characters, tenant-label fragments after identifier validation, and profile `UPDATE` sets built from a fixed column map). The skip documents an explicit acceptance: **all** user-supplied values in SQL are passed as **`?` bindings**; dynamic text is limited to **allowlisted** `SET` fragments (`_PROFILE_SET_CLAUSE_BY_COL`), **validated** table/column identifiers (`str.isalnum()` / `_TENANT_ID_COL_RE`), or subquery text produced only by those helpers.
 
 **Related code hardening (same timeframe as the scan):**
 
 - **B310 resolved in code:** Nominatim geocoding (`main.py`, `_nominatim_search`) uses **`requests.get`** to a fixed HTTPS base URL with `params=` and `timeout=15`, not `urllib.request.urlopen`.
 - **B105 avoided in code:** The session env name in `auth.py` is assembled with `"_".join((...))` so Bandit does not treat one long literal as a hardcoded secret. The authenticated `/api/auth/status` payload avoids a **`False` literal** beside the JSON key `needs_admin_password_setup` (Bandit B105 false positive) by using a named boolean variable.
 
-**Operational note:** Re-run from the repo root so Bandit picks up `.bandit` automatically (`bandit -r . -x ./.venv`; add **`-i`** to include low severity). If you remove the B608 skip, expect many medium/low B608 hits that still require human triage against the rules above.
+**Operational note:** Re-run from the repo root after `uv sync --extra dev` (`uv run bandit -r . -c pyproject.toml -ll`; add **`-i`** to include low severity). If you remove the B608 skip, expect many medium/low B608 hits that still require human triage against the rules above.
 
 ---
 
@@ -156,7 +156,7 @@ Password policy enforced in API: minimum length **10** (`validate_new_password`)
 | F-3 | Low | Hardening | Password verify path does not auto-upgrade Argon2 hashes when parameters change. |
 | F-4 | Low | Privacy | Geocoding forwards user queries to OpenStreetMap Nominatim (authenticated users only). |
 | F-5 | Low | Ops | Sync logs include OAuth **client_id** and error text — treat `logs/` as sensitive. |
-| F-6 | Informational | Tooling | Bandit **B608** is skipped via `.bandit`; keep all new SQL on bound parameters + allowlists/validation, or re-triage if the skip is removed. |
+| F-6 | Informational | Tooling | Bandit **B608** is skipped via **`pyproject.toml`** **`[tool.bandit]`**; keep all new SQL on bound parameters + allowlists/validation, or re-triage if the skip is removed. |
 
 ---
 
@@ -172,7 +172,7 @@ Password policy enforced in API: minimum length **10** (`validate_new_password`)
 
 ## 9. References (in-repo)
 
-- Bandit policy: `.bandit` (B608 skip + comment).
+- Bandit policy: `pyproject.toml` `[tool.bandit]` (B608 skip + `exclude_dirs`).
 - Fernet + key paths: `credential_store.py` (`_get_fernet`, `encrypt_client_secret`, `decrypt_client_secret`).
 - Argon2 parameters: `auth.py` (`PasswordHasher`, `hash_password`, `verify_password`).
 - Session secret: `auth.py` (`get_session_secret`, `SESSION_SECRET_ENV`).

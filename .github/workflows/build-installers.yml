@@ -1,0 +1,74 @@
+# Build standalone installers on GitHub-hosted runners (no system Python on end users).
+# PyInstaller bundles CPython + deps per OS.
+
+name: Build installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: build-installers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: windows
+          - os: macos-latest
+            artifact: macos
+          - os: ubuntu-latest
+            artifact: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install Inno Setup (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: choco install innosetup -y --no-progress
+
+      - name: Install packaging tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fakeroot
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: chmod +x scripts/build-macos.sh && ./scripts/build-macos.sh
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: chmod +x scripts/build-linux.sh && ./scripts/build-linux.sh
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sophos-central-gui-${{ matrix.artifact }}
+          path: dist/installers/*
+          if-no-files-found: warn

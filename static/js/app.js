@@ -604,7 +604,7 @@
     const setup = document.getElementById("auth-setup-block");
     const login = document.getElementById("auth-login-block");
     if (!overlay || !setup || !login) return;
-    if (title) title.textContent = "Sign in to Sophos Central";
+    if (title) title.textContent = "Sign in to SFOS Central Management Portal";
     if (sub) {
       sub.textContent = "Use your local account credentials.";
       sub.hidden = false;
@@ -761,6 +761,18 @@
     document.getElementById("user-menu-change-password")?.addEventListener("click", () => {
       closeUserDropdown();
       openProfileModal("password");
+    });
+    document.getElementById("user-menu-login-central")?.addEventListener("click", () => {
+      closeUserDropdown();
+    });
+    document.getElementById("user-menu-login-partner")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      window.open(
+        "https://central.sophos.com/manage/partner",
+        "SophosPartnerDashboard",
+        "noopener,noreferrer",
+      );
+      closeUserDropdown();
     });
     document.getElementById("user-menu-theme-placeholder")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -3039,6 +3051,98 @@
     refreshDashboardStatCards();
   }
 
+  /** Conic-gradient for dashboard alert severity donut (high → medium → low, clockwise from top). */
+  function alertSeverityDonutGradient(ah, am, al) {
+    const h = Math.max(0, Number(ah) || 0);
+    const m = Math.max(0, Number(am) || 0);
+    const l = Math.max(0, Number(al) || 0);
+    const t = h + m + l;
+    const HIGH = "#c62828";
+    const MED = "#0066cc";
+    const LOW = "#5c5c5c";
+    const NEUTRAL = "#e4e6ea";
+    if (t === 0) {
+      return `conic-gradient(${NEUTRAL} 0deg 360deg)`;
+    }
+    const segs = [];
+    if (h > 0) segs.push({ n: h, c: HIGH });
+    if (m > 0) segs.push({ n: m, c: MED });
+    if (l > 0) segs.push({ n: l, c: LOW });
+    let cur = 0;
+    const parts = segs.map((seg, i) => {
+      const isLast = i === segs.length - 1;
+      const endDeg = isLast ? 360 : cur + (seg.n / t) * 360;
+      const s = `${seg.c} ${cur}deg ${endDeg}deg`;
+      cur = endDeg;
+      return s;
+    });
+    return `conic-gradient(${parts.join(", ")})`;
+  }
+
+  function alertSeverityDonutAriaLabel(ah, am, al, total) {
+    const h = Math.max(0, Number(ah) || 0);
+    const m = Math.max(0, Number(am) || 0);
+    const l = Math.max(0, Number(al) || 0);
+    const n = Math.max(0, Number(total) || 0);
+    return `Severity breakdown: ${h} high, ${m} medium, ${l} low of ${n} alerts`;
+  }
+
+  const TENANT_BILLING_DONUT_PALETTE = [
+    "#0066cc",
+    "#c62828",
+    "#1a9b4a",
+    "#7c3aed",
+    "#c05600",
+    "#0891b2",
+    "#ca8a04",
+    "#5c5c5c",
+  ];
+
+  function tenantBillingSliceColor(index) {
+    return TENANT_BILLING_DONUT_PALETTE[index % TENANT_BILLING_DONUT_PALETTE.length];
+  }
+
+  /** Conic-gradient for tenant billing-type donut (slice order matches API facet order). */
+  function tenantBillingDonutGradient(facets) {
+    const NEUTRAL = "#e4e6ea";
+    if (!Array.isArray(facets) || facets.length === 0) {
+      return `conic-gradient(${NEUTRAL} 0deg 360deg)`;
+    }
+    const items = facets.map((b, i) => ({
+      n: Math.max(0, Number(b.count) || 0),
+      c: tenantBillingSliceColor(i),
+    }));
+    const positive = items.filter((x) => x.n > 0);
+    const t = positive.reduce((a, x) => a + x.n, 0);
+    if (t === 0) {
+      return `conic-gradient(${NEUTRAL} 0deg 360deg)`;
+    }
+    let cur = 0;
+    const parts = positive.map((seg, i) => {
+      const isLast = i === positive.length - 1;
+      const endDeg = isLast ? 360 : cur + (seg.n / t) * 360;
+      const s = `${seg.c} ${cur}deg ${endDeg}deg`;
+      cur = endDeg;
+      return s;
+    });
+    return `conic-gradient(${parts.join(", ")})`;
+  }
+
+  function tenantBillingDonutAriaLabel(facets, totalTenants) {
+    const n = Math.max(0, Number(totalTenants) || 0);
+    if (!Array.isArray(facets) || facets.length === 0) {
+      return `No billing type breakdown; ${n} tenants`;
+    }
+    const parts = facets
+      .map((b) => {
+        const label = b.billing_type != null && String(b.billing_type) !== "" ? String(b.billing_type) : "—";
+        const c = Math.max(0, Number(b.count) || 0);
+        return `${label}: ${c}`;
+      })
+      .join("; ");
+    return `Billing breakdown: ${parts} (${n} tenants)`;
+  }
+
   function renderDashboardStats(stats) {
     const fwOn = escapeHtml(String(stats.firewalls_online));
     const ah = stats.alerts_high ?? 0;
@@ -3049,34 +3153,57 @@
     const licE = stats.licenses_subscription_expired ?? 0;
     const licX = stats.licenses_subscription_expiring ?? 0;
     const billingSegs = billingFacets
-      .map((b) => {
+      .map((b, i) => {
         const bt = b.billing_type != null && String(b.billing_type) !== "" ? String(b.billing_type) : "—";
         const cnt = b.count ?? 0;
         const active = tnDashBilling === bt ? " is-active" : "";
         const safeTitle = escapeHtml(bt);
+        const swatchColor = tenantBillingSliceColor(i);
         return `<button type="button" class="stat-card__alert-seg${active}" data-dash-action="tn-billing" data-billing-type="${escapeAttr(bt)}" title="Show tenants with billing: ${safeTitle}">
-            <span class="stat-card__seg-label">${escapeHtml(bt)}</span>
+            <span class="stat-card__seg-left">
+              <span class="stat-card__seg-swatch stat-card__seg-swatch--billing" style="background:${escapeAttr(swatchColor)};" aria-hidden="true"></span>
+              <span class="stat-card__seg-label">${escapeHtml(bt)}</span>
+            </span>
             <span class="stat-card__seg-value">${escapeHtml(String(cnt))}</span>
           </button>`;
       })
       .join("");
+    const donutBg = alertSeverityDonutGradient(ah, am, al);
+    const donutDescText = alertSeverityDonutAriaLabel(ah, am, al, stats.alerts);
+    const tenantDonutBg = tenantBillingDonutGradient(billingFacets);
+    const tenantDonutDescText = tenantBillingDonutAriaLabel(billingFacets, stats.tenants);
     return `
       <div class="stat-card stat-card--alerts stat-card--dash-compact">
-        <button type="button" class="stat-card__main stat-card--alert${daState.severity === "all" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="all" title="Show all alerts">
+        <button type="button" class="stat-card__main stat-card--alert stat-card__main--alert-donut${daState.severity === "all" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="all" title="Show all alerts" aria-label="${escapeAttr(`All alerts, ${stats.alerts} total`)}" aria-describedby="dash-alert-donut-desc">
           <div class="stat-card__label">All alerts</div>
-          <div class="stat-card__value">${escapeHtml(String(stats.alerts))}</div>
+          <div class="dash-alert-donut-stack">
+            <div class="dash-alert-donut" style="background: ${donutBg};" aria-hidden="true"></div>
+            <div class="dash-alert-donut__value">
+              <span class="stat-card__value">${escapeHtml(String(stats.alerts))}</span>
+            </div>
+          </div>
         </button>
+        <span id="dash-alert-donut-desc" class="visually-hidden">${escapeHtml(donutDescText)}</span>
         <div class="stat-card__alert-row" role="group" aria-label="Filter alerts by severity">
           <button type="button" class="stat-card__alert-seg${daState.severity === "low" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="low" title="Filter alerts by low / other severity">
-            <span class="stat-card__seg-label">Low</span>
+            <span class="stat-card__seg-left">
+              <span class="stat-card__seg-swatch stat-card__seg-swatch--low" aria-hidden="true"></span>
+              <span class="stat-card__seg-label">Low</span>
+            </span>
             <span class="stat-card__seg-value">${escapeHtml(String(al))}</span>
           </button>
           <button type="button" class="stat-card__alert-seg${daState.severity === "medium" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="medium" title="Filter alerts by medium severity">
-            <span class="stat-card__seg-label">Medium</span>
+            <span class="stat-card__seg-left">
+              <span class="stat-card__seg-swatch stat-card__seg-swatch--medium" aria-hidden="true"></span>
+              <span class="stat-card__seg-label">Medium</span>
+            </span>
             <span class="stat-card__seg-value">${escapeHtml(String(am))}</span>
           </button>
           <button type="button" class="stat-card__alert-seg${daState.severity === "high" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="high" title="Filter alerts by high severity">
-            <span class="stat-card__seg-label">High</span>
+            <span class="stat-card__seg-left">
+              <span class="stat-card__seg-swatch stat-card__seg-swatch--high" aria-hidden="true"></span>
+              <span class="stat-card__seg-label">High</span>
+            </span>
             <span class="stat-card__seg-value">${escapeHtml(String(ah))}</span>
           </button>
         </div>
@@ -3106,10 +3233,16 @@
         </div>
       </div>
       <div class="stat-card stat-card--fw stat-card--tenants-dash stat-card--dash-compact">
-        <button type="button" class="stat-card__main" data-dash-action="tn-all" title="View all tenants">
+        <button type="button" class="stat-card__main stat-card__main--tenant-donut${tnDashBilling == null ? " is-active" : ""}" data-dash-action="tn-all" title="View all tenants" aria-label="${escapeAttr(`Tenants, ${stats.tenants} total`)}" aria-describedby="dash-tenant-donut-desc">
           <div class="stat-card__label">Tenants</div>
-          <div class="stat-card__value">${escapeHtml(String(stats.tenants))}</div>
+          <div class="dash-alert-donut-stack">
+            <div class="dash-alert-donut" style="background: ${tenantDonutBg};" aria-hidden="true"></div>
+            <div class="dash-alert-donut__value">
+              <span class="stat-card__value">${escapeHtml(String(stats.tenants))}</span>
+            </div>
+          </div>
         </button>
+        <span id="dash-tenant-donut-desc" class="visually-hidden">${escapeHtml(tenantDonutDescText)}</span>
         <div class="stat-card__alert-row" role="group" aria-label="Filter tenants by billing type">
           ${billingFacets.length
         ? billingSegs
