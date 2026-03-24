@@ -2,6 +2,7 @@
   const TITLES = {
     dashboard: "Dashboard",
     firewalls: "Central Firewalls",
+    groups: "Central Groups",
     tenants: "Central Tenants",
     licenses: "Central Licenses",
   };
@@ -93,16 +94,167 @@
     return Number.isNaN(d.getTime()) ? escapeHtml(s) : escapeHtml(d.toLocaleString());
   }
 
+  function parseFirewallIsoMs(s) {
+    if (s == null) return null;
+    const raw = String(s).trim();
+    if (!raw) return null;
+    const t = Date.parse(raw);
+    return Number.isNaN(t) ? null : t;
+  }
+
+  function syncPreciseTimeForTitle(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
+  }
+
+  function formatSyncLastRelative(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    const t = d.getTime();
+    if (Number.isNaN(t)) return "—";
+    const ageSec = Math.floor((Date.now() - t) / 1000);
+    if (ageSec < 60) return "Just now";
+    if (ageSec < 3600) {
+      const m = Math.floor(ageSec / 60);
+      return `${m} minute${m === 1 ? "" : "s"} ago`;
+    }
+    if (ageSec < 86400) {
+      const h = Math.floor(ageSec / 3600);
+      return `${h} hour${h === 1 ? "" : "s"} ago`;
+    }
+    const days = Math.floor(ageSec / 86400);
+    return `${days} day${days === 1 ? "" : "s"} ago`;
+  }
+
+  const CRED_ID_TYPE_BAR_ORDER = ["tenant", "partner", "organization", "unknown"];
+
+  function credentialIdTypeBarLabel(raw) {
+    const k = String(raw || "").trim().toLowerCase();
+    if (!k || k === "unknown") return "Unknown";
+    return k.charAt(0).toUpperCase() + k.slice(1);
+  }
+
+  function formatCredentialCountsByIdType(byType) {
+    if (!byType || typeof byType !== "object") return "—";
+    const entries = Object.entries(byType).filter(([, n]) => Number(n) > 0);
+    if (!entries.length) return "No credentials";
+    const rank = (type) => {
+      const i = CRED_ID_TYPE_BAR_ORDER.indexOf(String(type).toLowerCase());
+      return i === -1 ? CRED_ID_TYPE_BAR_ORDER.length : i;
+    };
+    entries.sort((a, b) => {
+      const d = rank(a[0]) - rank(b[0]);
+      if (d !== 0) return d;
+      return String(a[0]).localeCompare(String(b[0]), undefined, { sensitivity: "base" });
+    });
+    return entries.map(([t, n]) => `${credentialIdTypeBarLabel(t)} ${Number(n)}`).join(" · ");
+  }
+
+  function updateAppSyncCredCountsFromPayload(data) {
+    const el = document.getElementById("app-sync-cred-counts");
+    if (!el) return;
+    const byType = data?.credential_counts_by_id_type;
+    el.textContent = formatCredentialCountsByIdType(byType ?? {});
+  }
+
+  function updateAppSyncIntervalFromPayload(data) {
+    const el = document.getElementById("app-sync-interval-value");
+    if (!el) return;
+    const s = data?.sync_interval_summary;
+    el.textContent = s != null && String(s).trim() !== "" ? String(s) : "—";
+  }
+
+  /** From /api/sync/status when the browser is not driving progress (e.g. scheduler). */
+  let lastServerSyncActivity = { busy: false, credential_name: null, credential_id: null };
+  /** { name: string, current: number, total: number } while this tab runs a sync (sync-all or one cred). */
+  let appSyncLocalProgress = null;
+
+  const FW_TAG_DEFAULT_NEW_HOURS = 168;
+  const FW_TAG_DEFAULT_UPD_HOURS = 48;
+  const DEFAULT_SESSION_IDLE_MINUTES = 60;
+  const fwTagUiSettings = {
+    fw_new_max_age_hours: FW_TAG_DEFAULT_NEW_HOURS,
+    fw_updated_max_age_hours: FW_TAG_DEFAULT_UPD_HOURS,
+    session_idle_timeout_minutes: DEFAULT_SESSION_IDLE_MINUTES,
+  };
+
   let appSyncStatusTimer = null;
+  let appSyncRelativeMinuteTimer = null;
   let lastKnownSuccessfulDataSync = null;
   let syncStatusSampleCount = 0;
   let onSuccessfulDataSyncTimestampChange = null;
   let silentDataRefreshInFlight = false;
 
-  function formatSyncStatusBarTime(iso) {
-    if (!iso) return "—";
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
+  function updateAppSyncBarRelativeDisplay() {
+    const el = document.getElementById("app-sync-status-value");
+    if (!el) return;
+    const ts = lastKnownSuccessfulDataSync;
+    if (!ts) {
+      el.textContent = "—";
+      el.removeAttribute("title");
+      return;
+    }
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) {
+      el.textContent = "—";
+      el.removeAttribute("title");
+      return;
+    }
+    el.textContent = formatSyncLastRelative(ts);
+    const precise = syncPreciseTimeForTitle(ts);
+    if (precise) el.setAttribute("title", precise);
+  }
+
+  function renderAppSyncProgressLine() {
+    const el = document.getElementById("app-sync-progress");
+    if (!el) return;
+    if (appSyncLocalProgress) {
+      const { name, current, total } = appSyncLocalProgress;
+      const label = name != null && String(name).trim() !== "" ? String(name).trim() : "Credential";
+      const counter = total > 1 ? ` (${current} of ${total})` : "";
+      el.textContent = `Syncing ${label}${counter}`;
+      el.hidden = false;
+      return;
+    }
+    if (lastServerSyncActivity.busy && lastServerSyncActivity.credential_name) {
+      el.textContent = `Syncing ${lastServerSyncActivity.credential_name}`;
+      el.hidden = false;
+      return;
+    }
+    if (lastServerSyncActivity.busy) {
+      el.textContent = "Syncing…";
+      el.hidden = false;
+      return;
+    }
+    el.textContent = "";
+    el.hidden = true;
+  }
+
+  function applyAppSyncBarBusyUi() {
+    const bar = document.getElementById("app-sync-status-bar");
+    const spin = document.getElementById("app-sync-status-spinner");
+    const btn = document.getElementById("app-sync-bar-sync-btn");
+    const busy = appSyncLocalProgress != null || lastServerSyncActivity.busy === true;
+    if (bar) bar.setAttribute("aria-busy", busy ? "true" : "false");
+    if (spin) {
+      spin.hidden = !busy;
+      spin.setAttribute("aria-hidden", busy ? "false" : "true");
+    }
+    if (btn) btn.disabled = Boolean(busy);
+    renderAppSyncProgressLine();
+  }
+
+  function setAppSyncBarBusy(busy) {
+    if (!busy) {
+      appSyncLocalProgress = null;
+    }
+    applyAppSyncBarBusyUi();
+  }
+
+  function applyAppSyncBarSyncButtonVisibility() {
+    const btn = document.getElementById("app-sync-bar-sync-btn");
+    if (btn) btn.hidden = !isAdmin();
   }
 
   async function refreshAppSyncStatusBar() {
@@ -110,16 +262,40 @@
     if (!el) return;
     try {
       const r = await fetch("/api/sync/status", { credentials: "same-origin", cache: "no-store" });
+      if (r.status === 401) {
+        handleSessionExpired("Session expired. Sign in again.");
+        return;
+      }
       if (!r.ok) {
+        lastKnownSuccessfulDataSync = null;
         el.textContent = "—";
+        el.removeAttribute("title");
+        updateAppSyncCredCountsFromPayload(null);
+        updateAppSyncIntervalFromPayload(null);
+        lastServerSyncActivity = { busy: false, credential_name: null, credential_id: null };
+        applyAppSyncBarBusyUi();
         return;
       }
       const data = await r.json();
+      updateAppSyncCredCountsFromPayload(data);
+      updateAppSyncIntervalFromPayload(data);
+      lastServerSyncActivity = {
+        busy: Boolean(data?.sync_busy),
+        credential_name:
+          data?.sync_credential_name != null && String(data.sync_credential_name).trim() !== ""
+            ? String(data.sync_credential_name).trim()
+            : null,
+        credential_id:
+          data?.sync_credential_id != null && String(data.sync_credential_id).trim() !== ""
+            ? String(data.sync_credential_id).trim()
+            : null,
+      };
+      applyAppSyncBarBusyUi();
       const ts = data?.last_successful_data_sync ?? null;
-      el.textContent = formatSyncStatusBarTime(ts);
       syncStatusSampleCount += 1;
       if (syncStatusSampleCount === 1) {
         lastKnownSuccessfulDataSync = ts;
+        updateAppSyncBarRelativeDisplay();
         return;
       }
       if (ts !== lastKnownSuccessfulDataSync) {
@@ -127,8 +303,15 @@
         if (typeof fn === "function") fn(ts, lastKnownSuccessfulDataSync);
       }
       lastKnownSuccessfulDataSync = ts;
+      updateAppSyncBarRelativeDisplay();
     } catch {
+      lastKnownSuccessfulDataSync = null;
       el.textContent = "—";
+      el.removeAttribute("title");
+      updateAppSyncCredCountsFromPayload(null);
+      updateAppSyncIntervalFromPayload(null);
+      lastServerSyncActivity = { busy: false, credential_name: null, credential_id: null };
+      applyAppSyncBarBusyUi();
     }
   }
 
@@ -137,8 +320,15 @@
       clearInterval(appSyncStatusTimer);
       appSyncStatusTimer = null;
     }
+    if (appSyncRelativeMinuteTimer != null) {
+      clearInterval(appSyncRelativeMinuteTimer);
+      appSyncRelativeMinuteTimer = null;
+    }
     refreshAppSyncStatusBar();
     appSyncStatusTimer = window.setInterval(refreshAppSyncStatusBar, 15000);
+    appSyncRelativeMinuteTimer = window.setInterval(() => {
+      updateAppSyncBarRelativeDisplay();
+    }, 60000);
   }
 
   function stopAppSyncStatusPolling() {
@@ -146,10 +336,29 @@
       clearInterval(appSyncStatusTimer);
       appSyncStatusTimer = null;
     }
+    if (appSyncRelativeMinuteTimer != null) {
+      clearInterval(appSyncRelativeMinuteTimer);
+      appSyncRelativeMinuteTimer = null;
+    }
     lastKnownSuccessfulDataSync = null;
     syncStatusSampleCount = 0;
+    lastServerSyncActivity = { busy: false, credential_name: null, credential_id: null };
+    appSyncLocalProgress = null;
+    setAppSyncBarBusy(false);
     const el = document.getElementById("app-sync-status-value");
-    if (el) el.textContent = "—";
+    if (el) {
+      el.textContent = "—";
+      el.removeAttribute("title");
+    }
+    const intEl = document.getElementById("app-sync-interval-value");
+    if (intEl) intEl.textContent = "—";
+    const credEl = document.getElementById("app-sync-cred-counts");
+    if (credEl) credEl.textContent = "—";
+    const progEl = document.getElementById("app-sync-progress");
+    if (progEl) {
+      progEl.textContent = "";
+      progEl.hidden = true;
+    }
   }
 
   function severityClass(severity) {
@@ -176,11 +385,70 @@
 
   let currentSessionUser = null;
 
+  let sessionIdleMs = 0;
+  let lastUserActivityAt = 0;
+  let lastKeepaliveSentAt = 0;
+  let sessionIdleWatchdogTimer = null;
+  let sessionIdleListenersBound = false;
+  const SESSION_IDLE_ACTIVITY_EVENTS = ["pointerdown", "keydown", "scroll", "touchstart", "wheel"];
+
+  function stopSessionIdleWatch() {
+    if (sessionIdleWatchdogTimer != null) {
+      clearInterval(sessionIdleWatchdogTimer);
+      sessionIdleWatchdogTimer = null;
+    }
+    sessionIdleMs = 0;
+  }
+
+  function onSessionUserActivity() {
+    lastUserActivityAt = Date.now();
+    maybeSendSessionKeepalive();
+  }
+
+  function maybeSendSessionKeepalive() {
+    if (!currentSessionUser || sessionIdleMs <= 0) return;
+    const now = Date.now();
+    if (now - lastKeepaliveSentAt < 45000) return;
+    lastKeepaliveSentAt = now;
+    fetch("/api/auth/activity", { method: "POST", credentials: "same-origin", cache: "no-store" }).then((r) => {
+      if (r.status === 401) handleSessionExpired("Signed out due to inactivity.");
+    });
+  }
+
+  function startSessionIdleWatch() {
+    stopSessionIdleWatch();
+    const mins = Number(fwTagUiSettings.session_idle_timeout_minutes);
+    const m = Number.isFinite(mins) && mins >= 0 ? Math.min(525600, Math.floor(mins)) : DEFAULT_SESSION_IDLE_MINUTES;
+    sessionIdleMs = m * 60 * 1000;
+    if (!currentSessionUser || sessionIdleMs <= 0) return;
+    lastUserActivityAt = Date.now();
+    lastKeepaliveSentAt = 0;
+    if (!sessionIdleListenersBound) {
+      SESSION_IDLE_ACTIVITY_EVENTS.forEach((ev) => {
+        document.addEventListener(ev, onSessionUserActivity, { passive: true, capture: true });
+      });
+      sessionIdleListenersBound = true;
+    }
+    sessionIdleWatchdogTimer = window.setInterval(() => {
+      if (!currentSessionUser || sessionIdleMs <= 0) return;
+      if (Date.now() - lastUserActivityAt >= sessionIdleMs) {
+        handleSessionExpired("Signed out due to inactivity.");
+      }
+    }, 10000);
+  }
+
+  function restartSessionIdleWatchIfAuthenticated() {
+    stopSessionIdleWatch();
+    startSessionIdleWatch();
+  }
+
   function isAdmin() {
     return currentSessionUser?.role === "admin";
   }
 
   function handleSessionExpired(message) {
+    stopSessionIdleWatch();
+    stopAppSyncStatusPolling();
     currentSessionUser = null;
     const btnUser = document.getElementById("btn-user-menu");
     if (btnUser) btnUser.hidden = true;
@@ -258,6 +526,8 @@
     if (roleEl) {
       roleEl.textContent = u ? appRoleDisplay(u.role) : "";
     }
+    if (typeof applyFwApproveButtonVisibility === "function") applyFwApproveButtonVisibility();
+    applyAppSyncBarSyncButtonVisibility();
   }
 
   function revealAuthenticatedChrome() {
@@ -515,6 +785,7 @@
         /* still show login */
       }
       currentSessionUser = null;
+      stopSessionIdleWatch();
       stopAppSyncStatusPolling();
       const btnUser = document.getElementById("btn-user-menu");
       if (btnUser) btnUser.hidden = true;
@@ -757,6 +1028,37 @@
     settingsFocusBeforeOpen = null;
   }
 
+  async function loadUiSettings() {
+    try {
+      const j = await loadJson("/api/settings/ui");
+      const n = Number(j?.fw_new_max_age_hours);
+      const u = Number(j?.fw_updated_max_age_hours);
+      const sid = Number(j?.session_idle_timeout_minutes);
+      if (Number.isFinite(n) && n >= 1) {
+        fwTagUiSettings.fw_new_max_age_hours = Math.min(8760, Math.floor(n));
+      }
+      if (Number.isFinite(u) && u >= 1) {
+        fwTagUiSettings.fw_updated_max_age_hours = Math.min(8760, Math.floor(u));
+      }
+      if (Number.isFinite(sid) && sid >= 0) {
+        fwTagUiSettings.session_idle_timeout_minutes = Math.min(525600, Math.floor(sid));
+      }
+      restartSessionIdleWatchIfAuthenticated();
+    } catch {
+      /* keep in-memory defaults */
+    }
+  }
+
+  async function loadSettingsGeneral() {
+    await loadUiSettings();
+    const newIn = document.getElementById("settings-general-new-hours");
+    const updIn = document.getElementById("settings-general-upd-hours");
+    const idleIn = document.getElementById("settings-general-session-idle");
+    if (newIn) newIn.value = String(fwTagUiSettings.fw_new_max_age_hours);
+    if (updIn) updIn.value = String(fwTagUiSettings.fw_updated_max_age_hours);
+    if (idleIn) idleIn.value = String(fwTagUiSettings.session_idle_timeout_minutes);
+  }
+
   function setSettingsSection(section) {
     let s = section;
     if ((s === "credentials" || s === "sync") && !isAdmin()) {
@@ -773,6 +1075,9 @@
       p.classList.toggle("is-active", on);
       p.hidden = !on;
     });
+    if (s === "general") {
+      loadSettingsGeneral().catch(console.error);
+    }
     if (s === "credentials") {
       loadSettingsCredentials().catch(console.error);
     }
@@ -957,31 +1262,6 @@
     return `<select class="settings-sync-interval-select" data-credential-id="${eid}" aria-label="Sync interval for this credential">${opts}</select>`;
   }
 
-  function syncPreciseTimeForTitle(iso) {
-    if (!iso) return "";
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
-  }
-
-  function formatSyncLastRelative(iso) {
-    if (!iso) return "—";
-    const d = new Date(iso);
-    const t = d.getTime();
-    if (Number.isNaN(t)) return "—";
-    const ageSec = Math.floor((Date.now() - t) / 1000);
-    if (ageSec < 60) return "Just now";
-    if (ageSec < 3600) {
-      const m = Math.floor(ageSec / 60);
-      return `${m} min${m === 1 ? "" : "s"} ago`;
-    }
-    if (ageSec < 86400) {
-      const h = Math.floor(ageSec / 3600);
-      return `${h} hour${h === 1 ? "" : "s"} ago`;
-    }
-    const days = Math.floor(ageSec / 86400);
-    return `${days} day${days === 1 ? "" : "s"} ago`;
-  }
-
   function formatSyncNextRelative(nextIso, intervalNorm) {
     if (intervalNorm === "none") return { text: "—", title: "" };
     if (!nextIso) {
@@ -1059,6 +1339,75 @@
     }
   }
 
+  async function runAppSyncBarSyncAll() {
+    if (!isAdmin()) return;
+    const btn = document.getElementById("app-sync-bar-sync-btn");
+    if (!btn || btn.disabled || btn.hidden) return;
+    appSyncLocalProgress = { name: "Preparing…", current: 0, total: 1 };
+    applyAppSyncBarBusyUi();
+    try {
+      const rows = await loadJson("/api/settings/credentials");
+      if (!rows.length) {
+        showCredentialRowTestToast(false, "No credentials to sync.", { title: "Sync" });
+        return;
+      }
+      const toSync = rows.filter((r) => r && r.id);
+      const total = toSync.length;
+      if (!total) {
+        showCredentialRowTestToast(false, "No credentials to sync.", { title: "Sync" });
+        return;
+      }
+      const firstNm =
+        toSync[0].name != null && String(toSync[0].name).trim() !== ""
+          ? String(toSync[0].name).trim()
+          : toSync[0].id;
+      appSyncLocalProgress = {
+        name: total === 1 ? firstNm : "Credentials",
+        current: 0,
+        total,
+      };
+      applyAppSyncBarBusyUi();
+      const errors = [];
+      for (let i = 0; i < toSync.length; i += 1) {
+        const row = toSync[i];
+        const id = row.id;
+        const nm = row.name != null && String(row.name).trim() !== "" ? String(row.name).trim() : id;
+        appSyncLocalProgress = { name: nm, current: i + 1, total };
+        applyAppSyncBarBusyUi();
+        try {
+          await apiRequestJson(`/api/settings/credentials/${encodeURIComponent(id)}/sync-now`, {
+            method: "POST",
+          });
+        } catch (e) {
+          errors.push(`${nm}: ${e.message || "failed"}`);
+        }
+      }
+      await refreshAppSyncStatusBar();
+      refreshSettingsSyncIfVisible();
+      if (errors.length) {
+        const detail =
+          errors.slice(0, 3).join(" ") + (errors.length > 3 ? " …" : "");
+        showCredentialRowTestToast(false, detail, { title: "Some syncs failed" });
+      } else {
+        showCredentialRowTestToast(
+          true,
+          `Synced ${total} credential${total === 1 ? "" : "s"}.`,
+          { title: "Sync complete" }
+        );
+      }
+    } catch (e) {
+      showCredentialRowTestToast(false, e.message || "Could not sync.", { title: "Sync failed" });
+    } finally {
+      setAppSyncBarBusy(false);
+    }
+  }
+
+  function initAppSyncStatusBar() {
+    document.getElementById("app-sync-bar-sync-btn")?.addEventListener("click", () => {
+      void runAppSyncBarSyncAll();
+    });
+  }
+
   function openCredentialFormDialog() {
     const d = document.getElementById("credential-form-dialog");
     if (!d) return;
@@ -1090,6 +1439,68 @@
         const s = btn.dataset.settingsSection;
         if (s) setSettingsSection(s);
       });
+    });
+
+    document.getElementById("settings-general-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const newIn = document.getElementById("settings-general-new-hours");
+      const updIn = document.getElementById("settings-general-upd-hours");
+      const idleIn = document.getElementById("settings-general-session-idle");
+      const st = document.getElementById("settings-general-status");
+      const n = Math.floor(Number(newIn?.value));
+      const u = Math.floor(Number(updIn?.value));
+      const sid = Math.floor(Number(idleIn?.value));
+      if (!Number.isFinite(n) || n < 1 || n > 8760 || !Number.isFinite(u) || u < 1 || u > 8760) {
+        if (st) {
+          st.textContent = "Enter hours between 1 and 8760 for both fields.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+        return;
+      }
+      if (!Number.isFinite(sid) || sid < 0 || sid > 525600) {
+        if (st) {
+          st.textContent = "Session idle timeout must be between 0 and 525600 minutes.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+        return;
+      }
+      const saveBtn = document.getElementById("settings-general-save");
+      if (saveBtn) saveBtn.disabled = true;
+      if (st) {
+        st.textContent = "Saving…";
+        st.classList.remove("is-error", "is-ok");
+      }
+      try {
+        const res = await apiRequestJson("/api/settings/ui", {
+          method: "PATCH",
+          body: JSON.stringify({
+            fw_new_max_age_hours: n,
+            fw_updated_max_age_hours: u,
+            session_idle_timeout_minutes: sid,
+          }),
+        });
+        fwTagUiSettings.fw_new_max_age_hours = res.fw_new_max_age_hours;
+        fwTagUiSettings.fw_updated_max_age_hours = res.fw_updated_max_age_hours;
+        fwTagUiSettings.session_idle_timeout_minutes = res.session_idle_timeout_minutes;
+        restartSessionIdleWatchIfAuthenticated();
+        if (st) {
+          st.textContent = "Saved.";
+          st.classList.add("is-ok");
+          st.classList.remove("is-error");
+        }
+        applyFirewallRecencyTags(fwPrepared);
+        fwController.render();
+      } catch (err) {
+        if (st) {
+          st.textContent = err.message || "Could not save.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+      } finally {
+        if (saveBtn) saveBtn.disabled = false;
+      }
     });
 
     document.getElementById("btn-add-credential")?.addEventListener("click", openCredentialFormDialog);
@@ -1297,7 +1708,15 @@
       if (!btn || btn.getAttribute("aria-disabled") === "true") return;
       const id = btn.getAttribute("data-id");
       if (!id) return;
+      const tr = btn.closest("tr[data-credential-id]");
+      const nameCell = tr?.querySelector("td strong");
+      const credName =
+        nameCell && nameCell.textContent != null && String(nameCell.textContent).trim() !== ""
+          ? String(nameCell.textContent).trim()
+          : id;
       btn.setAttribute("aria-disabled", "true");
+      appSyncLocalProgress = { name: credName, current: 1, total: 1 };
+      applyAppSyncBarBusyUi();
       try {
         const res = await apiRequestJson(`/api/settings/credentials/${encodeURIComponent(id)}/sync-now`, {
           method: "POST",
@@ -1311,6 +1730,8 @@
       } catch (err) {
         showCredentialRowTestToast(false, err.message || "Sync failed.", { title: "Sync failed" });
       } finally {
+        appSyncLocalProgress = null;
+        applyAppSyncBarBusyUi();
         btn.removeAttribute("aria-disabled");
       }
     });
@@ -1512,6 +1933,8 @@
         if (dashFwMap) dashFwMap.invalidateSize({ animate: false });
         if (panelFwMap) panelFwMap.invalidateSize({ animate: false });
         if (fwLocPickMap) fwLocPickMap.invalidateSize({ animate: false });
+        fwMapSyncMarkerLayers(dashFwMap, dashFwEdgeLayer, dashFwClusterLayer, dashFwLayer);
+        fwMapSyncMarkerLayers(panelFwMap, panelFwEdgeLayer, panelFwClusterLayer, panelFwLayer);
       });
     });
   }
@@ -1547,6 +1970,34 @@
     btn.addEventListener("click", () => activateTab(btn.dataset.tab, true));
   });
 
+  const appShell = document.getElementById("app-shell");
+  const sidebarToggle = document.getElementById("app-sidebar-toggle");
+  const SIDEBAR_COLLAPSED_LS = "sophos-central-sidebar-collapsed";
+
+  function syncSidebarToggleFromDom() {
+    if (!sidebarToggle || !appShell) return;
+    const collapsed = appShell.classList.contains("app-shell--nav-collapsed");
+    sidebarToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    sidebarToggle.setAttribute("aria-label", collapsed ? "Expand navigation" : "Collapse navigation");
+    sidebarToggle.setAttribute("title", collapsed ? "Expand navigation" : "Collapse navigation");
+  }
+
+  sidebarToggle?.addEventListener("click", () => {
+    if (!appShell) return;
+    const next = !appShell.classList.contains("app-shell--nav-collapsed");
+    appShell.classList.toggle("app-shell--nav-collapsed", next);
+    try {
+      if (next) localStorage.setItem(SIDEBAR_COLLAPSED_LS, "1");
+      else localStorage.removeItem(SIDEBAR_COLLAPSED_LS);
+    } catch {
+      /* ignore */
+    }
+    syncSidebarToggleFromDom();
+    invalidateFwMapSizes();
+  });
+
+  syncSidebarToggleFromDom();
+
   function filtersToggleButtonForAside(aside) {
     const drawer = aside?.querySelector(".filters__drawer");
     const id = drawer?.id;
@@ -1566,8 +2017,18 @@
     }
   }
 
+  /** Expands the firewalls facet drawer unless the user has it collapsed (filter links respect that). */
   function expandFirewallFiltersPanel() {
-    setFiltersPanelCollapsed(document.querySelector("#panel-firewalls .filters"), false);
+    const aside = document.querySelector("#panel-firewalls .filters");
+    if (!aside || aside.classList.contains("filters--collapsed")) return;
+    setFiltersPanelCollapsed(aside, false);
+  }
+
+  /** Expands the groups facet drawer unless the user has it collapsed. */
+  function expandGroupFiltersPanel() {
+    const aside = document.querySelector("#panel-groups .filters");
+    if (!aside || aside.classList.contains("filters--collapsed")) return;
+    setFiltersPanelCollapsed(aside, false);
   }
 
   function expandDashboardFiltersPanel() {
@@ -1621,10 +2082,25 @@
       renderRow,
       getRowSearchText,
       afterRender,
+      onSelectionChange,
+      initialSort,
     } = cfg;
 
-    let sortKey = null;
-    let sortDir = 1;
+    let defaultSortKey = null;
+    let defaultSortDir = 1;
+    if (initialSort && typeof initialSort === "object") {
+      if (initialSort.sortKey != null && String(initialSort.sortKey).trim() !== "") {
+        defaultSortKey = String(initialSort.sortKey);
+      }
+      if (
+        typeof initialSort.sortDir === "number" &&
+        (initialSort.sortDir === 1 || initialSort.sortDir === -1)
+      ) {
+        defaultSortDir = initialSort.sortDir;
+      }
+    }
+    let sortKey = defaultSortKey;
+    let sortDir = defaultSortDir;
     let visibleCount = 0;
     let selected = new Set();
     let lazyIo = null;
@@ -1807,6 +2283,7 @@
       if (cb.checked) selected.add(id);
       else selected.delete(id);
       syncSelectAll();
+      if (typeof onSelectionChange === "function") onSelectionChange();
     });
 
     if (sortDelegateRoot) {
@@ -1862,6 +2339,7 @@
         });
         syncSelectAll();
         schedulePersistUiState();
+        if (typeof onSelectionChange === "function") onSelectionChange();
       });
     }
 
@@ -1908,8 +2386,8 @@
         render(true);
       },
       resetSort: () => {
-        sortKey = null;
-        sortDir = 1;
+        sortKey = defaultSortKey;
+        sortDir = defaultSortDir;
       },
       clearSelection: () => {
         selected.clear();
@@ -1917,7 +2395,9 @@
           selectAllInput.checked = false;
           selectAllInput.indeterminate = false;
         }
+        if (typeof onSelectionChange === "function") onSelectionChange();
       },
+      getSelectedIds: () => [...selected],
       getFullFilteredRows: () => {
         const { sorted } = getSortedPipeline();
         return sorted;
@@ -2333,6 +2813,11 @@
       e.stopPropagation();
       resetTenantFacetFilters();
     });
+    document.getElementById("gr-facet-reset")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetGroupFacetFilters();
+    });
     document.getElementById("lc-facet-reset")?.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -2367,6 +2852,10 @@
       }
       if (act === "fw-suspended") {
         goToFirewallsSuspended();
+        return;
+      }
+      if (act === "fw-pending") {
+        goToFirewallsPending();
         return;
       }
       if (act === "tn-all") {
@@ -2572,7 +3061,7 @@
       })
       .join("");
     return `
-      <div class="stat-card stat-card--alerts">
+      <div class="stat-card stat-card--alerts stat-card--dash-compact">
         <button type="button" class="stat-card__main stat-card--alert${daState.severity === "all" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="all" title="Show all alerts">
           <div class="stat-card__label">All alerts</div>
           <div class="stat-card__value">${escapeHtml(String(stats.alerts))}</div>
@@ -2592,7 +3081,7 @@
           </button>
         </div>
       </div>
-      <div class="stat-card stat-card--fw">
+      <div class="stat-card stat-card--fw stat-card--dash-compact">
         <button type="button" class="stat-card__main" data-dash-action="fw-all" title="View all firewalls">
           <div class="stat-card__label">Firewalls</div>
           <div class="stat-card__value">${escapeHtml(String(stats.firewalls))}</div>
@@ -2610,9 +3099,13 @@
             <span class="stat-card__seg-label">Suspended</span>
             <span class="stat-card__seg-value">${escapeHtml(String(stats.firewalls_suspended ?? 0))}</span>
           </button>
+          <button type="button" class="stat-card__alert-seg" data-dash-action="fw-pending" title="View firewalls pending management approval">
+            <span class="stat-card__seg-label">Pending Approval</span>
+            <span class="stat-card__seg-value">${escapeHtml(String(stats.firewalls_pending_approval ?? 0))}</span>
+          </button>
         </div>
       </div>
-      <div class="stat-card stat-card--fw stat-card--tenants-dash">
+      <div class="stat-card stat-card--fw stat-card--tenants-dash stat-card--dash-compact">
         <button type="button" class="stat-card__main" data-dash-action="tn-all" title="View all tenants">
           <div class="stat-card__label">Tenants</div>
           <div class="stat-card__value">${escapeHtml(String(stats.tenants))}</div>
@@ -2624,7 +3117,7 @@
       }
         </div>
       </div>
-      <div class="stat-card stat-card--fw">
+      <div class="stat-card stat-card--fw stat-card--dash-compact">
         <button type="button" class="stat-card__main" data-dash-action="lic-all" title="View all licenses">
           <div class="stat-card__label">Licenses</div>
           <div class="stat-card__value">${escapeHtml(String(stats.licenses))}</div>
@@ -2677,11 +3170,23 @@
   let panelFwMap = null;
   let dashFwLayer = null;
   let panelFwLayer = null;
+  let dashFwEdgeLayer = null;
+  let panelFwEdgeLayer = null;
+  let dashFwClusterLayer = null;
+  let panelFwClusterLayer = null;
+  let fwClusterLensMap = null;
+  let fwClusterLensHideTimer = null;
+  let fwClusterLensViewportListeners = false;
+  let fwClusterLensActiveClusterMarker = null;
+  let fwClusterLensMainMap = null;
   let fwLocPickMap = null;
   let fwLocPickMarker = null;
   let fwLocEditingId = null;
   let fwLocModalFocusBefore = null;
   let fwLocSuggestTimer = null;
+  let fwDetailFlyoutMap = null;
+  let fwDetailFlyoutMapMarker = null;
+  let fwDetailFlyoutOpenId = null;
   let fwHoverActiveMap = null;
   let fwHoverActiveMarker = null;
   let fwHoverPortalHideTimer = null;
@@ -2693,10 +3198,12 @@
   const fwFilterState = {};
   /** Set from dashboard quick links; combined with facet filters via AND. */
   let fwLinkMode = null;
+  let fwBatchModalRows = [];
+  let fwBatchChoiceByFwId = new Map();
 
   const FW_COL_VISIBILITY_KEY = "sophos-central-fw-columns-v1";
   const FW_COLUMNS = [
-    { id: "status", label: "Status", sortKey: "status", thClass: "th-sortable" },
+    { id: "status", label: "Status", sortKey: "status", thClass: "th-sortable fw-status-col" },
     {
       id: "firmware_upgrade",
       label: "Firmware upgrades",
@@ -2705,7 +3212,7 @@
     },
     { id: "alert_count", label: "Alerts", sortKey: "alert_count", thClass: "th-sortable fw-alerts-col" },
     { id: "hostname", label: "Host name", sortKey: "hostname", thClass: "th-sortable th-link-col" },
-    { id: "group_name", label: "Group", sortKey: "group_name", thClass: "th-sortable" },
+    { id: "group_name", label: "Group", sortKey: "group_name", thClass: "th-sortable fw-col-group" },
     { id: "serial_number", label: "Serial number", sortKey: "serial_number", thClass: "th-sortable" },
     { id: "model", label: "Model", sortKey: "model", thClass: "th-sortable" },
     { id: "firmware_version", label: "Firmware", sortKey: "firmware_version", thClass: "th-sortable" },
@@ -2782,10 +3289,15 @@
         th.setAttribute("aria-label", "Firmware upgrades");
       } else if (col.id === "alert_count") {
         th.innerHTML =
+          '<span class="fw-th-icon-header fw-th-icon-header--alerts-sync-row">' +
           '<span class="fw-th-icon-header fw-th-icon-header--alerts" title="Alerts">' +
           firewallWarnIconSvg() +
+          "</span>" +
+          '<span class="fw-th-icon-header fw-th-icon-header--group-sync" title="Group sync status">' +
+          firewallGroupSyncIconSvg() +
+          "</span>" +
           "</span>";
-        th.setAttribute("aria-label", "Alerts");
+        th.setAttribute("aria-label", "Alerts and group sync status");
       } else {
         th.textContent = col.label;
       }
@@ -2947,8 +3459,51 @@
     return '<svg class="fw-alerts-cell__icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M9.401 3.003c1.155-2 4.043-2 5.197 0l7.355 12.748c1.154 2-.577 4.5-2.598 4.5H4.645c-2.022 0-3.752-2.5-2.598-4.5L9.401 3.003ZM12 8.25a.75.75 0 0 1 .75.75v3.75a.75.75 0 0 1-1.5 0V9a.75.75 0 0 1 .75-.75Zm0 8.25a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"/></svg>';
   }
 
+  function firewallGroupSyncIconSvg() {
+    return '<svg class="fw-group-sync-cell__icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>';
+  }
+
   function firewallFirmwareUpgradeIconSvg() {
     return '<svg class="fw-firmware-upgrade-btn__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 4 20 16h-5v6h-6v-6H4l8-12z"/></svg>';
+  }
+
+  function firewallStatusIconHealthySvg() {
+    return (
+      '<svg class="fw-status-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">' +
+      '<circle class="fw-status-icon__disc--ok" cx="12" cy="12" r="10"/>' +
+      '<path class="fw-status-icon__glyph" d="M16.59 7.58L10 14.17 7.41 11.59 6 13l4 4 8-8-1.41-1.42z"/>' +
+      "</svg>"
+    );
+  }
+
+  function firewallStatusIconSuspendedSvg() {
+    return (
+      '<svg class="fw-status-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">' +
+      '<circle class="fw-status-icon__disc--suspended" cx="12" cy="12" r="10"/>' +
+      '<rect class="fw-status-icon__pause" x="8" y="8" width="3" height="8" rx="1"/>' +
+      '<rect class="fw-status-icon__pause" x="13" y="8" width="3" height="8" rx="1"/>' +
+      "</svg>"
+    );
+  }
+
+  function firewallStatusIconOfflineSvg() {
+    return (
+      '<svg class="fw-status-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">' +
+      '<circle class="fw-status-icon__disc--bad" cx="12" cy="12" r="10"/>' +
+      '<path class="fw-status-icon__cut" fill="none" stroke-width="2" stroke-linecap="round" d="M7 12h4 M13 12h4"/>' +
+      "</svg>"
+    );
+  }
+
+  function firewallStatusIconApprovalSvg() {
+    const hg =
+      '<path class="fw-status-icon__glyph" d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5l-4-4V4h8v3.5l-4 4z"/>';
+    return (
+      '<svg class="fw-status-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">' +
+      '<circle class="fw-status-icon__disc--approval" cx="12" cy="12" r="10"/>' +
+      `<g transform="translate(12 12) scale(0.4) translate(-12 -12)">${hg}</g>` +
+      "</svg>"
+    );
   }
 
   let fwFirmwareModalFocusBefore = null;
@@ -3021,9 +3576,10 @@
     const tabButtons = vers
       .map((v, idx) => {
         const label = escapeHtml(String(v));
+        const vAttr = escapeAttr(String(v));
         const active = idx === 0 ? " is-active" : "";
         const selected = idx === 0 ? "true" : "false";
-        return `<button type="button" role="tab" id="fw-fw-tab-${idx}" class="fw-firmware-modal__tab${active}" aria-selected="${selected}" aria-controls="fw-fw-panel-${idx}" tabindex="${idx === 0 ? "0" : "-1"}">${label}</button>`;
+        return `<button type="button" role="tab" id="fw-fw-tab-${idx}" class="fw-firmware-modal__tab${active}" aria-selected="${selected}" aria-controls="fw-fw-panel-${idx}" tabindex="${idx === 0 ? "0" : "-1"}" data-fw-tab-version="${vAttr}">${label}</button>`;
       })
       .join("");
 
@@ -3041,8 +3597,104 @@
 
     return `<div class="fw-firmware-modal__layout">
       <div class="fw-firmware-modal__tabs" role="tablist" aria-label="Available firmware versions" aria-orientation="horizontal">${tabButtons}</div>
-      <div class="fw-firmware-modal__tab-panels">${panels}</div>
+      <button type="button" class="fw-firmware-modal__notes-toggle" id="fw-single-notes-toggle" aria-expanded="false" aria-controls="fw-single-notes-region">
+        <span class="fw-firmware-modal__notes-toggle-label">Release notes &amp; details</span>
+        <span class="fw-firmware-modal__notes-toggle-chev" aria-hidden="true">▼</span>
+      </button>
+      <div id="fw-single-notes-region" class="fw-firmware-modal__notes-region" role="region" aria-labelledby="fw-single-notes-toggle" hidden>
+        <div class="fw-firmware-modal__tab-panels">${panels}</div>
+      </div>
     </div>`;
+  }
+
+  /** Batch upgrade modal: one tab per unique target version, same card content as single-firewall modal. */
+  function renderFwFirmwareBatchNotesBody(vers, details) {
+    if (!Array.isArray(vers) || vers.length === 0) {
+      return "";
+    }
+    const tabButtons = vers
+      .map((v, idx) => {
+        const label = escapeHtml(String(v));
+        const vAttr = escapeAttr(String(v));
+        const active = idx === 0 ? " is-active" : "";
+        const selected = idx === 0 ? "true" : "false";
+        return `<button type="button" role="tab" id="fw-batch-fw-tab-${idx}" class="fw-firmware-modal__tab${active}" aria-selected="${selected}" aria-controls="fw-batch-fw-panel-${idx}" tabindex="${idx === 0 ? "0" : "-1"}" data-fw-tab-version="${vAttr}">${label}</button>`;
+      })
+      .join("");
+
+    const panels = vers
+      .map((v, idx) => {
+        const d =
+          details[idx] ??
+          ({ version: v, size: null, bugs: [], news: [], in_database: false });
+        const ver = escapeHtml(String(d.version || v || "—"));
+        const inner = renderFwFirmwareVersionCardInner(d);
+        const hiddenAttr = idx === 0 ? "" : " hidden";
+        return `<div role="tabpanel" id="fw-batch-fw-panel-${idx}" class="fw-firmware-modal__tab-panel" aria-labelledby="fw-batch-fw-tab-${idx}"${hiddenAttr}><div class="fw-firmware-card"><h4 class="fw-firmware-card__title">${ver}</h4>${inner}</div></div>`;
+      })
+      .join("");
+
+    return `<div class="fw-firmware-modal__layout">
+      <div class="fw-firmware-modal__tabs" role="tablist" aria-label="Firmware versions (release notes)" aria-orientation="horizontal">${tabButtons}</div>
+      <button type="button" class="fw-firmware-modal__notes-toggle" id="fw-batch-notes-toggle" aria-expanded="false" aria-controls="fw-batch-notes-region">
+        <span class="fw-firmware-modal__notes-toggle-label">Release notes &amp; details</span>
+        <span class="fw-firmware-modal__notes-toggle-chev" aria-hidden="true">▼</span>
+      </button>
+      <div id="fw-batch-notes-region" class="fw-firmware-modal__notes-region" role="region" aria-labelledby="fw-batch-notes-toggle" hidden>
+        <div class="fw-firmware-modal__tab-panels">${panels}</div>
+      </div>
+    </div>`;
+  }
+
+  function findFwFirmwareTabIndexByVersion(scopeRoot, versionStr) {
+    const want = String(versionStr ?? "").trim();
+    if (!want || !scopeRoot) return -1;
+    const tabs = [...scopeRoot.querySelectorAll('.fw-firmware-modal__tabs [role="tab"]')];
+    for (let i = 0; i < tabs.length; i++) {
+      const tv = (tabs[i].getAttribute("data-fw-tab-version") || tabs[i].textContent || "").trim();
+      if (tv === want) return i;
+    }
+    return -1;
+  }
+
+  function setFwFirmwareNotesExpanded(scopeRoot, expanded) {
+    if (!scopeRoot) return;
+    const toggle = scopeRoot.querySelector(".fw-firmware-modal__notes-toggle");
+    const region = scopeRoot.querySelector(".fw-firmware-modal__notes-region");
+    if (!toggle || !region) return;
+    toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    toggle.classList.toggle("is-expanded", expanded);
+    if (expanded) region.removeAttribute("hidden");
+    else region.setAttribute("hidden", "");
+  }
+
+  function toggleFwFirmwareNotesCollapse(scopeRoot) {
+    if (!scopeRoot) return;
+    const region = scopeRoot.querySelector(".fw-firmware-modal__notes-region");
+    const expanded = Boolean(region && !region.hasAttribute("hidden"));
+    setFwFirmwareNotesExpanded(scopeRoot, !expanded);
+  }
+
+  function activateFwBatchFirmwareNotesTab(index) {
+    const root = document.getElementById("fw-firmware-batch-notes-root");
+    if (!root) return;
+    const list = root.querySelector('.fw-firmware-modal__tabs[role="tablist"]');
+    if (!list) return;
+    const tabs = [...list.querySelectorAll('[role="tab"]')];
+    const panels = [...root.querySelectorAll(".fw-firmware-modal__tab-panel")];
+    if (!tabs.length || tabs.length !== panels.length) return;
+    const i = Math.max(0, Math.min(index, tabs.length - 1));
+    tabs.forEach((t, j) => {
+      const on = j === i;
+      t.classList.toggle("is-active", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
+      t.setAttribute("tabindex", on ? "0" : "-1");
+    });
+    panels.forEach((p, j) => {
+      if (j === i) p.removeAttribute("hidden");
+      else p.setAttribute("hidden", "");
+    });
+    setFwFirmwareNotesExpanded(root, true);
   }
 
   function activateFwFirmwareModalTab(modalRoot, index) {
@@ -3062,9 +3714,14 @@
       if (j === i) p.removeAttribute("hidden");
       else p.setAttribute("hidden", "");
     });
+    setFwFirmwareNotesExpanded(modalRoot, true);
   }
 
-  async function openFwFirmwareUpgradeModal(firewallId) {
+  async function openFwFirmwareUpgradeModal(firewallId, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const targetVerRaw = opts.targetVersion;
+    const wantTargetVer = targetVerRaw != null && String(targetVerRaw).trim() !== "";
+
     const m = document.getElementById("fw-firmware-modal");
     const titleEl = document.getElementById("fw-firmware-modal-title");
     const bodyEl = document.getElementById("fw-firmware-modal-body");
@@ -3083,6 +3740,13 @@
       );
       titleEl.textContent = formatFwFirmwareModalTitle(data);
       bodyEl.innerHTML = renderFwFirmwareModalBody(data);
+      if (wantTargetVer) {
+        const idx = findFwFirmwareTabIndexByVersion(m, String(targetVerRaw).trim());
+        if (idx >= 0) activateFwFirmwareModalTab(m, idx);
+        else setFwFirmwareNotesExpanded(m, Boolean(opts.expandNotes) || wantTargetVer);
+      } else {
+        setFwFirmwareNotesExpanded(m, Boolean(opts.expandNotes));
+      }
     } catch (e) {
       console.error(e);
       titleEl.textContent = "Firmware upgrades";
@@ -3099,6 +3763,12 @@
     m.querySelector(".fw-firmware-modal__backdrop")?.addEventListener("click", closeFwFirmwareUpgradeModal);
 
     m.addEventListener("click", (e) => {
+      const notesToggle = e.target.closest("button.fw-firmware-modal__notes-toggle");
+      if (notesToggle && m.contains(notesToggle)) {
+        e.preventDefault();
+        toggleFwFirmwareNotesCollapse(m);
+        return;
+      }
       const tab = e.target.closest("button.fw-firmware-modal__tab");
       if (!tab || !m.contains(tab)) return;
       const list = tab.closest(".fw-firmware-modal__tabs");
@@ -3149,34 +3819,151 @@
     return tail !== "" ? tail : "—";
   }
 
+  const FW_APPROVAL_PENDING_STATUS_TITLE =
+    "Firewall has requested permission to be managed by Sophos Central.";
+
+  function fwRawIsApprovalPending(statusRaw) {
+    const s = String(statusRaw ?? "")
+      .trim()
+      .toLowerCase();
+    return s === "approvalpending" || s === "pendingapproval";
+  }
+
+  function fwRowConnected(row) {
+    return row.connected === 1 || row.connected === true;
+  }
+
+  function fwRowSuspended(row) {
+    return row.suspended === 1 || row.suspended === true;
+  }
+
+  function renderFwRecencyPillHtml(tag) {
+    if (!tag) return "";
+    if (tag === "new") {
+      return '<span class="fw-recency-pill fw-recency-pill--new" title="Recently added" aria-label="NEW">NEW</span>';
+    }
+    if (tag === "old") {
+      return '<span class="fw-recency-pill fw-recency-pill--old" title="Last sync older than peers for this API client" aria-label="OLD">OLD</span>';
+    }
+    if (tag === "upd") {
+      return '<span class="fw-recency-pill fw-recency-pill--upd" title="State changed recently" aria-label="Updated">UPD</span>';
+    }
+    return "";
+  }
+
+  function applyFirewallRecencyTags(rows) {
+    const now = Date.now();
+    const newMs = (fwTagUiSettings.fw_new_max_age_hours || FW_TAG_DEFAULT_NEW_HOURS) * 3600000;
+    const updMs = (fwTagUiSettings.fw_updated_max_age_hours || FW_TAG_DEFAULT_UPD_HOURS) * 3600000;
+    const byClient = new Map();
+    for (const row of rows) {
+      const cid = String(row.client_id ?? "").trim();
+      if (!cid) continue;
+      if (!byClient.has(cid)) byClient.set(cid, []);
+      byClient.get(cid).push(row);
+    }
+    const maxSyncByClient = new Map();
+    for (const [cid, list] of byClient) {
+      if (list.length < 2) continue;
+      let maxT = null;
+      for (const r of list) {
+        const t = parseFirewallIsoMs(r.last_sync);
+        if (t != null && (maxT === null || t > maxT)) maxT = t;
+      }
+      if (maxT !== null) maxSyncByClient.set(cid, maxT);
+    }
+    for (const row of rows) {
+      row._statusRecencyTag = null;
+      const createdMs = parseFirewallIsoMs(row.created_at);
+      const stateMs = parseFirewallIsoMs(row.state_changed_at);
+      const isNew =
+        createdMs !== null &&
+        stateMs !== null &&
+        now - createdMs <= newMs &&
+        now - stateMs <= newMs;
+      if (isNew) {
+        row._statusRecencyTag = "new";
+        continue;
+      }
+      const cid = String(row.client_id ?? "").trim();
+      let isOld = false;
+      if (cid && maxSyncByClient.has(cid)) {
+        const maxT = maxSyncByClient.get(cid);
+        const myT = parseFirewallIsoMs(row.last_sync);
+        if (myT === null || myT < maxT) isOld = true;
+      }
+      if (isOld) {
+        row._statusRecencyTag = "old";
+        continue;
+      }
+      if (stateMs !== null && now - stateMs <= updMs) {
+        row._statusRecencyTag = "upd";
+      }
+    }
+  }
+
+  function renderFirewallStatusIconHtml(row) {
+    const approvalPending =
+      fwRawIsApprovalPending(row.managing_status) || fwRawIsApprovalPending(row.reporting_status);
+    if (approvalPending) {
+      const t = escapeHtml(FW_APPROVAL_PENDING_STATUS_TITLE);
+      return `<span class="fw-status-icon-wrap" title="${t}" aria-label="${t}">${firewallStatusIconApprovalSvg()}</span>`;
+    }
+    if (!fwRowConnected(row)) {
+      const t = escapeHtml("Not connected");
+      return `<span class="fw-status-icon-wrap" title="${t}" aria-label="${t}">${firewallStatusIconOfflineSvg()}</span>`;
+    }
+    if (fwRowSuspended(row)) {
+      const t = escapeHtml("Connected, suspended");
+      return `<span class="fw-status-icon-wrap" title="${t}" aria-label="${t}">${firewallStatusIconSuspendedSvg()}</span>`;
+    }
+    const t = escapeHtml("Connected");
+    return `<span class="fw-status-icon-wrap" title="${t}" aria-label="${t}">${firewallStatusIconHealthySvg()}</span>`;
+  }
+
   function renderFwDataCell(colId, row, ctx) {
-    const { dot, host } = ctx;
+    const { host } = ctx;
     switch (colId) {
-      case "status":
-        return `<td>${dot}</td>`;
+      case "status": {
+        const pill = renderFwRecencyPillHtml(row._statusRecencyTag);
+        const icon = renderFirewallStatusIconHtml(row);
+        return `<td class="fw-status-col"><span class="fw-status-col__inner">${pill}${icon}</span></td>`;
+      }
       case "firmware_upgrade": {
         const uc = row.firmware_upgrade_count ?? 0;
         if (uc <= 0) return '<td class="fw-upgrade-col"></td>';
         const upTitle =
           uc === 1
-            ? "View 1 available firmware upgrade"
-            : `View ${uc} available firmware upgrades`;
-        return `<td class="fw-upgrade-col"><button type="button" class="cell-link fw-firmware-upgrade-btn" data-fw-id="${escapeHtml(row._id)}" title="${escapeHtml(upTitle)}" aria-label="${escapeHtml(upTitle)}">${firewallFirmwareUpgradeIconSvg()}</button></td>`;
+            ? "Schedule firmware upgrade"
+            : `Schedule firmware upgrade (${uc} versions available)`;
+        return `<td class="fw-upgrade-col"><div class="fw-upgrade-col__inner"><button type="button" class="cell-link fw-firmware-upgrade-btn" data-fw-id="${escapeHtml(row._id)}" title="${escapeHtml(upTitle)}" aria-label="${escapeHtml(upTitle)}">${firewallFirmwareUpgradeIconSvg()}</button></div></td>`;
       }
       case "alert_count": {
         const ac = row.alert_count ?? 0;
-        if (ac <= 0) return '<td class="fw-alerts-col"></td>';
+        const hasSync =
+          row.has_group_sync_status === 1 ||
+          row.has_group_sync_status === true ||
+          row.has_group_sync_status === "1";
+        if (ac <= 0 && !hasSync) return '<td class="fw-alerts-col"></td>';
+        const syncTitle = "Listed in firewall group sync status (Central)";
+        const syncEl = hasSync
+          ? `<span class="fw-group-sync-indicator" title="${escapeHtml(syncTitle)}" aria-label="${escapeHtml(syncTitle)}">${firewallGroupSyncIconSvg()}</span>`
+          : "";
+        if (ac <= 0) {
+          return `<td class="fw-alerts-col"><div class="fw-alerts-col__inner">${syncEl}</div></td>`;
+        }
         const dashTitle =
           ac === 1
             ? "View 1 alert on Dashboard (filtered by this firewall)"
             : `View ${ac} alerts on Dashboard (filtered by this firewall)`;
         const wi = firewallWarnIconSvg();
-        return `<td class="fw-alerts-col"><button type="button" class="cell-link fw-alerts-dash-link fw-alerts-cell fw-alerts-cell--has" data-fw-host="${encodeURIComponent(row.hostname)}" title="${escapeHtml(dashTitle)}" aria-label="${escapeHtml(dashTitle)}">${wi}<span class="fw-alerts-cell__count">${escapeHtml(String(ac))}</span></button></td>`;
+        const btn = `<button type="button" class="cell-link fw-alerts-dash-link fw-alerts-cell fw-alerts-cell--has" data-fw-host="${encodeURIComponent(row.hostname)}" title="${escapeHtml(dashTitle)}" aria-label="${escapeHtml(dashTitle)}">${wi}<span class="fw-alerts-count-pill">${escapeHtml(String(ac))}</span></button>`;
+        return `<td class="fw-alerts-col"><div class="fw-alerts-col__inner">${btn}${syncEl}</div></td>`;
       }
       case "hostname":
         return `<td><a href="#" class="cell-link" data-id="${escapeHtml(row._id)}">${host}</a></td>`;
       case "group_name":
-        return `<td>${escapeHtml(row.group_name)}</td>`;
+        return firewallCentralGroupsCellHtml(row);
       case "serial_number":
         return `<td>${escapeHtml(row.serial_number)}</td>`;
       case "model":
@@ -3218,13 +4005,41 @@
     }
   }
 
+  function groupBreadcrumbCaretSvg() {
+    return '<svg class="group-breadcrumb__caret" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>';
+  }
+
+  /** Renders Central group path(s): caret separators, each segment links to Groups tab filtered on that group. */
+  function firewallCentralGroupsCellHtml(row) {
+    const memberships = row.central_group_memberships;
+    if (!Array.isArray(memberships) || !memberships.length) return '<td class="fw-col-group"></td>';
+    const block = memberships
+      .map((m) => {
+        const levels = m.levels || [];
+        const inner = levels
+          .map((lv, i) => {
+            const sep =
+              i === 0
+                ? ""
+                : `<span class="group-breadcrumb__sep group-breadcrumb__sep--caret" aria-hidden="true">${groupBreadcrumbCaretSvg()}</span>`;
+            const nameRaw = lv.name || "—";
+            const gn = escapeHtml(nameRaw);
+            const gAttr = escapeAttr(nameRaw);
+            const gid = escapeAttr(lv.id);
+            const btn = `<button type="button" class="cell-link fw-to-central-group" data-group-id="${gid}" title="Open Groups tab filtered to this group" aria-label="Show group ${gAttr} on Groups tab">${gn}</button>`;
+            return `${sep}${btn}`;
+          })
+          .join("");
+        return `<span class="group-breadcrumb">${inner}</span>`;
+      })
+      .join('<span class="fw-group-breadcrumb-between" aria-hidden="true"> · </span>');
+    return `<td class="fw-col-group">${block}</td>`;
+  }
+
   function renderFirewallDataRow(row, selected) {
-    const dot = row.statusHealthy
-      ? '<span class="status-dot status-dot--ok" title="Healthy"></span>'
-      : '<span class="status-dot status-dot--bad" title="Attention"></span>';
     const host = escapeHtml(row.hostname);
     const checked = selected.has(row._id) ? " checked" : "";
-    const ctx = { dot, host };
+    const ctx = { host };
     const cells = FW_COLUMNS.filter((c) => fwColVisible[c.id])
       .map((c) => renderFwDataCell(c.id, row, ctx))
       .join("");
@@ -3243,22 +4058,66 @@
     const ips = parseJsonArray(row.external_ipv4_addresses_json);
     const tags = caps.map((c) => `<span class="tag-pill">${escapeHtml(c)}</span>`).join("");
     const healthy = firewallStatusHealthy(row);
+    const approvalPending =
+      fwRawIsApprovalPending(row.managing_status) || fwRawIsApprovalPending(row.reporting_status);
+    const connected = fwRowConnected(row);
+    const suspended = fwRowSuspended(row);
+    let statusLabel;
+    if (approvalPending) statusLabel = "Pending approval";
+    else if (!connected) statusLabel = "Offline";
+    else if (suspended) statusLabel = "Suspended";
+    else statusLabel = "Connected";
     const alertCount = Number(row.alert_count);
     const alert_count = Number.isFinite(alertCount) ? alertCount : 0;
+    const rawGss = row.has_group_sync_status;
+    const has_group_sync_status =
+      rawGss === 1 || rawGss === true || rawGss === "1" ? 1 : 0;
+    const rawGssSus = row.group_sync_status_suspended;
+    const group_sync_status_suspended =
+      rawGssSus === 1 || rawGssSus === true || rawGssSus === "1" ? 1 : 0;
     const upgradeCount = Number(row.firmware_upgrade_count);
     const firmware_upgrade_count = Number.isFinite(upgradeCount) ? upgradeCount : 0;
     const geo_lat = parseGeoCoord(row.geo_latitude);
     const geo_lon = parseGeoCoord(row.geo_longitude);
     const has_location = geo_lat != null && geo_lon != null ? 1 : 0;
+    const rawBreadcrumbs = Array.isArray(row.central_group_breadcrumbs)
+      ? row.central_group_breadcrumbs
+      : [];
+    const central_group_memberships = rawBreadcrumbs
+      .map((x) => {
+        const levels = Array.isArray(x?.levels)
+          ? x.levels
+              .map((lv) => ({
+                id: lv?.id != null ? String(lv.id).trim() : "",
+                name: String(lv?.name ?? "").trim() || "—",
+              }))
+              .filter((lv) => lv.id)
+          : [];
+        return { levels };
+      })
+      .filter((m) => m.levels.length > 0);
+    const group_name = central_group_memberships
+      .map((m) => m.levels.map((l) => l.name).join(" › "))
+      .join(" · ");
+    const fw_group_facet_values = [];
+    for (const m of central_group_memberships) {
+      const leaf = m.levels[m.levels.length - 1]?.name;
+      if (leaf && !fw_group_facet_values.includes(leaf)) fw_group_facet_values.push(leaf);
+    }
+    fw_group_facet_values.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
     return {
       _id: row.id,
       id: row.id,
-      status: healthy ? "Healthy" : "Attention",
+      status: statusLabel,
       statusHealthy: healthy,
       alert_count,
+      has_group_sync_status,
+      group_sync_status_suspended,
       firmware_upgrade_count,
       hostname: row.hostname || row.name || "—",
-      group_name: row.group_name || "—",
+      group_name,
+      central_group_memberships,
+      fw_group_facet_values,
       serial_number: row.serial_number || "—",
       model: row.model || "—",
       firmware_version: row.firmware_version || "—",
@@ -3266,7 +4125,10 @@
       suspended: row.suspended,
       external_ips: ips.length ? ips.join(", ") : "—",
       tenant_name: row.tenant_name || "—",
+      created_at: row.created_at || "",
       state_changed_at: row.state_changed_at || "",
+      last_sync: row.last_sync || "",
+      client_id: row.client_id || "",
       tags: tags || '<span class="muted">—</span>',
       tagsPlain: caps.join(" "),
       firewall_name:
@@ -3285,6 +4147,14 @@
       has_location,
       _row: row,
     };
+  }
+
+  function fwPreparedRowHasFirmwareUpgrade(row) {
+    if (!row) return false;
+    const uc = Number(row.firmware_upgrade_count);
+    if (Number.isFinite(uc) && uc > 0) return true;
+    const avail = row.firmware_available_updates;
+    return Array.isArray(avail) && avail.length > 0;
   }
 
   const FW_OSM_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -3384,8 +4254,7 @@
     const mapEl = document.getElementById(mapElId);
     if (!wrap || !mapEl) return;
     const body = wrap.querySelector(".fw-map-section__body");
-    const attr = body?.querySelector(".fw-map-attribution");
-    if (!body || !attr) return;
+    if (!body) return;
     if (body.querySelector(`[data-fw-map-resize-for="${mapElId}"]`)) return;
 
     const h = readFwMapHeightPx(storageKey, defaultHeightPx);
@@ -3398,7 +4267,7 @@
     handle.setAttribute("aria-orientation", "horizontal");
     handle.setAttribute("aria-label", "Resize map height");
     handle.tabIndex = 0;
-    body.insertBefore(handle, attr);
+    mapEl.after(handle);
 
     function startResize(clientY) {
       const startY = clientY;
@@ -3468,7 +4337,8 @@
     return t || "—";
   }
 
-  function buildFwMapTooltipHtml(row) {
+  function buildFwMapCardHtml(row, opts) {
+    const forFlyout = Boolean(opts && opts.forFlyout);
     const raw = row._row || {};
     const ips = parseJsonArray(raw.external_ipv4_addresses_json);
     const lastIp = ips.length ? escapeHtml(String(ips[0])) : "—";
@@ -3489,9 +4359,12 @@
     const mg = escapeHtml(fwApprovalUiLabel(row.managing_status));
     const rp = escapeHtml(fwApprovalUiLabel(row.reporting_status));
     const tn = escapeHtml(row.tenant_name || "—");
+    const nameEditBtn = forFlyout
+      ? `<button type="button" class="fw-map-card__name-edit icon-btn" data-fw-flyout-edit-name="1" title="Edit label" aria-label="Edit firewall label">${CRED_ROW_ICONS.edit}</button>`
+      : "";
     return `<div class="fw-map-card">
       <div class="fw-map-card__host">${host}</div>
-      <div class="fw-map-card__row"><span class="fw-map-pill">${namePill}</span> ${connPill}</div>
+      <div class="fw-map-card__row"><span class="fw-map-pill">${namePill}</span>${nameEditBtn} ${connPill}</div>
       ${suspBlock}
       <div class="fw-map-card__row"><span class="fw-map-card__label">Serial</span><span class="fw-map-card__val">${serial}</span></div>
       <div class="fw-map-card__row"><span class="fw-map-card__label">Model</span><span class="fw-map-card__val">${model}</span></div>
@@ -3501,6 +4374,10 @@
       <div class="fw-map-card__row"><span class="fw-map-card__label">Reporting</span><span class="fw-map-card__val">${rp}</span></div>
       <div class="fw-map-card__row"><span class="fw-map-card__label">Tenant</span><span class="fw-map-card__val">${tn}</span></div>
     </div>`;
+  }
+
+  function buildFwMapTooltipHtml(row) {
+    return buildFwMapCardHtml(row, { forFlyout: false });
   }
 
   function fwMapBaseOptions() {
@@ -3529,6 +4406,14 @@
       noWrap: true,
     }).addTo(dashFwMap);
     dashFwLayer = L.layerGroup().addTo(dashFwMap);
+    dashFwClusterLayer = L.layerGroup().addTo(dashFwMap);
+    dashFwEdgeLayer = L.layerGroup().addTo(dashFwMap);
+    if (!dashFwMap._fwEdgeHooked) {
+      dashFwMap._fwEdgeHooked = true;
+      dashFwMap.on("moveend zoomend resize", () => {
+        fwMapSyncMarkerLayers(dashFwMap, dashFwEdgeLayer, dashFwClusterLayer, dashFwLayer);
+      });
+    }
     attachFwMapViewPersistence(dashFwMap, FW_MAP_VIEW_KEY_DASH);
   }
 
@@ -3545,6 +4430,14 @@
       noWrap: true,
     }).addTo(panelFwMap);
     panelFwLayer = L.layerGroup().addTo(panelFwMap);
+    panelFwClusterLayer = L.layerGroup().addTo(panelFwMap);
+    panelFwEdgeLayer = L.layerGroup().addTo(panelFwMap);
+    if (!panelFwMap._fwEdgeHooked) {
+      panelFwMap._fwEdgeHooked = true;
+      panelFwMap.on("moveend zoomend resize", () => {
+        fwMapSyncMarkerLayers(panelFwMap, panelFwEdgeLayer, panelFwClusterLayer, panelFwLayer);
+      });
+    }
     attachFwMapViewPersistence(panelFwMap, FW_MAP_VIEW_KEY_PANEL);
   }
 
@@ -3575,7 +4468,7 @@
     const conn = row.connected === 1;
     const susp = row.suspended === 1 || row.suspended === true;
     let color = "#1565c0";
-    if (!conn) color = "#c62828";
+    if (!conn) color = "#6b7280";
     else if (susp) color = "#ef6c00";
     return L.divIcon({
       className: "fw-map-pin",
@@ -3583,6 +4476,282 @@
       iconSize: [18, 18],
       iconAnchor: [9, 9],
     });
+  }
+
+  /**
+   * Smallest u>0 where ray from (cx,cy) toward (tx,ty) hits the padded map rectangle.
+   * (cx,cy) is the view center; works when the target screen point is inside or outside the rect.
+   */
+  function fwMapCenterRayEdgeHit(cx, cy, tx, ty, xmin, ymin, xmax, ymax) {
+    const dx = tx - cx;
+    const dy = ty - cy;
+    if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return null;
+    const hits = [];
+    const pushV = (xfix, u) => {
+      if (u <= 1e-9 || !Number.isFinite(u)) return;
+      const yv = cy + u * dy;
+      if (yv >= ymin && yv <= ymax) hits.push({ u, x: xfix, y: yv });
+    };
+    const pushH = (yfix, u) => {
+      if (u <= 1e-9 || !Number.isFinite(u)) return;
+      const xv = cx + u * dx;
+      if (xv >= xmin && xv <= xmax) hits.push({ u, x: xv, y: yfix });
+    };
+    if (Math.abs(dx) > 1e-12) {
+      pushV(xmin, (xmin - cx) / dx);
+      pushV(xmax, (xmax - cx) / dx);
+    }
+    if (Math.abs(dy) > 1e-12) {
+      pushH(ymin, (ymin - cy) / dy);
+      pushH(ymax, (ymax - cy) / dy);
+    }
+    if (!hits.length) return null;
+    hits.sort((a, b) => a.u - b.u);
+    return { x: hits[0].x, y: hits[0].y };
+  }
+
+  function fwMapHitToSide(ex, ey, xmin, ymin, xmax, ymax) {
+    const dTop = Math.abs(ey - ymin);
+    const dBot = Math.abs(ey - ymax);
+    const dLeft = Math.abs(ex - xmin);
+    const dRight = Math.abs(ex - xmax);
+    const m = Math.min(dTop, dBot, dLeft, dRight);
+    if (m === dTop) return { side: "top", coord: ex };
+    if (m === dBot) return { side: "bottom", coord: ex };
+    if (m === dLeft) return { side: "left", coord: ey };
+    return { side: "right", coord: ey };
+  }
+
+  const FW_MAP_EDGE_GAP_PX = 22;
+  /** Center-to-center distance (px) below which on-screen markers merge into one cluster. */
+  const FW_MAP_CLUSTER_MERGE_PX = 18;
+  /** Half of on-screen dot footprint (14px dot + 2px border), in px from marker anchor. */
+  const FW_MAP_DOT_RADIUS_PX = 9;
+  const FW_MAP_CLUSTER_MIN_DIAM_PX = 34;
+  const FW_MAP_LENS_SIZE_PX = 260;
+  const FW_MAP_LENS_MIN_PAIR_SEP_PX = 28;
+  /** Padding for lens fitBounds: large enough that pins stay inside the circular clip (square map is masked to a circle). */
+  const FW_MAP_LENS_PAD_PX = 56;
+  const FW_CLUSTER_LENS_ID = "fw-map-cluster-lens";
+  /** Delay before hiding hover card / lens so pointer can cross gaps or reach the card without tearing down UI. */
+  const FW_MAP_HOVER_PORTAL_HIDE_MS = 220;
+  const FW_MAP_CLUSTER_LENS_HIDE_MS = 240;
+
+  function fwMapPartitionIntoPixelClusters(items, mergePx) {
+    const n = items.length;
+    if (n <= 1) return items.length ? [items] : [];
+    const parent = Array.from({ length: n }, (_, i) => i);
+    function find(i) {
+      if (parent[i] !== i) parent[i] = find(parent[i]);
+      return parent[i];
+    }
+    function union(a, b) {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent[rb] = ra;
+    }
+    const thr2 = mergePx * mergePx;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dx = items[i].pt.x - items[j].pt.x;
+        const dy = items[i].pt.y - items[j].pt.y;
+        if (dx * dx + dy * dy <= thr2) union(i, j);
+      }
+    }
+    const byRoot = new Map();
+    for (let i = 0; i < n; i++) {
+      const r = find(i);
+      if (!byRoot.has(r)) byRoot.set(r, []);
+      byRoot.get(r).push(items[i]);
+    }
+    return [...byRoot.values()];
+  }
+
+  function fwMapClusterDivIcon(count, diamPx) {
+    const d = Math.max(FW_MAP_CLUSTER_MIN_DIAM_PX, Math.round(diamPx));
+    const fs = d < 42 ? 13 : d < 52 ? 14 : 16;
+    return L.divIcon({
+      className: "fw-map-cluster-pin",
+      html: `<div class="fw-map-cluster" style="width:${d}px;height:${d}px"><span class="fw-map-cluster__count" style="font-size:${fs}px">${escapeHtml(String(count))}</span></div>`,
+      iconSize: [d, d],
+      iconAnchor: [d / 2, d / 2],
+    });
+  }
+
+  function fwMapDistributeEdgeSlots(slots, side, xmin, ymin, xmax, ymax) {
+    if (!slots.length) return;
+    const minC = side === "top" || side === "bottom" ? xmin : ymin;
+    const maxC = side === "top" || side === "bottom" ? xmax : ymax;
+    slots.sort((a, b) => a.coord - b.coord);
+    for (let i = 1; i < slots.length; i++) {
+      if (slots[i].coord < slots[i - 1].coord + FW_MAP_EDGE_GAP_PX) {
+        slots[i].coord = slots[i - 1].coord + FW_MAP_EDGE_GAP_PX;
+      }
+    }
+    const overflow = slots[slots.length - 1].coord - maxC;
+    if (overflow > 0) {
+      for (const s of slots) s.coord -= overflow;
+    }
+    const under = minC - slots[0].coord;
+    if (under > 0) {
+      for (const s of slots) s.coord += under;
+    }
+    for (const s of slots) {
+      s.coord = Math.min(maxC, Math.max(minC, s.coord));
+    }
+    for (let i = 1; i < slots.length; i++) {
+      if (slots[i].coord < slots[i - 1].coord + FW_MAP_EDGE_GAP_PX) {
+        slots[i].coord = Math.min(maxC, slots[i - 1].coord + FW_MAP_EDGE_GAP_PX);
+      }
+    }
+  }
+
+  function fwMapEdgeIconForRow(row, rotationDeg) {
+    const conn = row.connected === 1;
+    const susp = row.suspended === 1 || row.suspended === true;
+    let color = "#1565c0";
+    if (!conn) color = "#6b7280";
+    else if (susp) color = "#ef6c00";
+    const rot = Number.isFinite(rotationDeg) ? rotationDeg : 0;
+    return L.divIcon({
+      className: "fw-map-edge-pin",
+      html: `<div class="fw-map-edge" style="transform:rotate(${rot}deg)"><span class="fw-map-edge__dot" style="background-color:${color}"></span><span class="fw-map-edge__arrow" style="border-bottom-color:${color}"></span></div>`,
+      iconSize: [28, 30],
+      iconAnchor: [14, 15],
+    });
+  }
+
+  function fwMapSyncMarkerLayers(map, edgeLayer, clusterLayer, markerLayer) {
+    if (typeof L === "undefined" || !map || !edgeLayer || !clusterLayer || !markerLayer) return;
+    edgeLayer.clearLayers();
+    clusterLayer.clearLayers();
+    const sz = map.getSize();
+    if (!sz || sz.x < 32 || sz.y < 32) return;
+    const bounds = map.getBounds();
+    const pad = 14;
+    const xmin = pad;
+    const ymin = pad;
+    const xmax = sz.x - pad;
+    const ymax = sz.y - pad;
+    const cx = sz.x / 2;
+    const cy = sz.y / 2;
+
+    const visibleItems = [];
+    markerLayer.eachLayer((layer) => {
+      if (!(layer instanceof L.Marker) || !layer.fwRow) return;
+      const row = layer.fwRow;
+      if (row.geo_lat == null || row.geo_lon == null) return;
+      const ll = L.latLng(row.geo_lat, row.geo_lon);
+      const t = map.latLngToContainerPoint(ll);
+      const inGeo = bounds.contains(ll);
+      const tIn = t.x >= xmin && t.x <= xmax && t.y >= ymin && t.y <= ymax;
+      const onMainView = inGeo && tIn;
+      layer.setOpacity(0);
+      layer.options.interactive = false;
+      if (onMainView) visibleItems.push({ marker: layer, row, ll, pt: { x: t.x, y: t.y } });
+    });
+
+    const groups =
+      visibleItems.length > 0
+        ? fwMapPartitionIntoPixelClusters(visibleItems, FW_MAP_CLUSTER_MERGE_PX)
+        : [];
+
+    for (const group of groups) {
+      if (group.length === 1) {
+        group[0].marker.setOpacity(1);
+        group[0].marker.options.interactive = true;
+        continue;
+      }
+      let sumX = 0;
+      let sumY = 0;
+      for (const g of group) {
+        sumX += g.pt.x;
+        sumY += g.pt.y;
+      }
+      const n = group.length;
+      const cpx = sumX / n;
+      const cpy = sumY / n;
+      let maxR = 0;
+      for (const g of group) {
+        const dx = g.pt.x - cpx;
+        const dy = g.pt.y - cpy;
+        const d = Math.sqrt(dx * dx + dy * dy) + FW_MAP_DOT_RADIUS_PX;
+        if (d > maxR) maxR = d;
+      }
+      const diam = Math.max(FW_MAP_CLUSTER_MIN_DIAM_PX, Math.ceil(2 * maxR + 6));
+      const clusterLl = map.containerPointToLatLng(L.point(cpx, cpy));
+      const icon = fwMapClusterDivIcon(n, diam);
+      const cm = L.marker(clusterLl, { icon, interactive: true, zIndexOffset: 500 });
+      cm.fwClusterGroup = group;
+      cm.fwParentMap = map;
+      cm.addTo(clusterLayer);
+      attachFwMapClusterHoverLens(map, cm, group);
+      attachFwMapClusterClickFit(map, cm, group);
+    }
+
+    const candidates = [];
+    markerLayer.eachLayer((layer) => {
+      if (!(layer instanceof L.Marker) || !layer.fwRow) return;
+      const row = layer.fwRow;
+      if (row.geo_lat == null || row.geo_lon == null) return;
+      const ll = L.latLng(row.geo_lat, row.geo_lon);
+      const t = map.latLngToContainerPoint(ll);
+      const inGeo = bounds.contains(ll);
+      const tIn = t.x >= xmin && t.x <= xmax && t.y >= ymin && t.y <= ymax;
+      if (inGeo && tIn) return;
+      candidates.push({ row, t });
+    });
+
+    const raw = [];
+    for (const { row, t } of candidates) {
+      const exit = fwMapCenterRayEdgeHit(cx, cy, t.x, t.y, xmin, ymin, xmax, ymax);
+      if (!exit) continue;
+      const ex = Math.min(xmax, Math.max(xmin, exit.x));
+      const ey = Math.min(ymax, Math.max(ymin, exit.y));
+      const { side, coord } = fwMapHitToSide(ex, ey, xmin, ymin, xmax, ymax);
+      raw.push({ row, t, side, coord });
+    }
+
+    const sides = { top: [], right: [], bottom: [], left: [] };
+    for (const r of raw) {
+      sides[r.side].push({ coord: r.coord, row: r.row, t: r.t });
+    }
+    for (const side of ["top", "right", "bottom", "left"]) {
+      fwMapDistributeEdgeSlots(sides[side], side, xmin, ymin, xmax, ymax);
+    }
+
+    const placed = [];
+    for (const side of ["top", "right", "bottom", "left"]) {
+      for (const sl of sides[side]) {
+        let ex;
+        let ey;
+        if (side === "top") {
+          ex = sl.coord;
+          ey = ymin;
+        } else if (side === "bottom") {
+          ex = sl.coord;
+          ey = ymax;
+        } else if (side === "left") {
+          ex = xmin;
+          ey = sl.coord;
+        } else {
+          ex = xmax;
+          ey = sl.coord;
+        }
+        placed.push({ row: sl.row, t: sl.t, ex, ey });
+      }
+    }
+
+    for (const { row, t, ex, ey } of placed) {
+      const rotDeg = (Math.atan2(t.y - ey, t.x - ex) * 180) / Math.PI + 90;
+      const icon = fwMapEdgeIconForRow(row, rotDeg);
+      const ll = map.containerPointToLatLng(L.point(ex, ey));
+      const em = L.marker(ll, { icon, interactive: true, zIndexOffset: 800 });
+      em.fwRow = row;
+      em.addTo(edgeLayer);
+      attachFwMapMarkerHoverCard(map, em, buildFwMapTooltipHtml(row));
+      attachFwMapMarkerClickToCenter(map, em);
+    }
   }
 
   function fitFwMapBounds(map, rowsForBounds) {
@@ -3622,6 +4791,288 @@
     map.fitBounds(bounds, { padding: [64, 64], maxZoom: 8, animate: false });
   }
 
+  function fwMapMinLayerPointPairDist(lensMap, latlngs) {
+    if (latlngs.length < 2) return Infinity;
+    const pts = latlngs.map((ll) => lensMap.latLngToLayerPoint(L.latLng(ll)));
+    let minD = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) {
+        const d = pts[i].distanceTo(pts[j]);
+        if (d < minD) minD = d;
+      }
+    }
+    return minD;
+  }
+
+  function ensureFwClusterLensPortal() {
+    let el = document.getElementById(FW_CLUSTER_LENS_ID);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = FW_CLUSTER_LENS_ID;
+      el.className = "fw-map-cluster-lens";
+      el.hidden = true;
+      el.setAttribute("role", "img");
+      el.setAttribute("aria-label", "Magnified map cluster");
+      el.innerHTML = `<div class="fw-map-cluster-lens__stack">
+          <div class="fw-map-cluster-lens__clip"><div class="fw-map-cluster-lens__mapEl"></div></div>
+          <div class="fw-map-cluster-lens__cards" hidden></div>
+        </div>`;
+      document.body.appendChild(el);
+      el.addEventListener("mouseenter", () => {
+        if (fwClusterLensHideTimer) {
+          clearTimeout(fwClusterLensHideTimer);
+          fwClusterLensHideTimer = null;
+        }
+      });
+      el.addEventListener("mouseleave", (ev) => {
+        const rt = ev.relatedTarget;
+        if (rt && typeof rt.closest === "function" && rt.closest("#fw-map-hover-portal")) {
+          return;
+        }
+        scheduleHideFwClusterLens();
+      });
+    }
+    return el;
+  }
+
+  function removeFwClusterLensViewportListeners() {
+    if (!fwClusterLensViewportListeners) return;
+    fwClusterLensViewportListeners = false;
+    window.removeEventListener("scroll", repositionFwClusterLens, true);
+    window.removeEventListener("resize", repositionFwClusterLens);
+  }
+
+  function repositionFwClusterLens() {
+    const portal = document.getElementById(FW_CLUSTER_LENS_ID);
+    if (!portal || portal.hidden || !fwClusterLensActiveClusterMarker) return;
+    const icon = fwClusterLensActiveClusterMarker._icon;
+    if (!icon) return;
+    const ir = icon.getBoundingClientRect();
+    const pw = portal.offsetWidth || FW_MAP_LENS_SIZE_PX;
+    const ph = portal.offsetHeight || FW_MAP_LENS_SIZE_PX;
+    let left = ir.left + ir.width / 2 - pw / 2;
+    let top = ir.bottom + 10;
+    const pad = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (top + ph > vh - pad) top = ir.top - ph - 10;
+    if (left < pad) left = pad;
+    if (left + pw > vw - pad) left = Math.max(pad, vw - pad - pw);
+    if (top < pad) top = pad;
+    portal.style.left = `${Math.round(left)}px`;
+    portal.style.top = `${Math.round(top)}px`;
+  }
+
+  function addFwClusterLensViewportListeners() {
+    if (fwClusterLensViewportListeners) return;
+    fwClusterLensViewportListeners = true;
+    window.addEventListener("scroll", repositionFwClusterLens, true);
+    window.addEventListener("resize", repositionFwClusterLens);
+  }
+
+  function hideFwClusterLensNow() {
+    if (fwClusterLensHideTimer) {
+      clearTimeout(fwClusterLensHideTimer);
+      fwClusterLensHideTimer = null;
+    }
+    removeFwClusterLensViewportListeners();
+    if (fwClusterLensMainMap) {
+      fwClusterLensMainMap.off("move zoom", repositionFwClusterLens);
+      fwClusterLensMainMap = null;
+    }
+    if (fwHoverActiveMap && fwClusterLensMap && fwHoverActiveMap === fwClusterLensMap) {
+      hideFwMapHoverPortalNow(false);
+    }
+    if (fwClusterLensMap) {
+      try {
+        fwClusterLensMap.remove();
+      } catch {
+        /* ignore */
+      }
+      fwClusterLensMap = null;
+    }
+    const el = document.getElementById(FW_CLUSTER_LENS_ID);
+    if (el) {
+      el.hidden = true;
+      el.classList.remove("fw-map-cluster-lens--with-cards");
+      const mapEl = el.querySelector(".fw-map-cluster-lens__mapEl");
+      if (mapEl) mapEl.innerHTML = "";
+      const cardsEl = el.querySelector(".fw-map-cluster-lens__cards");
+      if (cardsEl) {
+        cardsEl.hidden = true;
+        cardsEl.innerHTML = "";
+      }
+    }
+    fwClusterLensActiveClusterMarker = null;
+  }
+
+  function scheduleHideFwClusterLens() {
+    if (fwClusterLensHideTimer) clearTimeout(fwClusterLensHideTimer);
+    fwClusterLensHideTimer = setTimeout(() => {
+      fwClusterLensHideTimer = null;
+      hideFwClusterLensNow();
+    }, FW_MAP_CLUSTER_LENS_HIDE_MS);
+  }
+
+  function fwClusterGroupHasDuplicateLatLng(group) {
+    const eps = 1e-7;
+    for (let i = 0; i < group.length; i++) {
+      const a = group[i].row;
+      if (a.geo_lat == null || a.geo_lon == null) continue;
+      for (let j = i + 1; j < group.length; j++) {
+        const b = group[j].row;
+        if (b.geo_lat == null || b.geo_lon == null) continue;
+        if (
+          Math.abs(a.geo_lat - b.geo_lat) < eps &&
+          Math.abs(a.geo_lon - b.geo_lon) < eps
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function fwMainMapAtMaximumZoom(mainMap) {
+    if (!mainMap || typeof mainMap.getMaxZoom !== "function" || typeof mainMap.getZoom !== "function") {
+      return false;
+    }
+    const zMax = mainMap.getMaxZoom();
+    if (typeof zMax !== "number" || !Number.isFinite(zMax)) return false;
+    return mainMap.getZoom() >= zMax - 1e-6;
+  }
+
+  function showFwClusterLens(mainMap, clusterMarker, group) {
+    hideFwMapHoverPortalNow();
+    const portal = ensureFwClusterLensPortal();
+    const mapEl = portal.querySelector(".fw-map-cluster-lens__mapEl");
+    const cardsEl = portal.querySelector(".fw-map-cluster-lens__cards");
+    if (!mapEl) return;
+    fwClusterLensActiveClusterMarker = clusterMarker;
+    portal.hidden = false;
+    portal.classList.remove("fw-map-cluster-lens--with-cards");
+    if (cardsEl) {
+      cardsEl.hidden = true;
+      cardsEl.innerHTML = "";
+    }
+    fwClusterLensMap = L.map(mapEl, {
+      attributionControl: false,
+      zoomControl: false,
+      scrollWheelZoom: false,
+      dragging: false,
+      doubleClickZoom: false,
+      boxZoom: false,
+      keyboard: false,
+      touchZoom: false,
+      zoomSnap: 0.25,
+      zoomDelta: 0.25,
+    });
+    L.tileLayer(FW_OSM_TILE_URL, {
+      maxZoom: 19,
+      attribution: "",
+      noWrap: true,
+    }).addTo(fwClusterLensMap);
+    const latlngs = group.map((g) => L.latLng(g.row.geo_lat, g.row.geo_lon));
+    const bounds = L.latLngBounds(latlngs);
+    const geoCenter = bounds.getCenter();
+    for (let i = 0; i < group.length; i++) {
+      const row = group[i].row;
+      const icon = fwMapMarkerIconForRow(row);
+      const lm = L.marker(latlngs[i], { icon, interactive: true, zIndexOffset: 600 }).addTo(
+        fwClusterLensMap
+      );
+      lm.fwRow = row;
+    }
+    fwClusterLensMap.fitBounds(bounds, {
+      padding: [FW_MAP_LENS_PAD_PX, FW_MAP_LENS_PAD_PX],
+      animate: false,
+      maxZoom: 18,
+    });
+    fwClusterLensMap.invalidateSize(false);
+    let z = fwClusterLensMap.getZoom();
+    for (let step = 0; step < 16; step++) {
+      const d = fwMapMinLayerPointPairDist(fwClusterLensMap, latlngs);
+      if (d >= FW_MAP_LENS_MIN_PAIR_SEP_PX || z >= 18) break;
+      z += 0.25;
+      fwClusterLensMap.setZoomAround(geoCenter, z, { animate: false });
+    }
+    fwClusterLensMap.fitBounds(bounds, {
+      padding: [FW_MAP_LENS_PAD_PX, FW_MAP_LENS_PAD_PX],
+      animate: false,
+      maxZoom: fwClusterLensMap.getZoom(),
+    });
+    fwClusterLensMap.invalidateSize(false);
+
+    const minDist =
+      latlngs.length >= 2 ? fwMapMinLayerPointPairDist(fwClusterLensMap, latlngs) : Infinity;
+    const hasDup = fwClusterGroupHasDuplicateLatLng(group);
+    const stillOverlap =
+      latlngs.length >= 2 &&
+      (minDist < FW_MAP_LENS_MIN_PAIR_SEP_PX || !Number.isFinite(minDist));
+    const mainAtMax = fwMainMapAtMaximumZoom(mainMap);
+    const showCardStrip =
+      group.length > 1 && cardsEl && (hasDup || stillOverlap || mainAtMax);
+    if (showCardStrip) {
+      portal.classList.add("fw-map-cluster-lens--with-cards");
+      cardsEl.hidden = false;
+      cardsEl.innerHTML = group
+        .map(
+          (g) =>
+            `<div class="fw-map-cluster-lens__card-slot">${buildFwMapTooltipHtml(g.row)}</div>`
+        )
+        .join("");
+      portal.setAttribute(
+        "aria-label",
+        `Magnified map cluster, ${group.length} firewalls — details below map`
+      );
+    } else {
+      portal.setAttribute("aria-label", "Magnified map cluster");
+      fwClusterLensMap.eachLayer((layer) => {
+        if (layer instanceof L.Marker && layer.fwRow) {
+          attachFwMapLensMarkerHoverCard(
+            fwClusterLensMap,
+            layer,
+            buildFwMapTooltipHtml(layer.fwRow)
+          );
+        }
+      });
+    }
+
+    fwClusterLensMainMap = mainMap;
+    mainMap.on("move zoom", repositionFwClusterLens);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        repositionFwClusterLens();
+      });
+    });
+    addFwClusterLensViewportListeners();
+  }
+
+  function attachFwMapClusterHoverLens(mainMap, clusterMarker, group) {
+    clusterMarker.on("mouseover", () => {
+      if (fwClusterLensHideTimer) {
+        clearTimeout(fwClusterLensHideTimer);
+        fwClusterLensHideTimer = null;
+      }
+      showFwClusterLens(mainMap, clusterMarker, group);
+    });
+    clusterMarker.on("mouseout", () => {
+      scheduleHideFwClusterLens();
+    });
+  }
+
+  function attachFwMapClusterClickFit(mainMap, clusterMarker, group) {
+    clusterMarker.on("click", (ev) => {
+      if (ev && ev.originalEvent) {
+        L.DomEvent.stopPropagation(ev.originalEvent);
+      }
+      hideFwClusterLensNow();
+      hideFwMapHoverPortalNow();
+      const latlngs = group.map((g) => L.latLng(g.row.geo_lat, g.row.geo_lon));
+      mainMap.fitBounds(L.latLngBounds(latlngs), { padding: [72, 72], maxZoom: 14, animate: true });
+    });
+  }
+
   const FW_HOVER_PORTAL_ID = "fw-map-hover-portal";
 
   function ensureFwMapHoverPortal() {
@@ -3645,6 +5096,10 @@
       if (fwHoverPortalHideTimer) {
         clearTimeout(fwHoverPortalHideTimer);
         fwHoverPortalHideTimer = null;
+      }
+      if (fwClusterLensHideTimer) {
+        clearTimeout(fwClusterLensHideTimer);
+        fwClusterLensHideTimer = null;
       }
     });
     portal.addEventListener("mouseleave", () => {
@@ -3673,6 +5128,23 @@
     portalEl.style.top = `${Math.round(top)}px`;
   }
 
+  /** Leaflet sometimes has not created `marker._icon` yet on first mouseover; retry until it exists. */
+  function queueFwMapHoverPortalPosition(map, marker, portalEl) {
+    let attempts = 0;
+    const maxAttempts = 45;
+    const tick = () => {
+      if (!portalEl.isConnected || !marker._map) return;
+      const icon = marker._icon;
+      if (icon) {
+        repositionFwMapHoverPortal(map, marker, portalEl);
+        return;
+      }
+      attempts += 1;
+      if (attempts < maxAttempts) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
   function repositionActiveFwMapPortal() {
     const portal = document.getElementById(FW_HOVER_PORTAL_ID);
     if (!portal || portal.hidden || !fwHoverActiveMap || !fwHoverActiveMarker) return;
@@ -3693,7 +5165,27 @@
     window.removeEventListener("resize", repositionActiveFwMapPortal);
   }
 
-  function hideFwMapHoverPortalNow() {
+  function hideFwMapHoverPortalNow(closeClusterLens = true) {
+    if (closeClusterLens) {
+      hideFwClusterLensNow();
+    } else {
+      if (fwHoverPortalHideTimer) {
+        clearTimeout(fwHoverPortalHideTimer);
+        fwHoverPortalHideTimer = null;
+      }
+      removeFwMapHoverViewportListeners();
+      if (fwHoverActiveMap) {
+        fwHoverActiveMap.off("move zoom", repositionActiveFwMapPortal);
+      }
+      fwHoverActiveMap = null;
+      fwHoverActiveMarker = null;
+      const elOnly = document.getElementById(FW_HOVER_PORTAL_ID);
+      if (elOnly) {
+        elOnly.hidden = true;
+        elOnly.innerHTML = "";
+      }
+      return;
+    }
     if (fwHoverPortalHideTimer) {
       clearTimeout(fwHoverPortalHideTimer);
       fwHoverPortalHideTimer = null;
@@ -3715,11 +5207,38 @@
     if (fwHoverPortalHideTimer) clearTimeout(fwHoverPortalHideTimer);
     fwHoverPortalHideTimer = setTimeout(() => {
       fwHoverPortalHideTimer = null;
-      hideFwMapHoverPortalNow();
-    }, 160);
+      const fromLensMap = fwHoverActiveMap && fwHoverActiveMap === fwClusterLensMap;
+      hideFwMapHoverPortalNow(!fromLensMap);
+    }, FW_MAP_HOVER_PORTAL_HIDE_MS);
   }
 
   function attachFwMapMarkerHoverCard(map, marker, html) {
+    wireFwMapHoverPortalOnce();
+    marker.on("mouseover", () => {
+      hideFwClusterLensNow();
+      if (fwHoverPortalHideTimer) {
+        clearTimeout(fwHoverPortalHideTimer);
+        fwHoverPortalHideTimer = null;
+      }
+      if (fwHoverActiveMap) {
+        fwHoverActiveMap.off("move zoom", repositionActiveFwMapPortal);
+      }
+      fwHoverActiveMap = map;
+      fwHoverActiveMarker = marker;
+      map.on("move zoom", repositionActiveFwMapPortal);
+      addFwMapHoverViewportListeners();
+      const portal = ensureFwMapHoverPortal();
+      portal.innerHTML = html;
+      portal.hidden = false;
+      queueFwMapHoverPortalPosition(map, marker, portal);
+    });
+    marker.on("mouseout", () => {
+      scheduleHideFwMapHoverPortal();
+    });
+  }
+
+  /** Hover card for pins inside the cluster magnifier; keeps the lens open (unlike main-map markers). */
+  function attachFwMapLensMarkerHoverCard(map, marker, html) {
     wireFwMapHoverPortalOnce();
     marker.on("mouseover", () => {
       if (fwHoverPortalHideTimer) {
@@ -3736,24 +5255,54 @@
       const portal = ensureFwMapHoverPortal();
       portal.innerHTML = html;
       portal.hidden = false;
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          repositionFwMapHoverPortal(map, marker, portal);
-        });
-      });
+      queueFwMapHoverPortalPosition(map, marker, portal);
     });
     marker.on("mouseout", () => {
       scheduleHideFwMapHoverPortal();
     });
   }
 
+  function attachFwMapMarkerClickToCenter(map, marker) {
+    if (!map || !marker) return;
+    marker.on("click", (ev) => {
+      if (ev && ev.originalEvent) {
+        L.DomEvent.stopPropagation(ev.originalEvent);
+      }
+      const row = marker.fwRow;
+      if (!row || row.geo_lat == null || row.geo_lon == null) return;
+      hideFwMapHoverPortalNow();
+      map.panTo(L.latLng(row.geo_lat, row.geo_lon), { animate: true, duration: 0.45, easeLinearity: 0.22 });
+    });
+  }
+
+  function countFwRowsWithMapCoords(rows) {
+    let n = 0;
+    for (const row of rows) {
+      if (row.geo_lat != null && row.geo_lon != null) n++;
+    }
+    return n;
+  }
+
+  function updatePanelFwMapShowingLabel(panelRows) {
+    const el = document.getElementById("panel-fw-map-count");
+    if (!el) return;
+    const rows =
+      panelRows ||
+      (typeof fwController !== "undefined" && fwController?.getFullFilteredRows
+        ? fwController.getFullFilteredRows()
+        : fwPrepared);
+    const n = countFwRowsWithMapCoords(rows);
+    el.textContent = n === 1 ? "Showing 1 firewall" : `Showing ${n} firewalls`;
+  }
+
   function refreshFwMapMarkers(opts) {
     const refit = opts?.refit !== false;
-    if (typeof L === "undefined") return;
     const panelRows =
       typeof fwController !== "undefined" && fwController?.getFullFilteredRows
         ? fwController.getFullFilteredRows()
         : fwPrepared;
+    updatePanelFwMapShowingLabel(panelRows);
+    if (typeof L === "undefined") return;
     if (!refit) {
       const dSig = fwMapMarkerDataSignature(fwPrepared);
       const pSig = fwMapMarkerDataSignature(panelRows);
@@ -3766,6 +5315,10 @@
     initPanelFwMapIfNeeded();
     if (dashFwLayer) dashFwLayer.clearLayers();
     if (panelFwLayer) panelFwLayer.clearLayers();
+    if (dashFwClusterLayer) dashFwClusterLayer.clearLayers();
+    if (panelFwClusterLayer) panelFwClusterLayer.clearLayers();
+    if (dashFwEdgeLayer) dashFwEdgeLayer.clearLayers();
+    if (panelFwEdgeLayer) panelFwEdgeLayer.clearLayers();
     fwPrepared.forEach((row) => {
       if (row.geo_lat == null || row.geo_lon == null) return;
       const ll = [row.geo_lat, row.geo_lon];
@@ -3773,7 +5326,9 @@
       const icon = fwMapMarkerIconForRow(row);
       if (dashFwLayer) {
         const m = L.marker(ll, { icon }).addTo(dashFwLayer);
+        m.fwRow = row;
         attachFwMapMarkerHoverCard(dashFwMap, m, html);
+        attachFwMapMarkerClickToCenter(dashFwMap, m);
       }
     });
     panelRows.forEach((row) => {
@@ -3783,13 +5338,17 @@
       const icon = fwMapMarkerIconForRow(row);
       if (panelFwLayer) {
         const m2 = L.marker(ll, { icon }).addTo(panelFwLayer);
+        m2.fwRow = row;
         attachFwMapMarkerHoverCard(panelFwMap, m2, html);
+        attachFwMapMarkerClickToCenter(panelFwMap, m2);
       }
     });
     if (refit) {
       applySavedFwMapViewOrFit(dashFwMap, FW_MAP_VIEW_KEY_DASH);
       applySavedFwMapViewOrFit(panelFwMap, FW_MAP_VIEW_KEY_PANEL, panelRows);
     }
+    fwMapSyncMarkerLayers(dashFwMap, dashFwEdgeLayer, dashFwClusterLayer, dashFwLayer);
+    fwMapSyncMarkerLayers(panelFwMap, panelFwEdgeLayer, panelFwClusterLayer, panelFwLayer);
     _lastFwDashMapMarkerSig = fwMapMarkerDataSignature(fwPrepared);
     _lastFwPanelMapMarkerSig = fwMapMarkerDataSignature(panelRows);
   }
@@ -4024,14 +5583,287 @@
         const updated = await loadJson("/api/firewalls");
         fwRaw = updated;
         fwPrepared = fwRaw.map(prepareFirewall);
+        applyFirewallRecencyTags(fwPrepared);
         buildFirewallFilters();
         fwController.render();
         refreshFwMapMarkers();
+        const savedFwId = fwLocEditingId;
         closeFwLocationModal();
+        if (savedFwId && fwDetailFlyoutOpenId === savedFwId) {
+          refreshFwDetailFlyoutVisuals();
+        }
       } catch (err) {
         if (stEl) stEl.textContent = err.message || "Could not save location.";
       }
     });
+  }
+
+  function destroyFwDetailFlyoutMap() {
+    if (fwDetailFlyoutMap) {
+      fwDetailFlyoutMap.remove();
+      fwDetailFlyoutMap = null;
+      fwDetailFlyoutMapMarker = null;
+    }
+  }
+
+  function ensureFwDetailFlyoutMap(row) {
+    const mapEl = document.getElementById("fw-detail-flyout-map");
+    const ph = document.getElementById("fw-detail-flyout-map-placeholder");
+    if (!mapEl) return;
+    const lat = row?.geo_lat;
+    const lng = row?.geo_lon;
+    if (lat == null || lng == null || typeof L === "undefined") {
+      destroyFwDetailFlyoutMap();
+      mapEl.innerHTML = "";
+      mapEl.hidden = true;
+      if (ph) ph.hidden = false;
+      return;
+    }
+    if (ph) ph.hidden = true;
+    mapEl.hidden = false;
+    destroyFwDetailFlyoutMap();
+    fwDetailFlyoutMap = L.map(mapEl, fwMapBaseOptions());
+    L.tileLayer(FW_OSM_TILE_URL, {
+      maxZoom: 19,
+      attribution: FW_OSM_ATTR,
+      noWrap: true,
+    }).addTo(fwDetailFlyoutMap);
+    fwDetailFlyoutMapMarker = L.marker([lat, lng], {
+      icon: fwMapMarkerIconForRow(row),
+    }).addTo(fwDetailFlyoutMap);
+    fwDetailFlyoutMap.setView([lat, lng], 11, { animate: false });
+    requestAnimationFrame(() => {
+      fwDetailFlyoutMap?.invalidateSize({ animate: false });
+    });
+  }
+
+  function refreshFwDetailFlyoutVisuals() {
+    if (!fwDetailFlyoutOpenId) return;
+    const row = fwPrepared.find((r) => r._id === fwDetailFlyoutOpenId);
+    if (!row) return;
+    const titleEl = document.getElementById("fw-detail-flyout-title");
+    if (titleEl) titleEl.textContent = row.hostname || row.firewall_name || "Firewall";
+    const cardEl = document.getElementById("fw-detail-flyout-card");
+    if (cardEl) cardEl.innerHTML = buildFwMapCardHtml(row, { forFlyout: true });
+    const link = document.getElementById("fw-detail-flyout-loc-link");
+    if (link) {
+      link.textContent = row.has_location === 1 ? "Change location" : "Set location";
+    }
+    const fwBanner = document.getElementById("fw-detail-flyout-firmware-banner");
+    if (fwBanner) {
+      if (fwPreparedRowHasFirmwareUpgrade(row)) {
+        fwBanner.hidden = false;
+        fwBanner.innerHTML = `<span class="fw-detail-flyout__firmware-banner-icon" aria-hidden="true">${firewallFirmwareUpgradeIconSvg()}</span><div class="fw-detail-flyout__firmware-banner-main"><p class="fw-detail-flyout__firmware-banner-msg">A firmware update is available.</p><button type="button" class="cell-link fw-detail-flyout__firmware-update-btn" data-fw-id="${escapeHtml(row._id)}">Update</button></div>`;
+      } else {
+        fwBanner.hidden = true;
+        fwBanner.innerHTML = "";
+      }
+    }
+    const syncSuspendBanner = document.getElementById("fw-detail-flyout-sync-suspend-banner");
+    if (syncSuspendBanner) {
+      const showSyncSuspend = row.has_group_sync_status === 1 && row.group_sync_status_suspended === 1;
+      if (showSyncSuspend) {
+        syncSuspendBanner.hidden = false;
+        const msg = "This firewall is suspended from a sync issue.";
+        syncSuspendBanner.innerHTML = `<span class="fw-detail-flyout__sync-suspend-banner-icon" aria-hidden="true">${firewallGroupSyncIconSvg()}</span><div class="fw-detail-flyout__sync-suspend-banner-main"><p class="fw-detail-flyout__sync-suspend-banner-msg">${escapeHtml(msg)}</p></div>`;
+      } else {
+        syncSuspendBanner.hidden = true;
+        syncSuspendBanner.innerHTML = "";
+      }
+    }
+    ensureFwDetailFlyoutMap(row);
+    requestAnimationFrame(() => invalidateFwMapSizes());
+  }
+
+  async function loadFwDetailFlyoutAlerts(fwId) {
+    const host = document.getElementById("fw-detail-panel-alerts");
+    if (!host) return;
+    host.innerHTML = '<p class="muted">Loading alerts…</p>';
+    try {
+      const data = await loadJson(
+        `/api/alerts?firewall_id=${encodeURIComponent(fwId)}&page_size=200&page=1`
+      );
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (items.length === 0) {
+        host.innerHTML = '<p class="muted">No alerts for this firewall.</p>';
+        return;
+      }
+      const rows = items
+        .map((a) => {
+          const id = escapeHtml(a.id || "");
+          const sev = severityClass(a.severity);
+          const desc = escapeHtml(a.description || "—");
+          const ra = escapeHtml(fmtDate(a.raised_at));
+          return `<tr class="fw-detail-alert-row" tabindex="0" data-alert-id="${id}" aria-label="View alert details">
+            <td><span class="${sev}">${escapeHtml(a.severity || "—")}</span></td>
+            <td class="fw-detail-alert-row__desc" title="${escapeAttr(a.description || "")}">${desc}</td>
+            <td class="muted">${ra}</td>
+          </tr>`;
+        })
+        .join("");
+      host.innerHTML = `<div class="table-scroll fw-detail-flyout__table-scroll"><table class="data-table data-table--dense fw-detail-flyout__alerts-table">
+        <thead><tr><th scope="col">Severity</th><th scope="col">Description</th><th scope="col">Raised</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+    } catch {
+      host.innerHTML = '<p class="muted">Could not load alerts.</p>';
+    }
+  }
+
+  async function loadFwDetailFlyoutSubscriptions(serial) {
+    const host = document.getElementById("fw-detail-panel-subs");
+    if (!host) return;
+    if (!serial || serial === "—") {
+      host.innerHTML =
+        '<p class="muted">No serial number on this record; subscriptions are listed by license serial.</p>';
+      return;
+    }
+    host.innerHTML = '<p class="muted">Loading subscriptions…</p>';
+    try {
+      const subs = await loadJson(`/api/license-subscriptions?serial=${encodeURIComponent(serial)}`);
+      const list = Array.isArray(subs) ? subs : [];
+      if (list.length === 0) {
+        host.innerHTML = '<p class="muted">No subscriptions for this serial.</p>';
+        return;
+      }
+      const rows = list
+        .map((s) => {
+          return `<tr><td>${escapeHtml(s.product_code || "—")}</td><td>${escapeHtml(s.product_name || "—")}</td><td>${escapeHtml(s.type || "—")}</td><td class="muted">${escapeHtml(s.start_date || "—")}</td><td class="muted">${escapeHtml(s.end_date || "—")}</td></tr>`;
+        })
+        .join("");
+      host.innerHTML = `<div class="table-scroll fw-detail-flyout__table-scroll"><table class="data-table data-table--dense">
+        <thead><tr><th>Code</th><th>Product</th><th>Type</th><th>Start</th><th>End</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+    } catch {
+      host.innerHTML = '<p class="muted">Could not load subscriptions.</p>';
+    }
+  }
+
+  function fwDetailFlyoutActivateTab(which) {
+    const tabA = document.getElementById("fw-detail-tab-alerts");
+    const tabS = document.getElementById("fw-detail-tab-subs");
+    const panelA = document.getElementById("fw-detail-panel-alerts");
+    const panelS = document.getElementById("fw-detail-panel-subs");
+    if (!tabA || !tabS || !panelA || !panelS) return;
+    const showAlerts = which === "alerts";
+    tabA.setAttribute("aria-selected", showAlerts ? "true" : "false");
+    tabS.setAttribute("aria-selected", showAlerts ? "false" : "true");
+    tabA.tabIndex = showAlerts ? 0 : -1;
+    tabS.tabIndex = showAlerts ? -1 : 0;
+    panelA.hidden = !showAlerts;
+    panelS.hidden = showAlerts;
+  }
+
+  function closeFwDetailFlyout() {
+    const backdrop = document.getElementById("fw-detail-flyout-backdrop");
+    const panel = document.getElementById("fw-detail-flyout");
+    destroyFwDetailFlyoutMap();
+    fwDetailFlyoutOpenId = null;
+    if (backdrop) backdrop.hidden = true;
+    if (panel) {
+      panel.hidden = true;
+      panel.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  async function openFwDetailFlyout(fwId) {
+    const row = fwPrepared.find((r) => r._id === fwId);
+    if (!row) return;
+    const backdrop = document.getElementById("fw-detail-flyout-backdrop");
+    const panel = document.getElementById("fw-detail-flyout");
+    if (!backdrop || !panel) return;
+    fwDetailFlyoutOpenId = fwId;
+    backdrop.hidden = false;
+    panel.hidden = false;
+    panel.setAttribute("aria-hidden", "false");
+    refreshFwDetailFlyoutVisuals();
+    fwDetailFlyoutActivateTab("alerts");
+    const serial = row.serial_number && row.serial_number !== "—" ? row.serial_number : "";
+    await Promise.all([loadFwDetailFlyoutAlerts(fwId), loadFwDetailFlyoutSubscriptions(serial)]);
+    requestAnimationFrame(() => invalidateFwMapSizes());
+    panel.querySelector(".flyout__close-btn")?.focus();
+  }
+
+  async function onFwDetailFlyoutEditName() {
+    const id = fwDetailFlyoutOpenId;
+    if (!id) return;
+    const row = fwPrepared.find((r) => r._id === id);
+    if (!row) return;
+    const cur =
+      row.firewall_name && row.firewall_name !== "—" ? row.firewall_name : "";
+    const next = window.prompt("Firewall label (name in Sophos Central):", cur);
+    if (next == null) return;
+    const trimmed = String(next).trim();
+    if (trimmed === "") {
+      window.alert("Label cannot be empty.");
+      return;
+    }
+    if (trimmed === cur) return;
+    try {
+      await apiRequestJson(`/api/firewalls/${encodeURIComponent(id)}/label`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: trimmed }),
+      });
+      const updated = await loadJson("/api/firewalls");
+      fwRaw = updated;
+      fwPrepared = fwRaw.map(prepareFirewall);
+      applyFirewallRecencyTags(fwPrepared);
+      buildFirewallFilters();
+      fwController.render();
+      refreshFwMapMarkers({ refit: false });
+      refreshFwDetailFlyoutVisuals();
+    } catch (err) {
+      window.alert(err.message || "Could not update label.");
+    }
+  }
+
+  function initFwDetailFlyout() {
+    const backdrop = document.getElementById("fw-detail-flyout-backdrop");
+    const panel = document.getElementById("fw-detail-flyout");
+    const locLink = document.getElementById("fw-detail-flyout-loc-link");
+    if (!backdrop || !panel) return;
+    backdrop.addEventListener("click", closeFwDetailFlyout);
+    panel.querySelector(".flyout__close-btn")?.addEventListener("click", closeFwDetailFlyout);
+    panel.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeFwDetailFlyout();
+    });
+    locLink?.addEventListener("click", () => {
+      const id = fwDetailFlyoutOpenId;
+      if (id) openFwLocationModal(id);
+    });
+    panel.addEventListener("click", (e) => {
+      const fwUpBtn = e.target.closest("button.fw-detail-flyout__firmware-update-btn");
+      if (fwUpBtn && panel.contains(fwUpBtn)) {
+        e.preventDefault();
+        const fwId = fwUpBtn.getAttribute("data-fw-id") || fwDetailFlyoutOpenId;
+        if (!fwId) return;
+        closeFwDetailFlyout();
+        openFwFirmwareUpgradeModal(fwId);
+        return;
+      }
+      const edit = e.target.closest("[data-fw-flyout-edit-name]");
+      if (edit && panel.contains(edit)) {
+        e.preventDefault();
+        onFwDetailFlyoutEditName().catch(console.error);
+        return;
+      }
+      const tr = e.target.closest("tr.fw-detail-alert-row[data-alert-id]");
+      if (tr && panel.contains(tr)) {
+        const aid = tr.getAttribute("data-alert-id");
+        if (aid) openAlertFlyout(aid).catch(console.error);
+      }
+    });
+    panel.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const tr = e.target.closest("tr.fw-detail-alert-row[data-alert-id]");
+      if (!tr || !panel.contains(tr)) return;
+      e.preventDefault();
+      const aid = tr.getAttribute("data-alert-id");
+      if (aid) openAlertFlyout(aid).catch(console.error);
+    });
+    const tabA = document.getElementById("fw-detail-tab-alerts");
+    const tabS = document.getElementById("fw-detail-tab-subs");
+    tabA?.addEventListener("click", () => fwDetailFlyoutActivateTab("alerts"));
+    tabS?.addEventListener("click", () => fwDetailFlyoutActivateTab("subs"));
   }
 
   function distinctValues(rows, key, limit = 60) {
@@ -4042,6 +5874,64 @@
       set.add(s);
     });
     return Array.from(set).sort((a, b) => a.localeCompare(b)).slice(0, limit);
+  }
+
+  const FW_FACET_SEARCH_KEYS = new Set(["tenant_name", "hostname", "serial_number"]);
+
+  /** Status facet options (prepareFirewall labels); always listed so Pending approval is available even with zero matching rows. */
+  const FW_STATUS_FACET_PRESETS = ["Connected", "Offline", "Suspended", "Pending approval"];
+
+  function fwFacetSearchPlaceholder(key) {
+    if (key === "tenant_name") return "Search tenants…";
+    if (key === "hostname") return "Search host names…";
+    if (key === "serial_number") return "Search serial numbers…";
+    return "";
+  }
+
+  function fwFacetSearchAriaLabel(key) {
+    if (key === "tenant_name") return "Filter tenant list by search text";
+    if (key === "hostname") return "Filter host name list by search text";
+    if (key === "serial_number") return "Filter serial number list by search text";
+    return "Filter list by search text";
+  }
+
+  function applyFwFacetListSearchInput(inp) {
+    const wrap = inp.closest(".filter-group");
+    if (!wrap) return;
+    const q = (inp.value || "").trim().toLowerCase();
+    wrap.querySelectorAll(".filter-opt").forEach((lab) => {
+      const cb = lab.querySelector('input[type="checkbox"][data-cat]');
+      const text = (cb ? cb.value : lab.textContent || "").toLowerCase();
+      lab.style.display = !q || text.includes(q) ? "" : "none";
+    });
+  }
+
+  function clearFwFacetSearchInputs(host) {
+    if (!host) return;
+    host.querySelectorAll("input[data-fw-facet-search]").forEach((inp) => {
+      inp.value = "";
+      applyFwFacetListSearchInput(inp);
+    });
+  }
+
+  function bindFwFacetSearchInputs(host) {
+    host.querySelectorAll("input[data-fw-facet-search]").forEach((inp) => {
+      const onChange = () => applyFwFacetListSearchInput(inp);
+      inp.addEventListener("input", onChange);
+      inp.addEventListener("search", onChange);
+    });
+  }
+
+  function distinctFwGroupFacetValues(enriched) {
+    const set = new Set();
+    let hasEmpty = false;
+    enriched.forEach((r) => {
+      const leaves = r.fw_group_facet_values;
+      if (!Array.isArray(leaves) || !leaves.length) hasEmpty = true;
+      else leaves.forEach((l) => set.add(String(l)));
+    });
+    if (hasEmpty) set.add("—");
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })).slice(0, 80);
   }
 
   function buildFirewallFilters() {
@@ -4072,7 +5962,18 @@
           ? [...fwFirmwareVersionCatalog]
             .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
             .concat("None")
-          : distinctValues(enriched, g.key, 80);
+          : g.key === "status"
+            ? (() => {
+                const fromData = distinctValues(enriched, g.key, 80);
+                const merged = [...FW_STATUS_FACET_PRESETS];
+                for (const v of fromData) {
+                  if (!merged.includes(v)) merged.push(v);
+                }
+                return merged;
+              })()
+            : g.key === "group_name"
+              ? distinctFwGroupFacetValues(enriched)
+              : distinctValues(enriched, g.key, 80);
         fwFilterState[g.key] = new Set();
         const open = idx < 3 ? "is-open" : "";
         const optsHtml = opts
@@ -4084,13 +5985,21 @@
           </label>`
           )
           .join("");
+        const facetSearch =
+          FW_FACET_SEARCH_KEYS.has(g.key) &&
+          `<div class="filter-group__facet-search">
+            <input type="search" class="filter-group__facet-search-input" autocomplete="off"
+              data-fw-facet-search="${escapeHtml(g.key)}"
+              placeholder="${escapeHtml(fwFacetSearchPlaceholder(g.key))}"
+              aria-label="${escapeHtml(fwFacetSearchAriaLabel(g.key))}" />
+          </div>`;
         return `
         <div class="filter-group ${open}" data-cat-wrap="${escapeHtml(g.key)}">
           <button type="button" class="filter-group__head" aria-expanded="${idx < 3}">
             <span>${escapeHtml(g.label)}</span>
             <span class="filter-group__chev">▼</span>
           </button>
-          <div class="filter-group__body">${optsHtml}</div>
+          <div class="filter-group__body">${facetSearch || ""}${optsHtml}</div>
         </div>`;
       })
       .join("");
@@ -4113,11 +6022,12 @@
         fwController.render();
       });
     });
+    bindFwFacetSearchInputs(host);
     updateFirewallFiltersChrome();
   }
 
   function firewallFacetFilterCount() {
-    let n = fwLinkMode === "offline" || fwLinkMode === "suspended" ? 1 : 0;
+    let n = fwLinkMode === "offline" || fwLinkMode === "firmware_updates" ? 1 : 0;
     for (const st of Object.values(fwFilterState)) {
       if (st instanceof Set) n += st.size;
     }
@@ -4161,6 +6071,7 @@
       host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
         cb.checked = false;
       });
+      clearFwFacetSearchInputs(host);
     }
     const search = document.getElementById("fw-search");
     if (search) search.value = "";
@@ -4177,6 +6088,7 @@
       host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
         cb.checked = false;
       });
+      clearFwFacetSearchInputs(host);
     }
     fwController.render();
     setFiltersPanelCollapsed(document.querySelector("#panel-firewalls .filters"), true);
@@ -4193,8 +6105,9 @@
     return enriched.filter((row) => {
       if (fwLinkMode === "offline") {
         if (row.connected === 1 && row.suspended === 0) return false;
-      } else if (fwLinkMode === "suspended") {
-        if (row.suspended !== 1 && row.suspended !== true) return false;
+      } else if (fwLinkMode === "firmware_updates") {
+        const uc = Number(row.firmware_upgrade_count);
+        if (!Number.isFinite(uc) || uc <= 0) return false;
       }
       for (const [cat, selected] of Object.entries(fwFilterState)) {
         if (!selected || selected.size === 0) continue;
@@ -4205,6 +6118,13 @@
             opt === "None" ? hasNone : avail.includes(opt)
           );
           if (!any) return false;
+          continue;
+        }
+        if (cat === "group_name") {
+          const leaves = row.fw_group_facet_values;
+          const bucket = !Array.isArray(leaves) || !leaves.length ? ["—"] : leaves.map(String);
+          const hit = [...selected].some((s) => bucket.includes(s));
+          if (!hit) return false;
           continue;
         }
         const val =
@@ -4225,6 +6145,38 @@
   const fwTbody = document.getElementById("fw-tbody");
   buildFwThead();
 
+  function updateFwQuickFilterToolbarUi() {
+    const wrap = document.getElementById("fw-toolbar-quick");
+    if (!wrap) return;
+    const c = fwFilterState.connected_label;
+    const s = fwFilterState.suspended_label;
+    const onlineMatch =
+      fwLinkMode === null &&
+      c &&
+      s &&
+      c.size === 1 &&
+      s.size === 1 &&
+      c.has("Yes") &&
+      s.has("No");
+    wrap.querySelectorAll("[data-fw-quick]").forEach((btn) => {
+      const q = btn.getAttribute("data-fw-quick");
+      let on = false;
+      if (q === "online") on = onlineMatch;
+      else if (q === "offline") on = fwLinkMode === "offline";
+      else if (q === "suspended") {
+        const st = fwFilterState.status;
+        on = !!(st && st.size === 1 && st.has("Suspended"));
+      } else if (q === "pending") {
+        const st = fwFilterState.status;
+        on = !!(st && st.size === 1 && st.has("Pending approval"));
+      }
+      else if (q === "firmware_updates") on = fwLinkMode === "firmware_updates";
+      btn.classList.toggle("is-active", on);
+    });
+  }
+
+  let updateFwApproveButtonState = () => {};
+
   const fwController = createTableController({
     tbody: fwTbody,
     countEl: document.getElementById("fw-count"),
@@ -4234,6 +6186,7 @@
     selectAllInput: document.getElementById("fw-select-all"),
     sortHeaders: [],
     sortDelegateRoot: fwTableEl,
+    initialSort: { sortKey: "status", sortDir: 1 },
     getFilteredRows: firewallFiltered,
     getRowSearchText: (row) =>
       [
@@ -4251,6 +6204,7 @@
         row.state_changed_at,
         row.tagsPlain,
         row.alert_count > 0 ? String(row.alert_count) : "",
+        row.has_group_sync_status ? "group sync status" : "",
         row.firmware_upgrade_count > 0 ? "firmware upgrade" : "",
         row.firewall_name,
         row.tenant_id,
@@ -4268,13 +6222,581 @@
     afterRender: () => {
       updateFirewallFiltersChrome();
       refreshFwMapMarkers({ refit: false });
+      updateFwQuickFilterToolbarUi();
+      updateFwApproveButtonState();
+      updateFwFirmwareUpgradeButtonState();
+      updateFwDeleteLocalButtonState();
+    },
+    onSelectionChange: () => {
+      updateFwApproveButtonState();
+      updateFwFirmwareUpgradeButtonState();
+      updateFwDeleteLocalButtonState();
     },
   });
+
+  function firmwareVersionSortKey(ver) {
+    const s = String(ver);
+    const parts = s.split(/(\d+)/).filter(Boolean);
+    return parts.map((p) => (/^\d+$/.test(p) ? parseInt(p, 10) : p.toLowerCase()));
+  }
+
+  function compareFirmwareVersionLabels(a, b) {
+    const ka = firmwareVersionSortKey(a);
+    const kb = firmwareVersionSortKey(b);
+    const n = Math.max(ka.length, kb.length);
+    for (let i = 0; i < n; i++) {
+      const x = ka[i];
+      const y = kb[i];
+      if (x === undefined) return -1;
+      if (y === undefined) return 1;
+      if (typeof x === "number" && typeof y === "number") {
+        if (x !== y) return x - y;
+      } else if (typeof x === "string" && typeof y === "string") {
+        const c = x.localeCompare(y);
+        if (c !== 0) return c;
+      } else {
+        return typeof x === "number" ? -1 : 1;
+      }
+    }
+    return 0;
+  }
+
+  function syncFwBatchScheduleChrome() {
+    const sched = document.getElementById("fw-firmware-batch-schedule");
+    const clearBtn = document.getElementById("fw-firmware-batch-schedule-clear");
+    const confirmBtn = document.getElementById("fw-firmware-batch-confirm");
+    if (!sched || !confirmBtn) return;
+    const has = Boolean(sched.value && String(sched.value).trim());
+    if (clearBtn) clearBtn.hidden = !has;
+    confirmBtn.textContent = has ? "Schedule Upgrade" : "Upgrade now";
+  }
+
+  function updateFwFirmwareBatchConfirmEnabled() {
+    const confirmBtn = document.getElementById("fw-firmware-batch-confirm");
+    if (!confirmBtn) return;
+    const anyVersion =
+      fwBatchModalRows.length > 0 &&
+      fwBatchModalRows.some((r) => {
+        const c = fwBatchChoiceByFwId.get(r._id);
+        return c != null && String(c).trim() !== "";
+      });
+    confirmBtn.disabled = !anyVersion;
+  }
+
+  function renderFwFirmwareBatchTable() {
+    const tbody = document.getElementById("fw-firmware-batch-tbody");
+    if (!tbody) return;
+    tbody.innerHTML = fwBatchModalRows
+      .map((row) => {
+        const id = row._id;
+        const versions = Array.isArray(row.firmware_available_updates)
+          ? [...row.firmware_available_updates].sort(compareFirmwareVersionLabels)
+          : [];
+        const defaultLow = versions[0];
+        if (!fwBatchChoiceByFwId.has(id)) {
+          fwBatchChoiceByFwId.set(id, defaultLow !== undefined ? defaultLow : null);
+        }
+        const chosen = fwBatchChoiceByFwId.get(id);
+        const host = escapeHtml(row.hostname);
+        const tenant = escapeHtml(row.tenant_name);
+        const cur = escapeHtml(row.firmware_version || "—");
+        const verButtons = versions
+          .map((v) => {
+            const isPri = chosen === v;
+            const cls = isPri
+              ? "fw-batch-choice-btn fw-batch-choice-btn--primary"
+              : "fw-batch-choice-btn";
+            return `<button type="button" class="${cls}" data-fw-batch-fw="${escapeAttr(id)}" data-fw-batch-ver="${escapeAttr(v)}">${escapeHtml(v)}</button>`;
+          })
+          .join("");
+        const noneOn = chosen == null || chosen === "";
+        const noneCls = noneOn
+          ? "fw-batch-choice-btn fw-batch-choice-btn--no-upgrade-selected"
+          : "fw-batch-choice-btn";
+        const noneBtn = `<button type="button" class="${noneCls}" data-fw-batch-fw="${escapeAttr(id)}" data-fw-batch-none="1">No upgrade</button>`;
+        return `<tr data-fw-batch-row="${escapeAttr(id)}">
+      <td>${host}</td>
+      <td>${tenant}</td>
+      <td>${cur}</td>
+      <td><div class="fw-firmware-batch-modal__choices">${verButtons}${noneBtn}</div></td>
+    </tr>`;
+      })
+      .join("");
+    updateFwFirmwareBatchConfirmEnabled();
+  }
+
+  function setFwFirmwareBatchModalOpen(open) {
+    const modal = document.getElementById("fw-firmware-batch-modal");
+    if (!modal) return;
+    modal.hidden = !open;
+    modal.setAttribute("aria-hidden", open ? "false" : "true");
+  }
+
+  async function openFwFirmwareBatchModal(options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const explicit = Array.isArray(opts.firewallIds)
+      ? opts.firewallIds.map((x) => String(x).trim()).filter(Boolean)
+      : [];
+    if (!isAdmin()) return;
+    const ids =
+      explicit.length > 0
+        ? new Set(explicit)
+        : new Set(fwController.getSelectedIds().filter(Boolean));
+    fwBatchModalRows = fwPrepared.filter(
+      (r) => ids.has(r._id) && (Number(r.firmware_upgrade_count) > 0 || (r.firmware_available_updates || []).length > 0)
+    );
+    if (fwBatchModalRows.length === 0) return;
+    fwBatchChoiceByFwId = new Map();
+    const sched = document.getElementById("fw-firmware-batch-schedule");
+    if (sched) sched.value = "";
+    const st = document.getElementById("fw-firmware-batch-status");
+    if (st) st.textContent = "";
+    const notesRoot = document.getElementById("fw-firmware-batch-notes-root");
+    if (notesRoot) {
+      notesRoot.hidden = false;
+      notesRoot.innerHTML = '<p class="muted">Loading release notes…</p>';
+    }
+    setFwFirmwareBatchModalOpen(true);
+
+    const versionSet = new Set();
+    fwBatchModalRows.forEach((r) => {
+      (r.firmware_available_updates || []).forEach((v) => {
+        const s = v != null && String(v).trim() !== "" ? String(v).trim() : "";
+        if (s) versionSet.add(s);
+      });
+    });
+    const sortedVers = [...versionSet].sort(compareFirmwareVersionLabels);
+
+    if (notesRoot) {
+      if (sortedVers.length === 0) {
+        notesRoot.innerHTML = "";
+        notesRoot.hidden = true;
+      } else {
+        try {
+          const params = new URLSearchParams();
+          sortedVers.forEach((v) => params.append("versions", v));
+          const data = await loadJson(`/api/firmware-version-details?${params.toString()}`);
+          const details = Array.isArray(data?.version_details) ? data.version_details : [];
+          notesRoot.innerHTML = renderFwFirmwareBatchNotesBody(sortedVers, details);
+          notesRoot.hidden = false;
+          setFwFirmwareNotesExpanded(notesRoot, false);
+        } catch (e) {
+          console.error(e);
+          notesRoot.innerHTML =
+            '<p class="muted">Could not load release notes. You can still choose target versions below.</p>';
+          notesRoot.hidden = false;
+        }
+      }
+    }
+
+    renderFwFirmwareBatchTable();
+    syncFwBatchScheduleChrome();
+    document.getElementById("fw-firmware-batch-confirm")?.focus();
+  }
+
+  function initFwFirmwareBatchUpgradeModal() {
+    const modal = document.getElementById("fw-firmware-batch-modal");
+    const tbody = document.getElementById("fw-firmware-batch-tbody");
+    const sched = document.getElementById("fw-firmware-batch-schedule");
+    const clearSched = document.getElementById("fw-firmware-batch-schedule-clear");
+    const cancel = document.getElementById("fw-firmware-batch-cancel");
+    const confirm = document.getElementById("fw-firmware-batch-confirm");
+    const closeBtn = document.getElementById("fw-firmware-batch-modal-close");
+    const openBtn = document.getElementById("fw-firmware-upgrade-batch-btn");
+    const backdrop = modal?.querySelector(".fw-firmware-batch-modal__backdrop");
+
+    openBtn?.addEventListener("click", () => {
+      if (openBtn.disabled) return;
+      openFwFirmwareBatchModal().catch(console.error);
+    });
+
+    function closeModal() {
+      const nr = document.getElementById("fw-firmware-batch-notes-root");
+      if (nr) {
+        nr.innerHTML = "";
+        nr.hidden = true;
+      }
+      setFwFirmwareBatchModalOpen(false);
+      openBtn?.focus();
+    }
+
+    modal?.addEventListener("click", (e) => {
+      const nr = document.getElementById("fw-firmware-batch-notes-root");
+      const notesToggle = e.target.closest("#fw-firmware-batch-notes-root button.fw-firmware-modal__notes-toggle");
+      if (notesToggle && nr && modal.contains(notesToggle)) {
+        e.preventDefault();
+        toggleFwFirmwareNotesCollapse(nr);
+        return;
+      }
+      const tab = e.target.closest("#fw-firmware-batch-notes-root button.fw-firmware-modal__tab");
+      if (!tab || !modal.contains(tab)) return;
+      const list = tab.closest('.fw-firmware-modal__tabs[role="tablist"]');
+      if (!list) return;
+      const tabs = [...list.querySelectorAll('[role="tab"]')];
+      const idx = tabs.indexOf(tab);
+      if (idx < 0) return;
+      activateFwBatchFirmwareNotesTab(idx);
+    });
+
+    modal?.addEventListener("keydown", (e) => {
+      const tab = e.target.closest("#fw-firmware-batch-notes-root button.fw-firmware-modal__tab");
+      if (!tab || !modal.contains(tab)) return;
+      const list = tab.closest('.fw-firmware-modal__tabs[role="tablist"]');
+      if (!list) return;
+      const tabs = [...list.querySelectorAll('[role="tab"]')];
+      const i = tabs.indexOf(tab);
+      if (i < 0) return;
+      let next = i;
+      if (e.key === "ArrowRight") next = (i + 1) % tabs.length;
+      else if (e.key === "ArrowLeft") next = (i - 1 + tabs.length) % tabs.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = tabs.length - 1;
+      else return;
+      e.preventDefault();
+      activateFwBatchFirmwareNotesTab(next);
+      tabs[next]?.focus();
+    });
+
+    cancel?.addEventListener("click", closeModal);
+    closeBtn?.addEventListener("click", closeModal);
+    backdrop?.addEventListener("click", closeModal);
+
+    sched?.addEventListener("input", () => {
+      syncFwBatchScheduleChrome();
+    });
+
+    clearSched?.addEventListener("click", () => {
+      if (sched) sched.value = "";
+      syncFwBatchScheduleChrome();
+      sched?.focus();
+    });
+
+    tbody?.addEventListener("click", (e) => {
+      const verBtn = e.target.closest("button[data-fw-batch-ver]");
+      const noneBtn = e.target.closest("button[data-fw-batch-none]");
+      const t = verBtn || noneBtn;
+      if (!t) return;
+      const fid = t.getAttribute("data-fw-batch-fw");
+      if (!fid) return;
+      if (noneBtn) {
+        fwBatchChoiceByFwId.set(fid, null);
+      } else {
+        fwBatchChoiceByFwId.set(fid, t.getAttribute("data-fw-batch-ver"));
+        const nr = document.getElementById("fw-firmware-batch-notes-root");
+        const picked = t.getAttribute("data-fw-batch-ver");
+        if (nr && picked) {
+          const ti = findFwFirmwareTabIndexByVersion(nr, picked);
+          if (ti >= 0) activateFwBatchFirmwareNotesTab(ti);
+          else setFwFirmwareNotesExpanded(nr, true);
+        }
+      }
+      renderFwFirmwareBatchTable();
+    });
+
+    confirm?.addEventListener("click", async () => {
+      if (!isAdmin() || confirm.disabled) return;
+      const items = fwBatchModalRows.map((r) => ({
+        firewall_id: r._id,
+        upgrade_to_version: fwBatchChoiceByFwId.get(r._id) || null,
+      }));
+      let scheduledAt = null;
+      if (sched && sched.value && String(sched.value).trim()) {
+        const d = new Date(sched.value);
+        if (!Number.isNaN(d.getTime())) scheduledAt = d.toISOString();
+      }
+      confirm.disabled = true;
+      const st = document.getElementById("fw-firmware-batch-status");
+      if (st) st.textContent = "";
+      try {
+        const res = await apiRequestJson("/api/firewalls/firmware-upgrade-batch", {
+          method: "POST",
+          body: JSON.stringify({ items, scheduled_at: scheduledAt }),
+        });
+        const lines = [];
+        const ok = (res.scheduled || []).filter((x) => x.ok);
+        const bad = (res.scheduled || []).filter((x) => !x.ok);
+        if (ok.length) lines.push(`Submitted: ${ok.length}`);
+        if (bad.length) {
+          lines.push(
+            `Failed: ${bad.length}`,
+            ...bad.slice(0, 6).map((x) => `  ${x.id}: ${x.detail || "error"}`)
+          );
+        }
+        if (res.skipped && res.skipped.length) lines.push(`Skipped: ${res.skipped.length}`);
+        if (res.errors && res.errors.length) {
+          lines.push(
+            `Errors: ${res.errors.length}`,
+            ...res.errors.slice(0, 5).map((x) => `  ${x.id}: ${x.detail}`)
+          );
+        }
+        if (res.credential_syncs && res.credential_syncs.length) {
+          const failed = res.credential_syncs.filter((s) => !s.ok);
+          if (failed.length) {
+            lines.push(
+              `Credential sync issues: ${failed.length}`,
+              ...failed.slice(0, 3).map((s) => `  ${s.credential_id}: ${s.error || "failed"}`)
+            );
+          }
+        }
+        window.alert(lines.length ? lines.join("\n") : "Done.");
+        closeModal();
+        fwController.clearSelection();
+        await loadFirewalls({ preserve: false });
+        await loadDashboard({});
+        refreshDashboardStatCards();
+        refreshAppSyncStatusBar();
+      } catch (err) {
+        window.alert(err && err.message ? err.message : String(err));
+      } finally {
+        updateFwFirmwareBatchConfirmEnabled();
+      }
+    });
+  }
+
+  updateFwApproveButtonState = function () {
+    const btn = document.getElementById("fw-approve-btn");
+    if (!btn || btn.hidden) return;
+    const ids = fwController.getSelectedIds();
+    const sel = new Set(ids.filter(Boolean));
+    const any = fwPrepared.some(
+      (r) =>
+        sel.has(r._id) &&
+        (fwRawIsApprovalPending(r.managing_status) || fwRawIsApprovalPending(r.reporting_status))
+    );
+    btn.disabled = !any;
+  };
+
+  function updateFwFirmwareUpgradeButtonState() {
+    const btn = document.getElementById("fw-firmware-upgrade-batch-btn");
+    if (!btn || btn.hidden) return;
+    const ids = fwController.getSelectedIds();
+    const sel = new Set(ids.filter(Boolean));
+    const any = fwPrepared.some(
+      (r) =>
+        sel.has(r._id) &&
+        (Number(r.firmware_upgrade_count) > 0 || (r.firmware_available_updates || []).length > 0)
+    );
+    btn.disabled = !any;
+  }
+
+  function updateFwDeleteLocalButtonState() {
+    const btn = document.getElementById("fw-delete-local-btn");
+    if (!btn || btn.hidden) return;
+    const n = fwController.getSelectedIds().filter(Boolean).length;
+    btn.disabled = n < 1;
+  }
+
+  function applyFwApproveButtonVisibility() {
+    const btn = document.getElementById("fw-approve-btn");
+    const fwUp = document.getElementById("fw-firmware-upgrade-batch-btn");
+    const delLocal = document.getElementById("fw-delete-local-btn");
+    const admin = isAdmin();
+    if (btn) {
+      btn.hidden = !admin;
+    }
+    if (fwUp) {
+      fwUp.hidden = !admin;
+    }
+    if (delLocal) {
+      delLocal.hidden = !admin;
+    }
+    updateFwApproveButtonState();
+    updateFwFirmwareUpgradeButtonState();
+    updateFwDeleteLocalButtonState();
+  }
+
+  function initFwToolbarQuickFilters() {
+    document.getElementById("fw-toolbar-quick")?.addEventListener("click", (e) => {
+      const t = e.target.closest("[data-fw-quick]");
+      if (!t) return;
+      const q = t.getAttribute("data-fw-quick");
+      if (q === "online") {
+        goToFirewallsOnline();
+        return;
+      }
+      if (q === "offline") {
+        goToFirewallsOffline();
+        return;
+      }
+      if (q === "suspended") {
+        goToFirewallsSuspended();
+        return;
+      }
+      if (q === "pending") {
+        goToFirewallsPending();
+        return;
+      }
+      if (q === "firmware_updates") {
+        goToFirewallsFirmwareUpdates();
+        return;
+      }
+    });
+  }
+
+  function setFwDeleteLocalModalOpen(open) {
+    const modal = document.getElementById("fw-delete-local-modal");
+    if (!modal) return;
+    modal.hidden = !open;
+    modal.setAttribute("aria-hidden", open ? "false" : "true");
+  }
+
+  function initFwDeleteLocalModal() {
+    const modal = document.getElementById("fw-delete-local-modal");
+    const openBtn = document.getElementById("fw-delete-local-btn");
+    const cancel = document.getElementById("fw-delete-local-cancel");
+    const proceed = document.getElementById("fw-delete-local-proceed");
+    const closeBtn = document.getElementById("fw-delete-local-modal-close");
+    const backdrop = modal?.querySelector(".fw-delete-local-modal__backdrop");
+    const statusEl = document.getElementById("fw-delete-local-modal-status");
+
+    function closeModal() {
+      if (statusEl) statusEl.textContent = "";
+      setFwDeleteLocalModalOpen(false);
+      openBtn?.focus();
+    }
+
+    openBtn?.addEventListener("click", () => {
+      if (!isAdmin() || openBtn.disabled) return;
+      const ids = fwController.getSelectedIds().filter(Boolean);
+      const n = ids.length;
+      if (n === 0) return;
+      if (statusEl) statusEl.textContent = "";
+      const proceedLabel = n === 1 ? "Delete 1 Firewall" : `Delete ${n} Firewalls`;
+      if (proceed) {
+        proceed.textContent = proceedLabel;
+        proceed.setAttribute("aria-label", proceedLabel);
+      }
+      setFwDeleteLocalModalOpen(true);
+      proceed?.focus();
+    });
+
+    cancel?.addEventListener("click", closeModal);
+    closeBtn?.addEventListener("click", closeModal);
+    backdrop?.addEventListener("click", closeModal);
+
+    proceed?.addEventListener("click", async () => {
+      if (!isAdmin() || proceed.disabled) return;
+      const ids = fwController.getSelectedIds().filter(Boolean);
+      if (ids.length === 0) return;
+      if (statusEl) statusEl.textContent = "";
+      proceed.disabled = true;
+      try {
+        const res = await apiRequestJson("/api/firewalls/delete-local-batch", {
+          method: "POST",
+          body: JSON.stringify({ firewall_ids: ids }),
+        });
+        const deleted = Array.isArray(res.deleted) ? res.deleted.length : 0;
+        const nf = Array.isArray(res.not_found) ? res.not_found.length : 0;
+        if (nf > 0) {
+          window.alert(
+            deleted > 0
+              ? `Removed ${deleted} from the local database. ${nf} selected id(s) were not found.`
+              : `No matching firewalls in the local database (${nf} id(s)).`
+          );
+        }
+        closeModal();
+        fwController.clearSelection();
+        await loadFirewalls({ preserve: false });
+        await loadDashboard({});
+        refreshDashboardStatCards();
+        refreshAppSyncStatusBar();
+      } catch (err) {
+        if (statusEl) {
+          statusEl.textContent = err && err.message ? err.message : String(err);
+        } else {
+          window.alert(err && err.message ? err.message : String(err));
+        }
+      } finally {
+        proceed.disabled = false;
+      }
+    });
+  }
+
+  function initFwApproveButton() {
+    const btn = document.getElementById("fw-approve-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      if (!isAdmin() || btn.disabled) return;
+      const ids = fwController.getSelectedIds().filter(Boolean);
+      const pendingIds = fwPrepared
+        .filter(
+          (r) =>
+            ids.includes(r._id) &&
+            (fwRawIsApprovalPending(r.managing_status) || fwRawIsApprovalPending(r.reporting_status))
+        )
+        .map((r) => r._id);
+      if (pendingIds.length === 0) return;
+      btn.disabled = true;
+      try {
+        const res = await apiRequestJson("/api/firewalls/approve-batch", {
+          method: "POST",
+          body: JSON.stringify({ firewall_ids: pendingIds }),
+        });
+        const lines = [];
+        if (res.approved && res.approved.length > 0) {
+          lines.push(`Approved: ${res.approved.length}`);
+        }
+        if (res.skipped && res.skipped.length > 0) {
+          lines.push(`Skipped: ${res.skipped.length}`);
+        }
+        if (res.errors && res.errors.length > 0) {
+          lines.push(
+            `Errors: ${res.errors.length}`,
+            ...res.errors.slice(0, 5).map((x) => `  ${x.id}: ${x.detail}`)
+          );
+        }
+        if (res.credential_syncs && res.credential_syncs.length > 0) {
+          const failed = res.credential_syncs.filter((s) => !s.ok);
+          if (failed.length > 0) {
+            lines.push(
+              `Credential sync issues: ${failed.length}`,
+              ...failed.slice(0, 3).map((s) => `  ${s.credential_id}: ${s.error || "failed"}`)
+            );
+          }
+        }
+        window.alert(lines.length ? lines.join("\n") : "Done.");
+        fwController.clearSelection();
+        await loadFirewalls({ preserve: false });
+        await loadDashboard({});
+        refreshDashboardStatCards();
+        refreshAppSyncStatusBar();
+      } catch (err) {
+        window.alert(err && err.message ? err.message : String(err));
+      } finally {
+        updateFwApproveButtonState();
+      }
+    });
+  }
+
+  initFwToolbarQuickFilters();
+  initFwApproveButton();
+  initFwFirmwareBatchUpgradeModal();
+  initFwDeleteLocalModal();
 
   initFwColumnPicker();
   initFwFirmwareUpgradeModal();
 
   fwTbody.addEventListener("click", (e) => {
+    const grpBtn = e.target.closest("button.fw-to-central-group");
+    if (grpBtn) {
+      e.preventDefault();
+      const gid = grpBtn.getAttribute("data-group-id");
+      if (gid) goToGroupsFilteredByGroup(gid);
+      return;
+    }
+    const trHit = e.target.closest("tr");
+    if (
+      trHit &&
+      fwTbody.contains(trHit) &&
+      !e.target.closest("input, button, a, label, textarea, select")
+    ) {
+      const cb = trHit.querySelector("input.row-check[data-id]");
+      const fid = cb && cb.getAttribute("data-id");
+      if (fid) {
+        openFwDetailFlyout(fid).catch(console.error);
+        return;
+      }
+    }
     const locBtn = e.target.closest("button.fw-loc-btn");
     if (locBtn) {
       e.preventDefault();
@@ -4286,7 +6808,7 @@
     if (upBtn) {
       e.preventDefault();
       const fid = upBtn.getAttribute("data-fw-id");
-      if (fid) openFwFirmwareUpgradeModal(fid);
+      if (fid) openFwFirmwareBatchModal({ firewallIds: [fid] }).catch(console.error);
       return;
     }
     const dashBtn = e.target.closest("button.fw-alerts-dash-link");
@@ -4301,9 +6823,25 @@
       }
       return;
     }
+    const fwHostnameLink = e.target.closest("a.cell-link[data-id]");
+    if (fwHostnameLink && fwTbody.contains(fwHostnameLink)) {
+      e.preventDefault();
+      const fid = fwHostnameLink.getAttribute("data-id");
+      if (fid) openFwDetailFlyout(fid).catch(console.error);
+      return;
+    }
     const a = e.target.closest("a.cell-link");
     if (a) e.preventDefault();
   });
+
+  function openFirewallStatusFilterGroup() {
+    expandFirewallFiltersPanel();
+    const wrap = document.querySelector('#firewall-filters .filter-group[data-cat-wrap="status"]');
+    if (!wrap) return;
+    wrap.classList.add("is-open");
+    const head = wrap.querySelector(".filter-group__head");
+    if (head) head.setAttribute("aria-expanded", "true");
+  }
 
   function openFirewallTenantFilterGroup() {
     expandFirewallFiltersPanel();
@@ -4329,6 +6867,88 @@
     fwController.resetSort();
     fwController.resetPage();
     activateTab("firewalls");
+  }
+
+  function openFirewallTenantAndGroupFilterGroups() {
+    expandFirewallFiltersPanel();
+    for (const sel of [
+      '#firewall-filters .filter-group[data-cat-wrap="tenant_name"]',
+      '#firewall-filters .filter-group[data-cat-wrap="group_name"]',
+    ]) {
+      const wrap = document.querySelector(sel);
+      if (!wrap) continue;
+      wrap.classList.add("is-open");
+      const head = wrap.querySelector(".filter-group__head");
+      if (head) head.setAttribute("aria-expanded", "true");
+    }
+  }
+
+  /** Jump to Firewalls with tenant (+ optional Central group leaf name) facet filters applied. */
+  function goToFirewallsFilteredByTenantAndGroup(tenantName, groupLeafName) {
+    if (tenantName == null || tenantName === "" || tenantName === "—") return;
+    clearFirewallFilters();
+    const tn = fwFilterState.tenant_name;
+    if (tn) {
+      tn.clear();
+      tn.add(String(tenantName));
+    }
+    const g = fwFilterState.group_name;
+    const leaf = groupLeafName != null ? String(groupLeafName).trim() : "";
+    if (g && leaf && leaf !== "—") {
+      g.clear();
+      g.add(leaf);
+    }
+    syncFirewallFilterCheckboxesFromState();
+    openFirewallTenantAndGroupFilterGroups();
+    fwController.resetSort();
+    fwController.resetPage();
+    activateTab("firewalls");
+  }
+
+  function openGroupsTenantGroupParentFilterGroups() {
+    expandGroupFiltersPanel();
+    for (const sel of [
+      '#group-filters .filter-group[data-cat-wrap="tenant_name"]',
+      '#group-filters .filter-group[data-cat-wrap="group_name"]',
+      '#group-filters .filter-group[data-cat-wrap="parent_display"]',
+    ]) {
+      const wrap = document.querySelector(sel);
+      if (!wrap) continue;
+      wrap.classList.add("is-open");
+      const head = wrap.querySelector(".filter-group__head");
+      if (head) head.setAttribute("aria-expanded", "true");
+    }
+  }
+
+  /** Switch to Groups and apply facet filters to the row with this Central group id. */
+  function goToGroupsFilteredByGroup(groupId) {
+    const gid = groupId != null ? String(groupId).trim() : "";
+    if (!gid) return;
+    const row = grPrepared.find((r) => String(r.id) === gid);
+    if (!row) return;
+
+    for (const st of Object.values(grFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    const host = document.getElementById("group-filters");
+    if (host) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        cb.checked = false;
+      });
+    }
+
+    grFilterState.tenant_name?.add(String(row.tenant_name ?? "—"));
+    grFilterState.group_name?.add(String(row.group_name ?? "—"));
+    grFilterState.parent_display?.add(String(row.parent_display ?? "—"));
+
+    syncGroupFilterCheckboxesFromState();
+    updateGroupFiltersChrome();
+    grController.resetSort();
+    grController.resetPage();
+    activateTab("groups");
+    expandGroupFiltersPanel();
+    openGroupsTenantGroupParentFilterGroups();
+    schedulePersistUiState();
   }
 
   function openFirewallHostnameFilterGroup() {
@@ -4389,6 +7009,7 @@
     fwController.resetSort();
     fwController.resetPage();
     activateTab("firewalls");
+    schedulePersistUiState();
   }
 
   function openFirewallConnectedAndSuspendedGroups() {
@@ -4418,6 +7039,7 @@
     fwController.resetSort();
     fwController.resetPage();
     activateTab("firewalls");
+    schedulePersistUiState();
   }
 
   function goToFirewallsOffline() {
@@ -4427,19 +7049,61 @@
     fwController.resetSort();
     fwController.resetPage();
     activateTab("firewalls");
+    schedulePersistUiState();
   }
 
   function goToFirewallsSuspended() {
     expandFirewallFiltersPanel();
     clearFirewallFilters();
-    fwLinkMode = "suspended";
+    const st = fwFilterState.status;
+    if (st) {
+      st.clear();
+      st.add("Suspended");
+    }
+    syncFirewallFilterCheckboxesFromState();
+    openFirewallStatusFilterGroup();
     fwController.resetSort();
     fwController.resetPage();
     activateTab("firewalls");
+    schedulePersistUiState();
+  }
+
+  function goToFirewallsPending() {
+    expandFirewallFiltersPanel();
+    clearFirewallFilters();
+    const st = fwFilterState.status;
+    if (st) {
+      st.clear();
+      st.add("Pending approval");
+    }
+    syncFirewallFilterCheckboxesFromState();
+    openFirewallStatusFilterGroup();
+    fwController.resetSort();
+    fwController.resetPage();
+    activateTab("firewalls");
+    schedulePersistUiState();
+  }
+
+  function goToFirewallsFirmwareUpdates() {
+    expandFirewallFiltersPanel();
+    clearFirewallFilters();
+    fwLinkMode = "firmware_updates";
+    fwController.resetSort();
+    fwController.resetPage();
+    activateTab("firewalls");
+    schedulePersistUiState();
   }
 
   async function loadFirewalls(opts = {}) {
     const preserve = opts.preserve === true;
+    let fwFacetSnap = null;
+    const fwLinkModeSnap = fwLinkMode;
+    if (preserve) {
+      fwFacetSnap = {};
+      for (const [k, st] of Object.entries(fwFilterState)) {
+        if (st instanceof Set && st.size > 0) fwFacetSnap[k] = [...st];
+      }
+    }
     const [fwList, fvPayload] = await Promise.all([
       loadJson("/api/firewalls"),
       loadJson("/api/firmware-versions").catch(() => ({ versions: [] })),
@@ -4449,7 +7113,21 @@
       ? fvPayload.versions.map(String)
       : [];
     fwPrepared = fwRaw.map(prepareFirewall);
+    applyFirewallRecencyTags(fwPrepared);
     buildFirewallFilters();
+    if (preserve) {
+      if (fwFacetSnap) {
+        for (const [k, arr] of Object.entries(fwFacetSnap)) {
+          const st = fwFilterState[k];
+          if (st && Array.isArray(arr)) {
+            arr.forEach((x) => st.add(String(x)));
+          }
+        }
+      }
+      fwLinkMode = fwLinkModeSnap;
+      syncFirewallFilterCheckboxesFromState();
+      updateFirewallFiltersChrome();
+    }
     if (!preserve) {
       fwController.clearSelection();
       fwController.resetPage();
@@ -4467,8 +7145,8 @@
     { id: "firewall_count", label: "Firewalls", sortKey: "firewall_count", thClass: "th-sortable tn-col-firewalls" },
     { id: "show_as", label: "Show as", sortKey: "show_as", thClass: "th-sortable" },
     { id: "status", label: "Status", sortKey: "status", thClass: "th-sortable" },
-    { id: "data_region", label: "Region", sortKey: "data_region", thClass: "th-sortable" },
-    { id: "billing_type", label: "Billing", sortKey: "billing_type", thClass: "th-sortable" },
+    { id: "data_region", label: "Region", sortKey: "data_region", thClass: "th-sortable tn-col-region" },
+    { id: "billing_type", label: "Billing", sortKey: "billing_type", thClass: "th-sortable tn-col-billing" },
     { id: "api_host", label: "API host", sortKey: "api_host", thClass: "th-sortable" },
     { id: "updated_at", label: "Updated", sortKey: "updated_at", thClass: "th-sortable" },
     {
@@ -4822,6 +7500,75 @@
     refreshDashboardStatCards();
   }
 
+  function tnPillHashSlot(str, salt, modulo) {
+    let h = salt >>> 0;
+    const s = String(str);
+    for (let i = 0; i < s.length; i++) h = (Math.imul(h, 33) + s.charCodeAt(i)) >>> 0;
+    return (h % modulo) + 1;
+  }
+
+  function tnRegionPillClass(raw) {
+    const n = String(raw).trim().toLowerCase();
+    const presets = {
+      us: "tn-region--us",
+      "u.s.": "tn-region--us",
+      usa: "tn-region--us",
+      eu: "tn-region--eu",
+      eur: "tn-region--eu",
+      europe: "tn-region--eu",
+      uk: "tn-region--uk",
+      gb: "tn-region--uk",
+      de: "tn-region--de",
+      au: "tn-region--au",
+      ca: "tn-region--ca",
+      jp: "tn-region--jp",
+      in: "tn-region--in",
+      ap: "tn-region--ap",
+      global: "tn-region--global",
+    };
+    if (presets[n]) return `tag-pill tn-region-pill ${presets[n]}`;
+    const slot = tnPillHashSlot(n, 0x9e3779b1, 8);
+    return `tag-pill tn-region-pill tn-region--fb${slot}`;
+  }
+
+  function tnBillingPillClass(raw) {
+    const n = String(raw).trim().toLowerCase();
+    const presets = {
+      trial: "tn-bill--trial",
+      paid: "tn-bill--paid",
+      subscription: "tn-bill--subscription",
+      msp: "tn-bill--msp",
+      partner: "tn-bill--partner",
+      usage: "tn-bill--usage",
+      billable: "tn-bill--billable",
+      free: "tn-bill--free",
+      enterprise: "tn-bill--enterprise",
+    };
+    if (presets[n]) return `tag-pill tn-bill-pill ${presets[n]}`;
+    const slot = tnPillHashSlot(n, 0x7f4a7c15, 8);
+    return `tag-pill tn-bill-pill tn-bill--fb${slot}`;
+  }
+
+  function tnRegionPillHtml(label) {
+    const raw =
+      label == null || String(label).trim() === "" || String(label).trim() === "—"
+        ? "—"
+        : String(label).trim();
+    const cls =
+      raw === "—" ? "tag-pill tn-region-pill tn-pill--empty" : tnRegionPillClass(raw);
+    return `<span class="${cls}">${escapeHtml(raw)}</span>`;
+  }
+
+  function tnBillingPillHtml(label) {
+    const raw =
+      label == null || String(label).trim() === "" || String(label).trim() === "—"
+        ? "—"
+        : String(label).trim();
+    const cls =
+      raw === "—" ? "tag-pill tn-bill-pill tn-pill--empty" : tnBillingPillClass(raw);
+    return `<span class="${cls}">${escapeHtml(raw)}</span>`;
+  }
+
   function renderTnDataCell(colId, row) {
     switch (colId) {
       case "name": {
@@ -4834,10 +7581,11 @@
       case "firewall_count": {
         const n = row.firewall_count ?? 0;
         const countStr = escapeHtml(String(n));
+        const pill = `<span class="tag-pill tn-col-firewalls-pill">${countStr}</span>`;
         const canLink = row.name && row.name !== "—";
         const inner = canLink
-          ? `<button type="button" class="cell-link tenant-to-firewalls" data-tenant-name="${escapeAttr(row.name)}" title="Show firewalls for this tenant">${countStr}</button>`
-          : countStr;
+          ? `<button type="button" class="cell-link tenant-to-firewalls" data-tenant-name="${escapeAttr(row.name)}" title="Show firewalls for this tenant">${pill}</button>`
+          : pill;
         return `<td class="tn-col-firewalls">${inner}</td>`;
       }
       case "show_as":
@@ -4845,9 +7593,9 @@
       case "status":
         return `<td>${escapeHtml(row.status)}</td>`;
       case "data_region":
-        return `<td>${escapeHtml(row.data_region)}</td>`;
+        return `<td class="tn-col-region">${tnRegionPillHtml(row.data_region)}</td>`;
       case "billing_type":
-        return `<td>${escapeHtml(row.billing_type)}</td>`;
+        return `<td class="tn-col-billing">${tnBillingPillHtml(row.billing_type)}</td>`;
       case "api_host":
         return `<td class="muted">${escapeHtml(row.api_host)}</td>`;
       case "updated_at":
@@ -4914,6 +7662,580 @@
     if (!preserve) {
       tnController.clearSelection();
       tnController.resetPage();
+    }
+  }
+
+  /* ---------- Groups (firewall_groups) ---------- */
+  let grPrepared = [];
+  const grFilterState = {};
+
+  const GR_COL_VISIBILITY_KEY = "sophos-central-gr-columns-v1";
+  const GR_COLUMNS = [
+    {
+      id: "breadcrumb",
+      label: "Group",
+      sortKey: "breadcrumb",
+      thClass: "th-sortable gr-col-group",
+    },
+    { id: "tenant_name", label: "Tenant", sortKey: "tenant_name", thClass: "th-sortable" },
+    {
+      id: "firewall_count",
+      label: "Firewalls",
+      sortKey: "firewall_count",
+      thClass: "th-sortable gr-col-firewalls",
+    },
+    {
+      id: "sync_issues_count",
+      label: "Sync issues",
+      sortKey: "sync_issues_count",
+      thClass: "th-sortable gr-col-sync-issues",
+    },
+    {
+      id: "group_name",
+      label: "Group name (leaf)",
+      sortKey: "group_name",
+      thClass: "th-sortable",
+      defaultVisible: false,
+    },
+    {
+      id: "parent_display",
+      label: "Parent group",
+      sortKey: "parent_display",
+      thClass: "th-sortable",
+      defaultVisible: false,
+    },
+    {
+      id: "locked_label",
+      label: "Locked",
+      sortKey: "locked_label",
+      thClass: "th-sortable",
+      defaultVisible: false,
+    },
+    {
+      id: "last_sync",
+      label: "Last sync",
+      sortKey: "last_sync",
+      thClass: "th-sortable",
+      defaultVisible: false,
+    },
+    {
+      id: "updated_at",
+      label: "Updated",
+      sortKey: "updated_at",
+      thClass: "th-sortable",
+      defaultVisible: false,
+    },
+    {
+      id: "tenant_id",
+      label: "Tenant ID",
+      sortKey: "tenant_id",
+      thClass: "th-sortable fw-col-code",
+      defaultVisible: false,
+    },
+    {
+      id: "id",
+      label: "Group ID",
+      sortKey: "id",
+      thClass: "th-sortable fw-col-code",
+      defaultVisible: false,
+    },
+  ];
+
+  function defaultGrColumnVisibility() {
+    const o = {};
+    GR_COLUMNS.forEach((c) => {
+      o[c.id] = c.defaultVisible !== false;
+    });
+    return o;
+  }
+
+  function loadGrColumnVisibility() {
+    const d = defaultGrColumnVisibility();
+    try {
+      const raw = localStorage.getItem(GR_COL_VISIBILITY_KEY);
+      if (!raw) return d;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        GR_COLUMNS.forEach((c) => {
+          if (typeof parsed[c.id] === "boolean") d[c.id] = parsed[c.id];
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+    return d;
+  }
+
+  let grColVisible = loadGrColumnVisibility();
+
+  function persistGrColumnVisibility() {
+    try {
+      localStorage.setItem(GR_COL_VISIBILITY_KEY, JSON.stringify(grColVisible));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function buildGrThead() {
+    const tr = document.getElementById("gr-thead-row");
+    if (!tr) return;
+    tr.innerHTML = "";
+    GR_COLUMNS.forEach((col) => {
+      if (!grColVisible[col.id]) return;
+      const th = document.createElement("th");
+      th.scope = "col";
+      th.textContent = col.label;
+      if (col.sortKey) {
+        th.dataset.sort = col.sortKey;
+        th.className = col.thClass || "th-sortable";
+      } else {
+        th.className = col.thClass || "";
+      }
+      tr.appendChild(th);
+    });
+  }
+
+  function filterGrColumnMenuList() {
+    const q = (document.getElementById("gr-cols-filter")?.value || "").trim().toLowerCase();
+    const list = document.getElementById("gr-cols-list");
+    if (!list) return;
+    list.querySelectorAll("li[data-col-label]").forEach((li) => {
+      const lab = (li.dataset.colLabel || "").toLowerCase();
+      li.hidden = q !== "" && !lab.includes(q);
+    });
+  }
+
+  function buildGrColumnMenuList() {
+    const list = document.getElementById("gr-cols-list");
+    if (!list) return;
+    list.innerHTML = GR_COLUMNS.map(
+      (c) => `
+      <li class="toolbar__cols-item" data-col-id="${escapeHtml(c.id)}" data-col-label="${escapeHtml(c.label.toLowerCase())}">
+        <label class="toolbar__cols-label">
+          <input type="checkbox" data-gr-col="${escapeHtml(c.id)}" ${grColVisible[c.id] ? "checked" : ""} />
+          <span>${escapeHtml(c.label)}</span>
+        </label>
+      </li>`
+    ).join("");
+    filterGrColumnMenuList();
+  }
+
+  function positionGrColsDropdown() {
+    const btn = document.getElementById("gr-cols-trigger");
+    const panel = document.getElementById("gr-cols-panel");
+    const modal = document.getElementById("gr-cols-modal");
+    if (!btn || !panel || !modal || modal.hidden) return;
+    panel.style.maxHeight = "";
+    const r = btn.getBoundingClientRect();
+    const gap = 6;
+    const margin = 8;
+    const pw = panel.offsetWidth || Math.min(380, window.innerWidth - 2 * margin);
+    let left = r.left;
+    if (left + pw > window.innerWidth - margin) {
+      left = window.innerWidth - margin - pw;
+    }
+    left = Math.max(margin, left);
+    const topBelow = r.bottom + gap;
+    panel.style.left = `${left}px`;
+    panel.style.top = `${topBelow}px`;
+    const after = panel.getBoundingClientRect();
+    if (after.bottom > window.innerHeight - margin) {
+      const aboveTop = r.top - gap - after.height;
+      if (aboveTop >= margin) {
+        panel.style.top = `${aboveTop}px`;
+      } else {
+        panel.style.top = `${margin}px`;
+        panel.style.maxHeight = `${Math.max(120, window.innerHeight - 2 * margin)}px`;
+      }
+    }
+  }
+
+  function setGrColumnPanelOpen(open) {
+    const modal = document.getElementById("gr-cols-modal");
+    const btn = document.getElementById("gr-cols-trigger");
+    const panel = document.getElementById("gr-cols-panel");
+    if (!modal || !btn) return;
+    modal.hidden = !open;
+    modal.setAttribute("aria-hidden", open ? "false" : "true");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!open && panel) {
+      panel.style.top = "";
+      panel.style.left = "";
+      panel.style.maxHeight = "";
+    }
+    if (open) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => positionGrColsDropdown());
+      });
+    }
+  }
+
+  function initGrColumnPicker() {
+    buildGrColumnMenuList();
+    const btn = document.getElementById("gr-cols-trigger");
+    const modal = document.getElementById("gr-cols-modal");
+    const panel = document.getElementById("gr-cols-panel");
+    const filterIn = document.getElementById("gr-cols-filter");
+    const list = document.getElementById("gr-cols-list");
+    const closeBtn = document.getElementById("gr-cols-close");
+    if (!btn || !modal || !panel) return;
+    list?.addEventListener("change", (e) => {
+      const cb = e.target.closest("input[data-gr-col]");
+      if (!cb) return;
+      const id = cb.dataset.grCol;
+      if (!id || !Object.prototype.hasOwnProperty.call(grColVisible, id)) return;
+      const col = GR_COLUMNS.find((c) => c.id === id);
+      if (col && !cb.checked && grController.getSortKey() === col.sortKey) {
+        grController.resetSort();
+      }
+      grColVisible[id] = cb.checked;
+      persistGrColumnVisibility();
+      buildGrThead();
+      grController.render();
+    });
+    function openGrColsModalFromTrigger() {
+      const willOpen = modal.hidden;
+      setGrColumnPanelOpen(willOpen);
+      if (willOpen) {
+        buildGrColumnMenuList();
+        filterIn?.focus();
+      }
+    }
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openGrColsModalFromTrigger();
+    });
+    btn.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openGrColsModalFromTrigger();
+      }
+    });
+    filterIn?.addEventListener("input", () => filterGrColumnMenuList());
+    closeBtn?.addEventListener("click", () => {
+      setGrColumnPanelOpen(false);
+      btn.focus();
+    });
+    modal.querySelector(".fw-cols-modal__backdrop")?.addEventListener("click", () => {
+      setGrColumnPanelOpen(false);
+      btn.focus();
+    });
+    document.addEventListener("mousedown", (e) => {
+      if (modal.hidden) return;
+      if (btn.contains(e.target) || panel.contains(e.target)) return;
+      setGrColumnPanelOpen(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !modal.hidden) {
+        setGrColumnPanelOpen(false);
+        btn.focus();
+      }
+    });
+
+    function repositionGrColsIfOpen() {
+      if (!modal.hidden) positionGrColsDropdown();
+    }
+    window.addEventListener("resize", repositionGrColsIfOpen);
+    window.addEventListener("scroll", repositionGrColsIfOpen, true);
+  }
+
+  function prepareGroup(row) {
+    let segs = Array.isArray(row.breadcrumb_segments)
+      ? row.breadcrumb_segments.map((s) => String(s))
+      : [];
+    if (!segs.length && row.breadcrumb) {
+      segs = String(row.breadcrumb)
+        .split(/\s*›\s*/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+    if (!segs.length) segs = ["—"];
+    const breadcrumb = row.breadcrumb || segs.join(" › ");
+    return {
+      _id: row.id,
+      id: row.id || "—",
+      tenant_id: row.tenant_id || "",
+      tenant_name: row.tenant_name || "—",
+      group_name: row.group_name || "—",
+      parent_display: row.parent_display || "—",
+      breadcrumb,
+      breadcrumb_segments: segs,
+      firewall_count: row.firewall_count ?? 0,
+      sync_issues_count: row.sync_issues_count ?? 0,
+      locked_label: row.locked_label || "No",
+      last_sync: row.last_sync || "",
+      updated_at: row.updated_at || "",
+    };
+  }
+
+  function groupBreadcrumbHtml(row) {
+    const segs = row.breadcrumb_segments || [];
+    if (!segs.length) return `<span class="muted">—</span>`;
+    return `<span class="group-breadcrumb">${segs
+      .map(
+        (seg, i) =>
+          `${i > 0 ? '<span class="group-breadcrumb__sep" aria-hidden="true"> \u203a </span>' : ""}<span class="group-breadcrumb__segment">${escapeHtml(seg)}</span>`
+      )
+      .join("")}</span>`;
+  }
+
+  function groupFiltered() {
+    return grPrepared.filter((row) => {
+      for (const [cat, selected] of Object.entries(grFilterState)) {
+        if (!selected || selected.size === 0) continue;
+        const val =
+          cat === "firewall_count"
+            ? String(row.firewall_count ?? 0)
+            : row[cat] == null || row[cat] === ""
+              ? "—"
+              : String(row[cat]);
+        if (!selected.has(val)) return false;
+      }
+      return true;
+    });
+  }
+
+  function buildGroupFilters() {
+    const host = document.getElementById("group-filters");
+    if (!host) return;
+    const groups = [
+      { key: "tenant_name", label: "Tenant" },
+      { key: "group_name", label: "Group name" },
+      { key: "parent_display", label: "Parent group" },
+      { key: "locked_label", label: "Locked" },
+      { key: "firewall_count", label: "Firewalls" },
+    ];
+
+    host.innerHTML = groups
+      .map((g, idx) => {
+        const opts = distinctValues(grPrepared, g.key, 80);
+        grFilterState[g.key] = new Set();
+        const open = idx < 3 ? "is-open" : "";
+        const optsHtml = opts
+          .map(
+            (o) => `
+          <label class="filter-opt">
+            <input type="checkbox" data-cat="${escapeHtml(g.key)}" value="${escapeHtml(o)}" />
+            <span>${escapeHtml(o)}</span>
+          </label>`
+          )
+          .join("");
+        return `
+        <div class="filter-group ${open}" data-cat-wrap="${escapeHtml(g.key)}">
+          <button type="button" class="filter-group__head" aria-expanded="${idx < 3}">
+            <span>${escapeHtml(g.label)}</span>
+            <span class="filter-group__chev">▼</span>
+          </button>
+          <div class="filter-group__body">${optsHtml}</div>
+        </div>`;
+      })
+      .join("");
+
+    host.querySelectorAll(".filter-group__head").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const g = btn.closest(".filter-group");
+        g.classList.toggle("is-open");
+        btn.setAttribute("aria-expanded", g.classList.contains("is-open"));
+      });
+    });
+
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const cat = cb.dataset.cat;
+        const st = grFilterState[cat];
+        if (!st) return;
+        if (cb.checked) st.add(cb.value);
+        else st.delete(cb.value);
+        grController.render();
+      });
+    });
+    updateGroupFiltersChrome();
+  }
+
+  function groupFacetFilterCount() {
+    let n = 0;
+    for (const st of Object.values(grFilterState)) {
+      if (st instanceof Set) n += st.size;
+    }
+    return n;
+  }
+
+  function updateGroupFiltersChrome() {
+    const wrap = document.getElementById("gr-filters-head-actions");
+    const countEl = document.getElementById("gr-facet-count");
+    const resetBtn = document.getElementById("gr-facet-reset");
+    if (!wrap || !countEl || !resetBtn) return;
+    const n = groupFacetFilterCount();
+    resetBtn.hidden = n === 0;
+    if (n === 0) {
+      wrap.hidden = true;
+      countEl.textContent = "";
+      return;
+    }
+    wrap.hidden = false;
+    countEl.innerHTML = `<span class="filters__facet-count-num">${n}</span> applied`;
+  }
+
+  function syncGroupFilterCheckboxesFromState() {
+    const host = document.getElementById("group-filters");
+    if (!host) return;
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      const cat = cb.dataset.cat;
+      const st = grFilterState[cat];
+      if (!st) return;
+      cb.checked = st.has(cb.value);
+    });
+  }
+
+  function resetGroupFacetFilters() {
+    const host = document.getElementById("group-filters");
+    for (const st of Object.values(grFilterState)) {
+      if (st && typeof st.clear === "function") st.clear();
+    }
+    if (host) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        cb.checked = false;
+      });
+    }
+    grController.render();
+    setFiltersPanelCollapsed(document.querySelector("#panel-groups .filters"), true);
+    schedulePersistUiState();
+  }
+
+  function renderGrDataCell(colId, row) {
+    switch (colId) {
+      case "tenant_name": {
+        const cell =
+          row.tenant_name && row.tenant_name !== "—"
+            ? `<button type="button" class="cell-link gr-to-tenant-firewalls" data-tenant-name="${escapeAttr(row.tenant_name)}" title="Show firewalls for this tenant">${escapeHtml(row.tenant_name)}</button>`
+            : `<span>${escapeHtml(row.tenant_name)}</span>`;
+        return `<td>${cell}</td>`;
+      }
+      case "breadcrumb": {
+        const tn = escapeAttr(row.tenant_name);
+        const gn = escapeAttr(row.group_name);
+        const inner = `<button type="button" class="cell-link gr-to-firewalls" data-tenant-name="${tn}" data-group-name="${gn}" title="Show firewalls in this tenant and group">${groupBreadcrumbHtml(row)}</button>`;
+        return `<td class="gr-col-group">${inner}</td>`;
+      }
+      case "firewall_count": {
+        const n = row.firewall_count ?? 0;
+        const countStr = escapeHtml(String(n));
+        const pill = `<span class="tag-pill tn-col-firewalls-pill">${countStr}</span>`;
+        const tn = escapeAttr(row.tenant_name);
+        const gn = escapeAttr(row.group_name);
+        const inner = `<button type="button" class="cell-link gr-to-firewalls" data-tenant-name="${tn}" data-group-name="${gn}" title="Show firewalls in this tenant and group">${pill}</button>`;
+        return `<td class="gr-col-firewalls">${inner}</td>`;
+      }
+      case "sync_issues_count": {
+        const n = Number(row.sync_issues_count);
+        const show = Number.isFinite(n) && n > 0;
+        const inner = show
+          ? `<span class="tag-pill gr-sync-issues-pill">${escapeHtml(String(n))}</span>`
+          : "";
+        return `<td class="gr-col-sync-issues">${inner}</td>`;
+      }
+      case "group_name":
+        return `<td>${escapeHtml(row.group_name)}</td>`;
+      case "parent_display":
+        return `<td>${escapeHtml(row.parent_display)}</td>`;
+      case "locked_label":
+        return `<td>${escapeHtml(row.locked_label)}</td>`;
+      case "last_sync":
+        return `<td class="muted">${fmtDate(row.last_sync)}</td>`;
+      case "updated_at":
+        return `<td class="muted">${fmtDate(row.updated_at)}</td>`;
+      case "tenant_id":
+        return `<td class="fw-col-code">${escapeHtml(row.tenant_id)}</td>`;
+      case "id":
+        return `<td class="fw-col-code">${escapeHtml(row.id)}</td>`;
+      default:
+        return "<td></td>";
+    }
+  }
+
+  function renderGroupDataRow(row) {
+    const cells = GR_COLUMNS.filter((c) => grColVisible[c.id])
+      .map((c) => renderGrDataCell(c.id, row))
+      .join("");
+    return `<tr>${cells}</tr>`;
+  }
+
+  buildGrThead();
+
+  const grTableEl = document.getElementById("gr-table");
+  const grController = createTableController({
+    tbody: document.getElementById("gr-tbody"),
+    countEl: document.getElementById("gr-count"),
+    rangeEl: document.getElementById("gr-lazy-hint"),
+    pageSizeEl: document.getElementById("gr-page-size"),
+    searchInput: document.getElementById("gr-search"),
+    selectAllInput: null,
+    sortHeaders: [],
+    sortDelegateRoot: grTableEl,
+    getFilteredRows: groupFiltered,
+    getRowSearchText: (row) =>
+      [
+        row.tenant_name,
+        row.breadcrumb,
+        row.group_name,
+        row.parent_display,
+        row.locked_label,
+        String(row.firewall_count),
+        String(row.sync_issues_count ?? 0),
+        row.last_sync,
+        row.updated_at,
+        row.tenant_id,
+        row.id,
+        ...(row.breadcrumb_segments || []),
+      ]
+        .join(" ")
+        .toLowerCase(),
+    renderRow: (row) => renderGroupDataRow(row),
+    afterRender: updateGroupFiltersChrome,
+  });
+
+  initGrColumnPicker();
+
+  document.getElementById("gr-tbody")?.addEventListener("click", (e) => {
+    const t = e.target.closest("button.gr-to-tenant-firewalls");
+    if (t) {
+      const tenantName = t.getAttribute("data-tenant-name");
+      if (tenantName) goToFirewallsFilteredByTenant(tenantName);
+      return;
+    }
+    const g = e.target.closest("button.gr-to-firewalls");
+    if (g) {
+      const tenantName = g.getAttribute("data-tenant-name");
+      const groupName = g.getAttribute("data-group-name");
+      goToFirewallsFilteredByTenantAndGroup(tenantName, groupName);
+    }
+  });
+
+  async function loadFirewallGroups(opts = {}) {
+    const preserve = opts.preserve === true;
+    let snap = null;
+    if (preserve) {
+      snap = {};
+      for (const [k, st] of Object.entries(grFilterState)) {
+        if (st instanceof Set && st.size > 0) snap[k] = [...st];
+      }
+    }
+    const rows = await loadJson("/api/firewall-groups");
+    grPrepared = rows.map(prepareGroup);
+    buildGroupFilters();
+    if (preserve && snap) {
+      for (const [k, arr] of Object.entries(snap)) {
+        const st = grFilterState[k];
+        if (st && Array.isArray(arr)) {
+          arr.forEach((x) => st.add(String(x)));
+        }
+      }
+      syncGroupFilterCheckboxesFromState();
+      updateGroupFiltersChrome();
+    }
+    if (!preserve) {
+      grController.clearSelection();
+      grController.resetPage();
     }
   }
 
@@ -5790,6 +9112,17 @@
     refreshDashboardStatCards();
   }
 
+  /** Active / Expired (and em dash) as a pill with readable text on a tinted background. */
+  function lcStatePillHtml(rawLabel) {
+    const text = rawLabel == null ? "" : String(rawLabel).trim();
+    if (!text || text === "—") {
+      return `<span class="tag-pill lc-state-pill lc-state-pill--empty">${escapeHtml("—")}</span>`;
+    }
+    const active = text === "Active";
+    const variant = active ? "lc-state-pill--active" : "lc-state-pill--expired";
+    return `<span class="tag-pill lc-state-pill ${variant}">${escapeHtml(text)}</span>`;
+  }
+
   function renderLcDataCell(colId, row) {
     switch (colId) {
       case "serial_number":
@@ -5813,13 +9146,13 @@
         return `<td>${escapeHtml(row.model_type)}</td>`;
       case "last_seen_at":
         return `<td class="muted">${fmtDate(row.last_seen_at)}</td>`;
-      case "subscription_count":
-        return `<td class="lc-col-subscriptions">${escapeHtml(String(row.subscription_count))}</td>`;
-      case "state": {
-        const active = row.state === "Active";
-        const cls = active ? "lc-state lc-state--active" : "lc-state lc-state--expired";
-        return `<td><span class="${cls}">${escapeHtml(row.state)}</span></td>`;
+      case "subscription_count": {
+        const n = row.subscription_count ?? 0;
+        const pill = `<span class="tag-pill lc-col-subscriptions-pill">${escapeHtml(String(n))}</span>`;
+        return `<td class="lc-col-subscriptions">${pill}</td>`;
       }
+      case "state":
+        return `<td>${lcStatePillHtml(row.state)}</td>`;
       case "tenant_id":
         return `<td class="fw-col-code">${escapeHtml(row.tenant_id)}</td>`;
       case "partner_id":
@@ -5854,15 +9187,10 @@
       }
       case "subscription_state": {
         if (!row.subscription_state || row.subscription_state === "—") return "<td></td>";
-        const active = row.subscription_state === "Active";
-        const cls = active ? "lc-state lc-state--active" : "lc-state lc-state--expired";
-        return `<td><span class="${cls}">${escapeHtml(row.subscription_state)}</span></td>`;
+        return `<td>${lcStatePillHtml(row.subscription_state)}</td>`;
       }
-      case "license_state": {
-        const active = row.license_state === "Active";
-        const cls = active ? "lc-state lc-state--active" : "lc-state lc-state--expired";
-        return `<td><span class="${cls}">${escapeHtml(row.license_state || "—")}</span></td>`;
-      }
+      case "license_state":
+        return `<td>${lcStatePillHtml(row.license_state)}</td>`;
       default:
         return "<td></td>";
     }
@@ -6633,6 +9961,15 @@
     return v == null || v === "" ? "" : String(v);
   }
 
+  function grExportCell(row, colId) {
+    if (colId === "last_sync" || colId === "updated_at") return exportPlainDateTime(row[colId]);
+    if (colId === "firewall_count") return String(row.firewall_count ?? 0);
+    if (colId === "sync_issues_count") return String(row.sync_issues_count ?? 0);
+    if (colId === "breadcrumb") return row.breadcrumb || "";
+    const v = row[colId];
+    return v == null || v === "" ? "" : String(v);
+  }
+
   function lcExportCell(colId, row) {
     switch (colId) {
       case "last_seen_at":
@@ -6808,6 +10145,21 @@
         deliverTableExport(format, labels, dataRows, objectsForJson, "tenants", "Tenants");
         return;
       }
+      if (kind === "gr") {
+        const rows = grController.getFullFilteredRows();
+        const headers = GR_COLUMNS.filter((c) => grColVisible[c.id]).map((c) => ({ id: c.id, label: c.label }));
+        const labels = headers.map((h) => h.label);
+        const dataRows = rows.map((r) => headers.map((h) => grExportCell(r, h.id)));
+        const objectsForJson = rows.map((r) => {
+          const o = {};
+          headers.forEach((h) => {
+            o[h.label] = grExportCell(r, h.id);
+          });
+          return o;
+        });
+        deliverTableExport(format, labels, dataRows, objectsForJson, "firewall-groups", "Firewall groups");
+        return;
+      }
       if (kind === "lc") {
         const rows = lcController.getFullFilteredRows();
         const headers = getLcColumns()
@@ -6838,6 +10190,7 @@
     bindExportButton("da-export-btn", "da");
     bindExportButton("fw-export-btn", "fw");
     bindExportButton("tn-export-btn", "tn");
+    bindExportButton("gr-export-btn", "gr");
     bindExportButton("lc-export-btn", "lc");
 
     pop.querySelectorAll("[data-export-format]").forEach((b) => {
@@ -6871,10 +10224,13 @@
     const fwPageSizeEl = document.getElementById("fw-page-size");
     const tnSearch = document.getElementById("tn-search");
     const tnPageSizeEl = document.getElementById("tn-page-size");
+    const grSearch = document.getElementById("gr-search");
+    const grPageSizeEl = document.getElementById("gr-page-size");
     const lcSearch = document.getElementById("lc-search");
     const lcPageSizeEl = document.getElementById("lc-page-size");
     const dashFiltersAside = document.querySelector("#panel-dashboard .filters");
     const fwFiltersAside = document.querySelector("#panel-firewalls .filters");
+    const grFiltersAside = document.querySelector("#panel-groups .filters");
     const tnFiltersAside = document.querySelector("#panel-tenants .filters");
     const lcFiltersAside = document.querySelector("#panel-licenses .filters");
 
@@ -6885,6 +10241,10 @@
     const tnFilters = {};
     for (const [k, st] of Object.entries(tnFilterState)) {
       if (st instanceof Set) tnFilters[k] = [...st];
+    }
+    const grFilters = {};
+    for (const [k, st] of Object.entries(grFilterState)) {
+      if (st instanceof Set) grFilters[k] = [...st];
     }
     const lcFilters = {};
     for (const [k, st] of Object.entries(lcFilterState)) {
@@ -6913,6 +10273,15 @@
         table: fwController.getTableState(),
         filtersExpanded: fwFiltersAside
           ? !fwFiltersAside.classList.contains("filters--collapsed")
+          : undefined,
+      },
+      groups: {
+        search: grSearch ? grSearch.value : "",
+        pageSize: grPageSizeEl ? Math.max(1, parseInt(grPageSizeEl.value, 10) || 50) : 50,
+        filters: grFilters,
+        table: grController.getTableState(),
+        filtersExpanded: grFiltersAside
+          ? !grFiltersAside.classList.contains("filters--collapsed")
           : undefined,
       },
       tenants: {
@@ -6949,8 +10318,9 @@
 
   function applyFirewallSaved(s) {
     if (!s || typeof s !== "object") return;
+    const legacyLm = s.linkMode;
     fwLinkMode =
-      s.linkMode === "offline" || s.linkMode === "suspended" ? s.linkMode : null;
+      legacyLm === "offline" || legacyLm === "firmware_updates" ? legacyLm : null;
     const search = document.getElementById("fw-search");
     if (search && typeof s.search === "string") search.value = s.search;
     const psEl = document.getElementById("fw-page-size");
@@ -6964,6 +10334,14 @@
       if (!st || !(st instanceof Set) || !Array.isArray(arr)) continue;
       st.clear();
       arr.forEach((x) => st.add(String(x)));
+    }
+    const statusSt = fwFilterState.status;
+    if (legacyLm === "suspended" && statusSt) {
+      statusSt.clear();
+      statusSt.add("Suspended");
+    } else if (legacyLm === "pending" && statusSt) {
+      statusSt.clear();
+      statusSt.add("Pending approval");
     }
     syncFirewallFilterCheckboxesFromState();
     if (s.table && typeof s.table === "object") fwController.setTableState(s.table);
@@ -6993,6 +10371,30 @@
     if (s.table && typeof s.table === "object") tnController.setTableState(s.table);
     if (typeof s.filtersExpanded === "boolean") {
       const aside = document.querySelector("#panel-tenants .filters");
+      if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
+    }
+  }
+
+  function applyGroupSaved(s) {
+    if (!s || typeof s !== "object") return;
+    const el = document.getElementById("gr-search");
+    if (el && typeof s.search === "string") el.value = s.search;
+    const psEl = document.getElementById("gr-page-size");
+    if (psEl && s.pageSize != null) {
+      const v = String(s.pageSize);
+      if ([...psEl.options].some((o) => o.value === v)) psEl.value = v;
+    }
+    const filters = s.filters && typeof s.filters === "object" ? s.filters : {};
+    for (const [k, arr] of Object.entries(filters)) {
+      const st = grFilterState[k];
+      if (!st || !(st instanceof Set) || !Array.isArray(arr)) continue;
+      st.clear();
+      arr.forEach((x) => st.add(String(x)));
+    }
+    syncGroupFilterCheckboxesFromState();
+    if (s.table && typeof s.table === "object") grController.setTableState(s.table);
+    if (typeof s.filtersExpanded === "boolean") {
+      const aside = document.querySelector("#panel-groups .filters");
       if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
     }
   }
@@ -7095,19 +10497,23 @@
     const snap = captureMainScrollSnapshot();
     const ae = document.activeElement;
     const fwVis = fwController.getVisibleCount();
+    const grVis = grController.getVisibleCount();
     const tnVis = tnController.getVisibleCount();
     const lcVis = lcController.getVisibleCount();
     try {
       await Promise.all([
         loadDashboard({ preserve: true }),
         loadFirewalls({ preserve: true }),
+        loadFirewallGroups({ preserve: true }),
         loadTenants({ preserve: true }),
         loadLicenses({ preserve: true }),
       ]);
       fwController.render();
+      grController.render();
       tnController.render();
       lcController.render();
       fwController.restoreVisibleSlice(fwVis);
+      grController.restoreVisibleSlice(grVis);
       tnController.restoreVisibleSlice(tnVis);
       lcController.restoreVisibleSlice(lcVis);
       refreshSettingsSyncIfVisible();
@@ -7137,6 +10543,7 @@
   /* ---------- Boot ---------- */
   initAuthForms();
   initUserMenu();
+  initAppSyncStatusBar();
   initProfileModal();
   initCollapsibleFilterPanels();
   initFacetFilterResetControls();
@@ -7145,6 +10552,7 @@
   initFwMapHeightsAndResizeHandles();
   initFwMapSectionToggles();
   initFwLocationModal();
+  initFwDetailFlyout();
 
   async function init() {
     const saved = readUiState();
@@ -7152,16 +10560,26 @@
     if (saved?.tab && TITLES[saved.tab]) activateTab(saved.tab, false);
 
     try {
-      await Promise.all([loadDashboard(), loadFirewalls(), loadTenants(), loadLicenses()]);
+      await loadUiSettings();
+      await Promise.all([
+        loadDashboard(),
+        loadFirewalls(),
+        loadFirewallGroups(),
+        loadTenants(),
+        loadLicenses(),
+      ]);
 
       if (saved?.firewalls) applyFirewallSaved(saved.firewalls);
+      if (saved?.groups) applyGroupSaved(saved.groups);
       if (saved?.tenants) applyTenantSaved(saved.tenants);
       if (saved?.licenses) applyLicenseSaved(saved.licenses);
 
       fwController.render();
+      grController.render();
       tnController.render();
       lcController.render();
 
+      applyFwApproveButtonVisibility();
       schedulePersistUiState();
     } catch (e) {
       console.error(e);

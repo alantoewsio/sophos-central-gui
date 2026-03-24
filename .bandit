@@ -1,0 +1,3 @@
+[bandit]
+# Values use ? placeholders; SQL fragments use allowlisted columns or validated identifiers.
+skips = B608

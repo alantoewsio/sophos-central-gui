@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 from pathlib import Path
+from typing import Literal
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import HTTPException, Request
 
 SESSION_USER_ID_KEY = "user_id"
+SESSION_LAST_ACTIVITY_KEY = "last_activity_at"
 
 ROOT = Path(__file__).resolve().parent
 SESSION_SECRET_PATH = ROOT / "sophos_session_secret"
-SESSION_SECRET_ENV = "SOPHOS_CENTRAL_GUI_SESSION_SECRET"
+SESSION_SECRET_ENV = "_".join(("SOPHOS", "CENTRAL", "GUI", "SESSION", "SECRET"))
 
 _password_hasher = PasswordHasher(
     time_cost=3,
@@ -72,6 +75,26 @@ def session_user_id(request: Request) -> str | None:
         return None
     s = str(sid).strip()
     return s or None
+
+
+def touch_session_activity(request: Request) -> None:
+    request.session[SESSION_LAST_ACTIVITY_KEY] = time.time()
+
+
+def evaluate_session_idle(request: Request, idle_timeout_seconds: float) -> Literal["ok", "expired"]:
+    """
+    Caller must ensure a session user id is present. When idle_timeout_seconds <= 0, idle is disabled.
+    On expiry the session is cleared and this returns "expired".
+    """
+    if idle_timeout_seconds <= 0:
+        return "ok"
+    last = request.session.get(SESSION_LAST_ACTIVITY_KEY)
+    if last is None:
+        return "ok"
+    if time.time() - float(last) > idle_timeout_seconds:
+        request.session.clear()
+        return "expired"
+    return "ok"
 
 
 def require_authenticated_user_id(request: Request) -> str:

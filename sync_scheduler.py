@@ -51,9 +51,11 @@ def _credential_due(
 
 def scheduler_loop(stop_event: threading.Event | None = None) -> None:
     log = configure_sync_file_logging()
-    first_delay = secrets.randbelow(86400)
+    # Short jitter only: avoids every credential syncing on the same second at process
+    # start. A long random delay would leave "next sync" overdue in the UI for hours.
+    first_delay = secrets.randbelow(POLL_INTERVAL_SEC) if POLL_INTERVAL_SEC > 0 else 0
     log.info(
-        "scheduler_start first_delay_seconds=%s poll_interval_seconds=%s",
+        "scheduler_start first_jitter_seconds=%s poll_interval_seconds=%s",
         first_delay,
         POLL_INTERVAL_SEC,
     )

@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import urllib.error
-import urllib.parse
-import urllib.request
+from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlencode, urljoin
 
@@ -25,11 +24,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from auth import (
     SESSION_USER_ID_KEY,
+    evaluate_session_idle,
     get_session_secret,
     hash_password,
     require_admin,
     require_authenticated_user_id,
     session_user_id,
+    touch_session_activity,
     validate_new_password,
     verify_password,
 )
@@ -47,11 +48,14 @@ from credential_store import (
     get_app_user_by_id,
     get_app_user_by_username,
     get_secrets_db,
+    get_credential_id_by_client_id,
     get_stored_credential_secrets,
     get_stored_credential_secrets_by_client_id,
     insert_app_user,
     insert_credential,
     list_app_users,
+    count_credentials_by_id_type,
+    credentials_interval_summary,
     list_credentials,
     max_last_successful_sync_at,
     needs_initial_admin_password,
@@ -64,7 +68,7 @@ from credential_store import (
     update_credential_whoami,
     whoami_dict_from_session,
 )
-from sync_runner import configure_sync_file_logging, run_credential_sync
+from sync_runner import configure_sync_file_logging, get_public_sync_activity, run_credential_sync
 from sync_scheduler import start_scheduler_thread
 
 ROOT = Path(__file__).resolve().parent
@@ -88,6 +92,28 @@ def get_db():
         conn.close()
 
 
+def ensure_app_ui_schema(conn: sqlite3.Connection) -> None:
+    """Single-row UI preferences stored in the central database."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_ui_settings (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          fw_new_max_age_hours INTEGER NOT NULL DEFAULT 168,
+          fw_updated_max_age_hours INTEGER NOT NULL DEFAULT 48,
+          session_idle_timeout_minutes INTEGER NOT NULL DEFAULT 60
+        )
+        """
+    )
+    conn.execute("INSERT OR IGNORE INTO app_ui_settings (id) VALUES (1)")
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(app_ui_settings)").fetchall()}
+    if "session_idle_timeout_minutes" not in cols:
+        conn.execute(
+            "ALTER TABLE app_ui_settings ADD COLUMN session_idle_timeout_minutes "
+            "INTEGER NOT NULL DEFAULT 60"
+        )
+    conn.commit()
+
+
 @contextmanager
 def get_db_with_sec():
     """Central DB with secrets DB attached as ``sec`` (for credential-based tenant labels)."""
@@ -105,13 +131,25 @@ def _sql_tenant_label_expr(table_alias: str) -> str:
         raise ValueError("invalid SQL alias")
     a = table_alias
     return (
-        f"(CASE WHEN {a}.name = {a}.id THEN COALESCE("
-        f"(SELECT c.name FROM sec.central_credentials c "
-        f"WHERE TRIM(c.client_id) = TRIM({a}.id) "
-        f"OR (json_valid(c.whoami_json) "
-        f"AND TRIM(json_extract(c.whoami_json, '$.id')) = TRIM({a}.id)) "
-        f"ORDER BY c.name COLLATE NOCASE LIMIT 1), {a}.name) "
-        f"ELSE {a}.name END)"
+        "(CASE WHEN "
+        + a
+        + ".name = "
+        + a
+        + ".id THEN COALESCE("
+        "(SELECT c.name FROM sec.central_credentials c "
+        "WHERE TRIM(c.client_id) = TRIM("
+        + a
+        + ".id) "
+        "OR (json_valid(c.whoami_json) "
+        "AND TRIM(json_extract(c.whoami_json, '$.id')) = TRIM("
+        + a
+        + ".id)) "
+        "ORDER BY c.name COLLATE NOCASE LIMIT 1), "
+        + a
+        + ".name) "
+        "ELSE "
+        + a
+        + ".name END)"
     )
 
 
@@ -124,11 +162,15 @@ def _sql_cred_name_for_tenant_id_col(tenant_id_column: str) -> str:
         raise ValueError("invalid tenant id column reference")
     col = tenant_id_column
     return (
-        f"(SELECT c.name FROM sec.central_credentials c "
-        f"WHERE TRIM(c.client_id) = TRIM({col}) "
-        f"OR (json_valid(c.whoami_json) "
-        f"AND TRIM(json_extract(c.whoami_json, '$.id')) = TRIM({col})) "
-        f"ORDER BY c.name COLLATE NOCASE LIMIT 1)"
+        "(SELECT c.name FROM sec.central_credentials c "
+        "WHERE TRIM(c.client_id) = TRIM("
+        + col
+        + ") "
+        "OR (json_valid(c.whoami_json) "
+        "AND TRIM(json_extract(c.whoami_json, '$.id')) = TRIM("
+        + col
+        + ")) "
+        "ORDER BY c.name COLLATE NOCASE LIMIT 1)"
     )
 
 
@@ -139,9 +181,19 @@ def _sql_tenant_display_coalesced(tenants_alias: str, tenant_id_column: str) -> 
     """
     if not str(tenants_alias).isalnum():
         raise ValueError("invalid SQL alias")
+    if not _TENANT_ID_COL_RE.match(tenant_id_column):
+        raise ValueError("invalid tenant id column reference")
     tl = _sql_tenant_label_expr(tenants_alias)
     cred = _sql_cred_name_for_tenant_id_col(tenant_id_column)
-    return f"COALESCE({tl}, {cred}, NULLIF(TRIM({tenant_id_column}), ''), '—')"
+    return (
+        "COALESCE("
+        + tl
+        + ", "
+        + cred
+        + ", NULLIF(TRIM("
+        + tenant_id_column
+        + "), ''), '—')"
+    )
 
 
 def _sql_alerts_tenant_display() -> str:
@@ -156,11 +208,92 @@ def _sql_alerts_tenant_search_lower() -> str:
         + _sql_cred_name_for_tenant_id_col("a.tenant_id")
         + ", NULLIF(TRIM(a.tenant_id), ''), '')"
     )
-    return f"LOWER({inner})"
+    return "LOWER(" + inner + ")"
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
     return {k: row[k] for k in row.keys()}
+
+
+def _parse_firewall_group_items_json(raw: str | None) -> list[str]:
+    """Return firewall ids listed in a group's ``firewalls_items_json`` array."""
+    if raw is None or str(raw).strip() == "":
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[str] = []
+    for item in data:
+        if isinstance(item, dict):
+            fid = item.get("id")
+            if fid is not None and str(fid).strip():
+                out.append(str(fid).strip())
+    return out
+
+
+def _firewall_group_breadcrumb_levels(group_id: str, by_id: dict[str, dict]) -> list[dict[str, str]]:
+    """Each level: Central group id and display name, root → leaf; last three levels only (same window as ``/api/firewall-groups``)."""
+    levels_rev: list[tuple[str, str]] = []
+    cur: str | None = group_id
+    seen: set[str] = set()
+    while cur and cur not in seen:
+        seen.add(cur)
+        row = by_id.get(cur)
+        if not row:
+            break
+        nm = (row.get("name") or "").strip() or "—"
+        levels_rev.append((cur, nm))
+        parent = row.get("parent_group_id")
+        cur = str(parent).strip() if parent is not None and str(parent).strip() else None
+    levels = list(reversed(levels_rev))
+    if len(levels) > 3:
+        levels = levels[-3:]
+    return [{"id": gid, "name": nm} for gid, nm in levels]
+
+
+def _firewall_central_group_breadcrumbs_map(conn: sqlite3.Connection) -> dict[tuple[str, str], list[dict[str, object]]]:
+    """(tenant_id, firewall_id) → ``{levels: [{id, name}, ...]}`` entries for groups whose ``firewalls_items_json`` lists that id."""
+    cur = conn.execute(
+        """
+        SELECT id, tenant_id, name, parent_group_id, firewalls_items_json
+        FROM firewall_groups
+        """
+    )
+    group_rows = [row_to_dict(r) for r in cur.fetchall()]
+    by_id = {str(g["id"]): g for g in group_rows if g.get("id") is not None and str(g["id"]).strip()}
+
+    raw_map: dict[tuple[str, str], list[list[dict[str, str]]]] = defaultdict(list)
+    for g in group_rows:
+        gid = g.get("id")
+        tid = g.get("tenant_id")
+        if gid is None or tid is None:
+            continue
+        gid_s = str(gid).strip()
+        tid_s = str(tid).strip()
+        if not gid_s or not tid_s:
+            continue
+        levels = _firewall_group_breadcrumb_levels(gid_s, by_id)
+        if not levels:
+            leaf = (g.get("name") or "").strip() or "—"
+            levels = [{"id": gid_s, "name": leaf}]
+        for fw_id in _parse_firewall_group_items_json(g.get("firewalls_items_json")):
+            raw_map[(tid_s, fw_id)].append(levels[:])
+
+    out: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for key, lists in raw_map.items():
+        seen_sig: set[tuple[str, ...]] = set()
+        uniq: list[dict[str, object]] = []
+        for lev in lists:
+            sig = tuple(x["id"] for x in lev)
+            if sig in seen_sig:
+                continue
+            seen_sig.add(sig)
+            uniq.append({"levels": lev})
+        out[key] = uniq
+    return out
 
 
 NOMINATIM_USER_AGENT = "SophosCentralGUI/0.1 (local dashboard; geocoding via Nominatim)"
@@ -172,14 +305,18 @@ def _nominatim_search(q: str, limit: int = 8) -> list[dict]:
     if len(q) < 2:
         return []
     limit = max(1, min(int(limit), 10))
-    params = urllib.parse.urlencode({"q": q, "format": "json", "limit": str(limit)})
-    url = f"https://nominatim.openstreetmap.org/search?{params}"
-    req = urllib.request.Request(url, headers={"User-Agent": NOMINATIM_USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, TimeoutError, OSError):
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": q, "format": "json", "limit": str(limit)},
+            headers={"User-Agent": NOMINATIM_USER_AGENT},
+            timeout=15,
+        )
+    except requests.RequestException:
         return []
+    if resp.status_code != 200:
+        return []
+    raw = resp.text
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -283,11 +420,39 @@ def _firewall_hostname_name(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_sync_file_logging()
+    if DB_PATH.exists():
+        with get_db() as conn:
+            ensure_app_ui_schema(conn)
     start_scheduler_thread()
     yield
 
 
 app = FastAPI(title="Sophos Central GUI", version="0.1.0", lifespan=lifespan)
+
+_cached_session_idle_minutes: int | None = None
+
+
+def invalidate_session_idle_timeout_cache() -> None:
+    global _cached_session_idle_minutes
+    _cached_session_idle_minutes = None
+
+
+def _session_idle_timeout_seconds() -> float:
+    """0 means idle timeout disabled (cookie max_age still applies)."""
+    global _cached_session_idle_minutes
+    if _cached_session_idle_minutes is None:
+        if not DB_PATH.exists():
+            _cached_session_idle_minutes = 60
+        else:
+            with get_db() as conn:
+                ensure_app_ui_schema(conn)
+                row = conn.execute(
+                    "SELECT session_idle_timeout_minutes FROM app_ui_settings WHERE id = 1"
+                ).fetchone()
+            _cached_session_idle_minutes = int(row["session_idle_timeout_minutes"]) if row else 60
+    if _cached_session_idle_minutes <= 0:
+        return 0.0
+    return float(_cached_session_idle_minutes) * 60.0
 
 
 class ProtectApiMiddleware(BaseHTTPMiddleware):
@@ -305,8 +470,16 @@ class ProtectApiMiddleware(BaseHTTPMiddleware):
         )
         if public:
             return await call_next(request)
-        if not session_user_id(request):
+        uid = session_user_id(request)
+        if not uid:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        idle_sec = _session_idle_timeout_seconds()
+        if evaluate_session_idle(request, idle_sec) == "expired":
+            return JSONResponse(
+                {"detail": "Session expired due to inactivity."},
+                status_code=401,
+            )
+        touch_session_activity(request)
         return await call_next(request)
 
 
@@ -406,16 +579,23 @@ def api_auth_status(request: Request):
         need_setup = needs_initial_admin_password(conn)
         uid = session_user_id(request)
         if uid:
-            row = get_app_user_by_id(conn, uid)
-            if row:
-                return JSONResponse(
-                    {
-                        "authenticated": True,
-                        "needs_admin_password_setup": False,
-                        "user": user_row_public(row),
-                    },
-                    headers={"Cache-Control": "no-store, must-revalidate"},
-                )
+            idle_sec = _session_idle_timeout_seconds()
+            if evaluate_session_idle(request, idle_sec) == "expired":
+                uid = None
+            else:
+                touch_session_activity(request)
+                row = get_app_user_by_id(conn, uid)
+                if row:
+                    # B105 false positive: literal False beside key name containing "password".
+                    already_has_password = False
+                    return JSONResponse(
+                        {
+                            "authenticated": True,
+                            "needs_admin_password_setup": already_has_password,
+                            "user": user_row_public(row),
+                        },
+                        headers={"Cache-Control": "no-store, must-revalidate"},
+                    )
         request.session.pop(SESSION_USER_ID_KEY, None)
     return JSONResponse(
         {
@@ -441,6 +621,7 @@ def api_auth_login(request: Request, body: LoginBody):
     if not row or not verify_password(body.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     request.session[SESSION_USER_ID_KEY] = row["id"]
+    touch_session_activity(request)
     with get_secrets_db() as conn:
         row2 = get_app_user_by_id(conn, row["id"])
     return {"ok": True, "user": user_row_public(row2) if row2 else user_row_public(row)}
@@ -464,9 +645,16 @@ def api_auth_setup_admin_password(request: Request, body: SetupAdminPasswordBody
         if not update_app_user_password_hash(conn, uid, ph):
             raise HTTPException(status_code=500, detail="Could not save password.")
     request.session[SESSION_USER_ID_KEY] = uid
+    touch_session_activity(request)
     with get_secrets_db() as conn:
         row2 = get_app_user_by_id(conn, uid)
     return {"ok": True, "user": user_row_public(row2) if row2 else None}
+
+
+@app.post("/api/auth/activity")
+def api_auth_activity():
+    """No-op; session idle is refreshed by ProtectApiMiddleware before this runs."""
+    return {"ok": True}
 
 
 @app.post("/api/auth/logout")
@@ -647,6 +835,7 @@ def _alerts_where_sql(
     tenant_names: list[str] | None,
     firewall_hostnames: list[str] | None,
     search: str | None = None,
+    firewall_id: str | None = None,
 ) -> tuple[str, tuple]:
     """Full WHERE clause (including WHERE keyword) and bind values for alert list/count."""
     conditions: list[str] = []
@@ -654,7 +843,7 @@ def _alerts_where_sql(
 
     frag, extra = _alerts_severity_where(severity)
     if frag:
-        conditions.append(f"({frag})")
+        conditions.append("(" + frag + ")")
     bind.extend(extra)
 
     tn = [str(x) for x in (tenant_names or []) if x is not None and str(x).strip() != ""]
@@ -662,7 +851,7 @@ def _alerts_where_sql(
 
     if tn:
         ph = ",".join("?" * len(tn))
-        conditions.append(f"{_sql_alerts_tenant_display()} IN ({ph})")
+        conditions.append(_sql_alerts_tenant_display() + " IN (" + ph + ")")
         bind.extend(tn)
     if fh:
         ph = ",".join("?" * len(fh))
@@ -671,16 +860,23 @@ def _alerts_where_sql(
         )
         bind.extend(fh)
 
+    fw_one = (firewall_id or "").strip()
+    if fw_one:
+        conditions.append("json_extract(a.managed_agent_json, '$') = ?")
+        bind.append(fw_one)
+
     sq = str(search).strip() if search else ""
     if sq:
         like_pat = _alerts_search_like_pattern(sq)
+        tenant_search_lower = _sql_alerts_tenant_search_lower()
         search_sql = (
             "("
             "LOWER(COALESCE(a.severity, '')) LIKE ? ESCAPE '\\' OR "
             "LOWER(COALESCE(a.description, '')) LIKE ? ESCAPE '\\' OR "
             "LOWER(COALESCE(a.category, '')) LIKE ? ESCAPE '\\' OR "
             "LOWER(COALESCE(a.id, '')) LIKE ? ESCAPE '\\' OR "
-            f"{_sql_alerts_tenant_search_lower()} LIKE ? ESCAPE '\\' OR "
+            + tenant_search_lower
+            + " LIKE ? ESCAPE '\\' OR "
             "LOWER(COALESCE(NULLIF(fw.hostname, ''), NULLIF(fw.name, ''), '')) LIKE ? ESCAPE '\\' OR "
             "LOWER(COALESCE(a.raised_at, '')) LIKE ? ESCAPE '\\'"
             ")"
@@ -749,6 +945,12 @@ def api_dashboard():
               (SELECT COUNT(*) FROM firewalls WHERE connected = 1 AND suspended = 0) AS firewalls_online,
               (SELECT COUNT(*) FROM firewalls WHERE NOT (connected = 1 AND suspended = 0)) AS firewalls_offline,
               (SELECT COUNT(*) FROM firewalls WHERE suspended = 1) AS firewalls_suspended,
+              (
+                SELECT COUNT(*) FROM firewalls
+                WHERE
+                  LOWER(TRIM(COALESCE(managing_status, ''))) IN ('approvalpending', 'pendingapproval')
+                  OR LOWER(TRIM(COALESCE(reporting_status, ''))) IN ('approvalpending', 'pendingapproval')
+              ) AS firewalls_pending_approval,
               (SELECT COUNT(*) FROM alerts WHERE
                 LOWER(COALESCE(severity,'')) LIKE '%high%'
                 OR LOWER(COALESCE(severity,'')) LIKE '%critical%') AS alerts_high,
@@ -781,31 +983,48 @@ def api_dashboard():
 def api_firewalls():
     tdisp = _sql_tenant_display_coalesced("t", "f.tenant_id")
     with get_db_with_sec() as conn:
-        cur = conn.execute(
-            f"""
+        sql_fw = (
+            """
             SELECT
               f.id,
               f.hostname,
               f.name,
-              f.group_name,
               f.serial_number,
               f.model,
               f.firmware_version,
               f.connected,
               f.suspended,
+              f.created_at,
               f.state_changed_at,
+              f.last_sync,
+              f.client_id,
               f.external_ipv4_addresses_json,
               f.geo_latitude,
               f.geo_longitude,
               f.managing_status,
               f.reporting_status,
               f.capabilities_json,
-              {tdisp} AS tenant_name,
+              """
+            + tdisp
+            + """ AS tenant_name,
               COALESCE(t.id, f.tenant_id) AS tenant_id,
               (
                 SELECT COUNT(*) FROM alerts a
                 WHERE json_extract(a.managed_agent_json, '$') = f.id
               ) AS alert_count,
+              (
+                SELECT EXISTS(
+                  SELECT 1 FROM firewall_group_sync_status s
+                  WHERE s.firewall_id = f.id
+                )
+              ) AS has_group_sync_status,
+              (
+                SELECT EXISTS(
+                  SELECT 1 FROM firewall_group_sync_status s
+                  WHERE s.firewall_id = f.id
+                    AND LOWER(TRIM(COALESCE(s.status, ''))) = 'suspended'
+                )
+              ) AS group_sync_status_suspended,
               (
                 SELECT u.upgrade_to_versions_json
                 FROM firmware_upgrades u
@@ -830,13 +1049,325 @@ def api_firewalls():
             ORDER BY COALESCE(f.hostname, f.name, f.serial_number)
             """
         )
+        central_groups = _firewall_central_group_breadcrumbs_map(conn)
+        cur = conn.execute(sql_fw)
         rows_out: list[dict] = []
         for r in cur.fetchall():
             d = row_to_dict(r)
             raw = d.pop("_upgrade_to_versions_json", None)
             d["firmware_available_updates"] = _upgrade_versions_from_json(raw)
+            tid = d.get("tenant_id")
+            fid = d.get("id")
+            key = (str(tid).strip(), str(fid).strip()) if tid is not None and fid is not None else None
+            d["central_group_breadcrumbs"] = central_groups.get(key, []) if key else []
             rows_out.append(d)
         return rows_out
+
+
+class FirewallApproveBatchBody(BaseModel):
+    """Approve management for firewalls that are in Sophos Central pending-approval state."""
+
+    firewall_ids: list[str] = Field(default_factory=list)
+
+
+class FirewallFirmwareUpgradeItemBody(BaseModel):
+    firewall_id: str = Field(min_length=1)
+    upgrade_to_version: str | None = None
+
+
+class FirewallFirmwareUpgradeBatchBody(BaseModel):
+    """Schedule firmware upgrades via Sophos Central (per credential/tenant batch)."""
+
+    items: list[FirewallFirmwareUpgradeItemBody]
+    scheduled_at: str | None = Field(default=None, max_length=80)
+
+
+class FirewallDeleteLocalBatchBody(BaseModel):
+    """Remove firewall rows from the local SQLite cache only (not Sophos Central)."""
+
+    firewall_ids: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/firewalls/delete-local-batch")
+def api_firewalls_delete_local_batch(
+    body: FirewallDeleteLocalBatchBody,
+    _: str = Depends(admin_user_id_dep),
+):
+    """Delete selected firewalls from the local database only. They reappear after the next sync if still in Central."""
+    ids = [str(x).strip() for x in body.firewall_ids if x is not None and str(x).strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="firewall_ids must not be empty.")
+    uniq = list(dict.fromkeys(ids))
+    ph = ",".join("?" * len(uniq))
+    with get_db() as conn:
+        cur = conn.execute(
+            "SELECT id FROM firewalls WHERE id IN (" + ph + ")",
+            uniq,
+        )
+        found = [str(r[0]) for r in cur.fetchall()]
+        found_set = set(found)
+        not_found = [i for i in uniq if i not in found_set]
+        if found:
+            ph2 = ",".join("?" * len(found))
+            conn.execute(
+                "DELETE FROM firmware_upgrades WHERE firewall_id IN (" + ph2 + ")",
+                found,
+            )
+            conn.execute("DELETE FROM firewalls WHERE id IN (" + ph2 + ")", found)
+        conn.commit()
+    return {"deleted": found, "not_found": not_found}
+
+
+@app.post("/api/firewalls/approve-batch")
+def api_firewalls_approve_batch(
+    body: FirewallApproveBatchBody,
+    _: str = Depends(admin_user_id_dep),
+):
+    """Approve selected firewalls via Central API, then sync each credential that had a success."""
+    ids = [str(x).strip() for x in body.firewall_ids if x is not None and str(x).strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="firewall_ids must not be empty.")
+    approved: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+    sync_cred_ids: set[str] = set()
+
+    with get_db() as conn:
+        for fw_id in ids:
+            row = conn.execute(
+                """
+                SELECT id, tenant_id, client_id, hostname, name, managing_status, reporting_status
+                FROM firewalls WHERE id = ?
+                """,
+                (fw_id,),
+            ).fetchone()
+            if not row:
+                errors.append({"id": fw_id, "detail": "Firewall not found"})
+                continue
+            if not _fw_status_pending_approval(row["managing_status"], row["reporting_status"]):
+                skipped.append({"id": fw_id, "detail": "Not in pending approval state"})
+                continue
+            fw_client_id = (row["client_id"] or "").strip()
+            fw_tenant_id = (row["tenant_id"] or "").strip()
+            if not fw_client_id:
+                errors.append(
+                    {
+                        "id": fw_id,
+                        "detail": "Firewall has no synced API client id; run a Central sync first.",
+                    }
+                )
+                continue
+            if not fw_tenant_id:
+                errors.append({"id": fw_id, "detail": "Firewall has no tenant id."})
+                continue
+
+            with get_secrets_db() as sconn:
+                cred_pair = get_stored_credential_secrets_by_client_id(sconn, fw_client_id)
+                cred_row_id = get_credential_id_by_client_id(sconn, fw_client_id)
+            if not cred_pair:
+                errors.append(
+                    {
+                        "id": fw_id,
+                        "detail": "No stored Central credential matches this firewall's API client id.",
+                    }
+                )
+                continue
+
+            oauth_cid, oauth_secret = cred_pair
+            try:
+                _approve_firewall_management_on_central(
+                    firewall_id=fw_id,
+                    tenant_id=fw_tenant_id,
+                    oauth_client_id=oauth_cid,
+                    oauth_client_secret=oauth_secret,
+                )
+            except HTTPException as he:
+                detail = he.detail
+                msg = detail if isinstance(detail, str) else str(detail)
+                errors.append({"id": fw_id, "detail": msg})
+                continue
+
+            label = row["hostname"] or row["name"] or fw_id
+            approved.append({"id": fw_id, "label": str(label)[:500]})
+            if cred_row_id:
+                sync_cred_ids.add(cred_row_id)
+
+    sync_results: list[dict] = []
+    for cred_id in sorted(sync_cred_ids):
+        try:
+            with get_db() as central_conn:
+                result = run_credential_sync(cred_id, central_conn=central_conn, trigger="post-approve")
+            sync_results.append(
+                {
+                    "credential_id": cred_id,
+                    "ok": result.success,
+                    "error": result.error,
+                }
+            )
+        except Exception as e:
+            sync_results.append(
+                {
+                    "credential_id": cred_id,
+                    "ok": False,
+                    "error": str(e) or type(e).__name__,
+                }
+            )
+
+    return {
+        "approved": approved,
+        "skipped": skipped,
+        "errors": errors,
+        "credential_syncs": sync_results,
+    }
+
+
+@app.post("/api/firewalls/firmware-upgrade-batch")
+def api_firewalls_firmware_upgrade_batch(
+    body: FirewallFirmwareUpgradeBatchBody,
+    _: str = Depends(admin_user_id_dep),
+):
+    """Schedule or run firmware upgrades on Central for selected firewalls (grouped by OAuth client + tenant)."""
+    scheduled_utc = _parse_scheduled_at_iso_to_utc(body.scheduled_at)
+    upgrade_at_str = _sophos_upgrade_at_string(scheduled_utc) if scheduled_utc else None
+
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    skipped: list[dict] = []
+    errors: list[dict] = []
+
+    with get_db() as conn:
+        for it in body.items:
+            fw_id = str(it.firewall_id or "").strip()
+            if not fw_id:
+                errors.append({"id": "", "detail": "Missing firewall id."})
+                continue
+            target_ver = (it.upgrade_to_version or "").strip()
+            if not target_ver:
+                skipped.append({"id": fw_id, "detail": "No upgrade version selected (skipped)."})
+                continue
+
+            row = conn.execute(
+                """
+                SELECT f.id, f.tenant_id, f.client_id, f.hostname, f.name
+                FROM firewalls f
+                WHERE f.id = ?
+                """,
+                (fw_id,),
+            ).fetchone()
+            if not row:
+                errors.append({"id": fw_id, "detail": "Firewall not found."})
+                continue
+
+            up_row = conn.execute(
+                "SELECT upgrade_to_versions_json FROM firmware_upgrades WHERE firewall_id = ?",
+                (fw_id,),
+            ).fetchone()
+            available = _upgrade_versions_from_json(
+                up_row["upgrade_to_versions_json"] if up_row else None
+            )
+            if target_ver not in available:
+                errors.append(
+                    {
+                        "id": fw_id,
+                        "detail": f"Version {target_ver!r} is not in the available upgrade list for this firewall.",
+                    }
+                )
+                continue
+
+            fw_client_id = (row["client_id"] or "").strip()
+            fw_tenant_id = (row["tenant_id"] or "").strip()
+            if not fw_client_id:
+                errors.append(
+                    {
+                        "id": fw_id,
+                        "detail": "Firewall has no synced API client id; run a Central sync first.",
+                    }
+                )
+                continue
+            if not fw_tenant_id:
+                errors.append({"id": fw_id, "detail": "Firewall has no tenant id."})
+                continue
+
+            with get_secrets_db() as sconn:
+                cred_pair = get_stored_credential_secrets_by_client_id(sconn, fw_client_id)
+                cred_row_id = get_credential_id_by_client_id(sconn, fw_client_id)
+            if not cred_pair:
+                errors.append(
+                    {
+                        "id": fw_id,
+                        "detail": "No stored Central credential matches this firewall's API client id.",
+                    }
+                )
+                continue
+
+            entry: dict = {"id": fw_id, "upgradeToVersion": target_ver}
+            if upgrade_at_str:
+                entry["upgradeAt"] = upgrade_at_str
+            groups[(fw_client_id, fw_tenant_id)].append(
+                {"payload": entry, "cred_row_id": cred_row_id, "oauth": cred_pair}
+            )
+
+    scheduled: list[dict] = []
+    sync_cred_ids: set[str] = set()
+
+    for (oauth_cid, fw_tenant_id), entries in groups.items():
+        oauth_secret = entries[0]["oauth"][1]
+        cred_ids = {e["cred_row_id"] for e in entries if e.get("cred_row_id")}
+        upgrade_dicts = [e["payload"] for e in entries]
+        try:
+            cresp = _post_firmware_upgrade_actions_on_central(
+                oauth_client_id=oauth_cid,
+                oauth_client_secret=oauth_secret,
+                tenant_id=fw_tenant_id,
+                upgrade_dicts=upgrade_dicts,
+            )
+        except HTTPException as he:
+            detail = he.detail
+            msg = detail if isinstance(detail, str) else str(detail)
+            for e in entries:
+                scheduled.append({"id": e["payload"]["id"], "ok": False, "detail": msg})
+            continue
+
+        if not cresp.success:
+            msg = _central_api_error_message(cresp)
+            for e in entries:
+                scheduled.append({"id": e["payload"]["id"], "ok": False, "detail": msg})
+            continue
+
+        for e in entries:
+            scheduled.append({"id": e["payload"]["id"], "ok": True, "detail": None})
+        for cid in cred_ids:
+            if cid:
+                sync_cred_ids.add(str(cid))
+
+    sync_results: list[dict] = []
+    for cred_id in sorted(sync_cred_ids):
+        try:
+            with get_db() as central_conn:
+                result = run_credential_sync(
+                    cred_id, central_conn=central_conn, trigger="post-firmware-upgrade"
+                )
+            sync_results.append(
+                {
+                    "credential_id": cred_id,
+                    "ok": result.success,
+                    "error": result.error,
+                }
+            )
+        except Exception as e:
+            sync_results.append(
+                {
+                    "credential_id": cred_id,
+                    "ok": False,
+                    "error": str(e) or type(e).__name__,
+                }
+            )
+
+    return {
+        "scheduled": scheduled,
+        "skipped": skipped,
+        "errors": errors,
+        "credential_syncs": sync_results,
+    }
 
 
 @app.get("/api/geocode/search")
@@ -856,6 +1387,12 @@ class FirewallLocationBody(BaseModel):
     address: str | None = Field(default=None, max_length=500)
     latitude: float | None = None
     longitude: float | None = None
+
+
+class FirewallLabelBody(BaseModel):
+    """Display name / label for the firewall (PATCHed to Sophos Central as ``name``)."""
+
+    name: str = Field(max_length=256)
 
 
 def _build_central_full_url(
@@ -899,16 +1436,22 @@ def _central_api_error_message(cresp: CentralResponse) -> str:
     return f"Sophos Central API error (HTTP {cresp.status_code})"
 
 
-def _push_firewall_geolocation_to_central(
+def _fw_status_pending_approval(managing: str | None, reporting: str | None) -> bool:
+    def one(val: str | None) -> bool:
+        s = (val or "").strip().lower()
+        return s in ("approvalpending", "pendingapproval")
+
+    return one(managing) or one(reporting)
+
+
+def _central_firewall_api_context(
     *,
-    firewall_id: str,
-    tenant_id: str,
-    geo_latitude: str,
-    geo_longitude: str,
     oauth_client_id: str,
     oauth_client_secret: str,
-) -> None:
-    """PATCH firewall geoLocation on Sophos Central using the same tenancy/region rules as sync."""
+    tenant_id: str,
+    unsupported_phrase: str = "this action",
+) -> tuple[CentralSession, str, str | None, str | None]:
+    """Authenticate and resolve data-region URL + tenant/org headers for firewall APIs."""
     session = CentralSession(oauth_client_id.strip(), oauth_client_secret)
     auth = session.authenticate()
     if not auth.success:
@@ -960,15 +1503,121 @@ def _push_firewall_geolocation_to_central(
     else:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported Sophos Central credential type for location update: {id_type!r}.",
+            detail=f"Unsupported Sophos Central credential type for {unsupported_phrase}: {id_type!r}.",
         )
 
-    payload = {
-        "geoLocation": {
-            "latitude": geo_latitude,
-            "longitude": geo_longitude,
-        }
+    return session, url_base, tenant_hdr, org_hdr
+
+
+def _approve_firewall_management_on_central(
+    *,
+    firewall_id: str,
+    tenant_id: str,
+    oauth_client_id: str,
+    oauth_client_secret: str,
+) -> None:
+    """POST approveManagement on Sophos Central (same tenancy / region rules as geo PATCH)."""
+    session, url_base, tenant_hdr, org_hdr = _central_firewall_api_context(
+        oauth_client_id=oauth_client_id,
+        oauth_client_secret=oauth_client_secret,
+        tenant_id=tenant_id,
+        unsupported_phrase="management approval",
+    )
+
+    full_url = _build_central_full_url(
+        session, f"/firewall/v1/firewalls/{firewall_id}/action", url_base=url_base
+    )
+    headers = {
+        "Authorization": f"Bearer {session.jwt}",
+        "Content-Type": "application/json",
     }
+    if tenant_hdr:
+        headers["X-Tenant-ID"] = tenant_hdr
+    if org_hdr:
+        headers["X-Organization-ID"] = org_hdr
+    payload = {"action": "approveManagement"}
+    try:
+        r = requests.post(full_url, headers=headers, json=payload, timeout=30)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Sophos Central request failed: {e}") from e
+
+    cresp = CentralResponse(r)
+    if not cresp.success:
+        raise HTTPException(status_code=502, detail=_central_api_error_message(cresp))
+
+
+def _parse_scheduled_at_iso_to_utc(raw: str | None) -> datetime | None:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    s = s.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
+def _sophos_upgrade_at_string(dt: datetime) -> str:
+    """Sophos documents ``yyyy-MM-dd'T'HH:mm:ss.SSS'Z'`` (millisecond precision)."""
+    u = dt.astimezone(timezone.utc)
+    ms = u.microsecond // 1000
+    return u.strftime("%Y-%m-%dT%H:%M:%S") + f".{ms:03d}Z"
+
+
+def _post_firmware_upgrade_actions_on_central(
+    *,
+    oauth_client_id: str,
+    oauth_client_secret: str,
+    tenant_id: str,
+    upgrade_dicts: list[dict],
+) -> CentralResponse:
+    """POST /firewall/v1/firewalls/actions/firmware-upgrade (single object or batch)."""
+    session, url_base, tenant_hdr, org_hdr = _central_firewall_api_context(
+        oauth_client_id=oauth_client_id,
+        oauth_client_secret=oauth_client_secret,
+        tenant_id=tenant_id,
+        unsupported_phrase="firmware upgrade",
+    )
+    # API requires `{ "firewalls": [...] }` even for a single firewall (see firewall-v1 OpenAPI).
+    json_body: dict = {"firewalls": upgrade_dicts}
+    full_url = _build_central_full_url(
+        session, "/firewall/v1/firewalls/actions/firmware-upgrade", url_base=url_base
+    )
+    headers = {
+        "Authorization": f"Bearer {session.jwt}",
+        "Content-Type": "application/json",
+    }
+    if tenant_hdr:
+        headers["X-Tenant-ID"] = tenant_hdr
+    if org_hdr:
+        headers["X-Organization-ID"] = org_hdr
+    try:
+        r = requests.post(full_url, headers=headers, json=json_body, timeout=60)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Sophos Central request failed: {e}") from e
+    return CentralResponse(r)
+
+
+def _patch_firewall_json_on_central(
+    *,
+    firewall_id: str,
+    tenant_id: str,
+    oauth_client_id: str,
+    oauth_client_secret: str,
+    json_body: dict,
+    unsupported_phrase: str,
+) -> None:
+    """PATCH ``/firewall/v1/firewalls/{id}`` on Sophos Central (geo, name, etc.)."""
+    session, url_base, tenant_hdr, org_hdr = _central_firewall_api_context(
+        oauth_client_id=oauth_client_id,
+        oauth_client_secret=oauth_client_secret,
+        tenant_id=tenant_id,
+        unsupported_phrase=unsupported_phrase,
+    )
     full_url = _build_central_full_url(
         session, f"/firewall/v1/firewalls/{firewall_id}", url_base=url_base
     )
@@ -980,15 +1629,38 @@ def _push_firewall_geolocation_to_central(
         headers["X-Tenant-ID"] = tenant_hdr
     if org_hdr:
         headers["X-Organization-ID"] = org_hdr
-
     try:
-        r = requests.patch(full_url, headers=headers, json=payload, timeout=30)
+        r = requests.patch(full_url, headers=headers, json=json_body, timeout=30)
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Sophos Central request failed: {e}") from e
-
     cresp = CentralResponse(r)
     if not cresp.success:
         raise HTTPException(status_code=502, detail=_central_api_error_message(cresp))
+
+
+def _push_firewall_geolocation_to_central(
+    *,
+    firewall_id: str,
+    tenant_id: str,
+    geo_latitude: str,
+    geo_longitude: str,
+    oauth_client_id: str,
+    oauth_client_secret: str,
+) -> None:
+    """PATCH firewall geoLocation on Sophos Central using the same tenancy/region rules as sync."""
+    _patch_firewall_json_on_central(
+        firewall_id=firewall_id,
+        tenant_id=tenant_id,
+        oauth_client_id=oauth_client_id,
+        oauth_client_secret=oauth_client_secret,
+        json_body={
+            "geoLocation": {
+                "latitude": geo_latitude,
+                "longitude": geo_longitude,
+            }
+        },
+        unsupported_phrase="location update",
+    )
 
 
 @app.patch("/api/firewalls/{firewall_id}/location")
@@ -1067,6 +1739,62 @@ def api_firewall_patch_location(
     return {"ok": True, "geo_latitude": lat_s, "geo_longitude": lon_s}
 
 
+@app.patch("/api/firewalls/{firewall_id}/label")
+def api_firewall_patch_label(
+    firewall_id: str,
+    body: FirewallLabelBody,
+    _: str = Depends(current_user_id_dep),
+):
+    """Set firewall display name on Sophos Central (PATCH ``name``) and update the local cache."""
+    new_name = body.name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Name must not be empty.")
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id, tenant_id, client_id FROM firewalls WHERE id = ?",
+            (firewall_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Firewall not found")
+        fw_client_id = (row["client_id"] or "").strip()
+        fw_tenant_id = (row["tenant_id"] or "").strip()
+        if not fw_client_id:
+            raise HTTPException(
+                status_code=400,
+                detail="This firewall has no synced API client id; run a Central sync before changing the label in Sophos.",
+            )
+        if not fw_tenant_id:
+            raise HTTPException(status_code=400, detail="Firewall has no tenant id.")
+
+    with get_secrets_db() as sconn:
+        cred_pair = get_stored_credential_secrets_by_client_id(sconn, fw_client_id)
+    if not cred_pair:
+        raise HTTPException(
+            status_code=400,
+            detail="No stored Central credential matches this firewall's API client id; add the same OAuth client under Settings.",
+        )
+    oauth_cid, oauth_secret = cred_pair
+
+    _patch_firewall_json_on_central(
+        firewall_id=firewall_id,
+        tenant_id=fw_tenant_id,
+        oauth_client_id=oauth_cid,
+        oauth_client_secret=oauth_secret,
+        json_body={"name": new_name},
+        unsupported_phrase="label update",
+    )
+
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE firewalls SET name = ? WHERE id = ?",
+            (new_name, firewall_id),
+        )
+        conn.commit()
+
+    return {"ok": True, "name": new_name}
+
+
 @app.get("/api/firmware-versions")
 def api_firmware_versions():
     with get_db() as conn:
@@ -1077,6 +1805,54 @@ def api_firmware_versions():
             """
         )
         return {"versions": [row["version"] for row in cur.fetchall()]}
+
+
+@app.get("/api/firmware-version-details")
+def api_firmware_version_details(
+    versions: list[str] = Query(default_factory=list),
+    _: str = Depends(current_user_id_dep),
+):
+    """Release notes / metadata from ``firmware_versions`` for UI (e.g. batch upgrade modal)."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for raw in versions:
+        v = str(raw or "").strip()
+        if not v or v in seen:
+            continue
+        seen.add(v)
+        ordered.append(v)
+
+    details: list[dict] = []
+    with get_db() as conn:
+        for ver in ordered:
+            vr = conn.execute(
+                """
+                SELECT version, size, bugs_json, news_json, first_sync, last_sync
+                FROM firmware_versions
+                WHERE version = ?
+                """,
+                (ver,),
+            ).fetchone()
+            if vr:
+                d = row_to_dict(vr)
+                bugs = _json_string_list(d.pop("bugs_json", None))
+                news = _json_string_list(d.pop("news_json", None))
+                d["bugs"] = bugs
+                d["news"] = news
+                d["in_database"] = True
+            else:
+                d = {
+                    "version": ver,
+                    "size": None,
+                    "bugs": [],
+                    "news": [],
+                    "first_sync": None,
+                    "last_sync": None,
+                    "in_database": False,
+                }
+            details.append(d)
+
+    return {"versions": ordered, "version_details": details}
 
 
 @app.get("/api/firewalls/{firewall_id}/firmware-upgrades")
@@ -1232,12 +2008,98 @@ def api_tenants():
     return rows
 
 
+@app.get("/api/firewall-groups")
+def api_firewall_groups():
+    """Rows from ``firewall_groups`` with tenant label, up to 3-segment breadcrumb, firewall count, and sync-status row count."""
+    tdisp = _sql_tenant_display_coalesced("t", "g.tenant_id")
+    with get_db_with_sec() as conn:
+        sql_fg = (
+            """
+            SELECT
+              g.id,
+              g.tenant_id,
+              g.name AS group_name,
+              p.name AS parent_name,
+              pp.name AS grandparent_name,
+              g.locked_by_managing_account,
+              g.last_sync,
+              g.updated_at,
+              COALESCE(g.firewalls_total, g.firewalls_items_count, 0) AS firewall_count,
+              COALESCE(
+                (SELECT COUNT(*) FROM firewall_group_sync_status s WHERE s.group_id = g.id),
+                0
+              ) AS sync_issues_count,
+              """
+            + tdisp
+            + """ AS tenant_name
+            FROM firewall_groups g
+            LEFT JOIN firewall_groups p ON p.id = g.parent_group_id
+            LEFT JOIN firewall_groups pp ON pp.id = p.parent_group_id
+            LEFT JOIN tenants t ON t.id = g.tenant_id
+            ORDER BY
+              COALESCE("""
+            + tdisp
+            + """, '') COLLATE NOCASE,
+              COALESCE(pp.name, '') COLLATE NOCASE,
+              COALESCE(p.name, '') COLLATE NOCASE,
+              COALESCE(g.name, '') COLLATE NOCASE
+            """
+        )
+        cur = conn.execute(sql_fg)
+        rows_raw = [row_to_dict(r) for r in cur.fetchall()]
+
+    out: list[dict] = []
+    for d in rows_raw:
+        tenant_name = d.get("tenant_name")
+        if tenant_name is None or str(tenant_name).strip() == "":
+            tenant_name = "—"
+        else:
+            tenant_name = str(tenant_name).strip()
+        gp = (d.get("grandparent_name") or "").strip() or None
+        p = (d.get("parent_name") or "").strip() or None
+        leaf = (d.get("group_name") or "").strip() or None
+        parts = [x for x in (gp, p, leaf) if x]
+        if not parts:
+            parts = ["—"]
+        elif len(parts) > 3:
+            parts = parts[-3:]
+        breadcrumb = " › ".join(parts)
+        locked = d.get("locked_by_managing_account")
+        locked_label = "Yes" if locked in (1, True, "1") else "No"
+        try:
+            fc_i = int(d.get("firewall_count") or 0)
+        except (TypeError, ValueError):
+            fc_i = 0
+        try:
+            sic = int(d.get("sync_issues_count") or 0)
+        except (TypeError, ValueError):
+            sic = 0
+        out.append(
+            {
+                "id": d.get("id"),
+                "tenant_id": d.get("tenant_id"),
+                "tenant_name": tenant_name,
+                "group_name": leaf if leaf else "—",
+                "parent_display": p if p else "—",
+                "breadcrumb": breadcrumb,
+                "breadcrumb_segments": parts,
+                "firewall_count": fc_i,
+                "sync_issues_count": sic,
+                "locked_label": locked_label,
+                "last_sync": d.get("last_sync") or "",
+                "updated_at": d.get("updated_at") or "",
+            }
+        )
+    return out
+
+
 @app.get("/api/licenses")
 def api_licenses():
     tdisp = _sql_tenant_display_coalesced("t", "l.tenant_id")
+    managed_by = _sql_tenant_display_coalesced("t", "fwh.tenant_id")
     with get_db_with_sec() as conn:
-        cur = conn.execute(
-            f"""
+        sql_lic = (
+            """
             SELECT
               l.serial_number,
               l.tenant_id,
@@ -1246,7 +2108,9 @@ def api_licenses():
               l.last_seen_at,
               l.partner_id,
               l.organization_id,
-              {tdisp} AS tenant_name,
+              """
+            + tdisp
+            + """ AS tenant_name,
               (
                 SELECT COUNT(*) FROM license_subscriptions s
                 WHERE s.serial_number = l.serial_number
@@ -1277,7 +2141,9 @@ def api_licenses():
                 LIMIT 1
               ) AS firewall_host_label,
               (
-                SELECT {_sql_tenant_display_coalesced("t", "fwh.tenant_id")}
+                SELECT """
+            + managed_by
+            + """
                 FROM firewalls fwh
                 LEFT JOIN tenants t ON t.id = fwh.tenant_id
                 WHERE fwh.serial_number = l.serial_number
@@ -1288,6 +2154,7 @@ def api_licenses():
             ORDER BY l.serial_number COLLATE NOCASE
             """
         )
+        cur = conn.execute(sql_lic)
         return [row_to_dict(r) for r in cur.fetchall()]
 
 
@@ -1295,9 +2162,10 @@ def api_licenses():
 def api_licenses_detailed():
     """One row per license–subscription pair (LEFT JOIN: licenses without subscriptions appear once)."""
     tdisp = _sql_tenant_display_coalesced("t", "l.tenant_id")
+    managed_by = _sql_tenant_display_coalesced("tn", "fwh.tenant_id")
     with get_db_with_sec() as conn:
-        cur = conn.execute(
-            f"""
+        sql_lic_d = (
+            """
             SELECT
               l.serial_number,
               l.tenant_id,
@@ -1306,7 +2174,9 @@ def api_licenses_detailed():
               l.last_seen_at,
               l.partner_id,
               l.organization_id,
-              {tdisp} AS tenant_name,
+              """
+            + tdisp
+            + """ AS tenant_name,
               (
                 SELECT
                   CASE
@@ -1319,7 +2189,9 @@ def api_licenses_detailed():
                 LIMIT 1
               ) AS firewall_host_label,
               (
-                SELECT {_sql_tenant_display_coalesced("tn", "fwh.tenant_id")}
+                SELECT """
+            + managed_by
+            + """
                 FROM firewalls fwh
                 LEFT JOIN tenants tn ON tn.id = fwh.tenant_id
                 WHERE fwh.serial_number = l.serial_number
@@ -1371,6 +2243,7 @@ def api_licenses_detailed():
               s.id COLLATE NOCASE
             """
         )
+        cur = conn.execute(sql_lic_d)
         return [row_to_dict(r) for r in cur.fetchall()]
 
 
@@ -1387,35 +2260,32 @@ def api_alerts_facets(
         FROM alerts a
         LEFT JOIN tenants t ON t.id = a.tenant_id
     """
+    alerts_tenant_disp = _sql_alerts_tenant_display()
     with get_db_with_sec() as conn:
-        tenants = [
-            r[0]
-            for r in conn.execute(
-                f"""
-                SELECT DISTINCT {_sql_alerts_tenant_display()} AS v
-                {base_from}
-                {where_sql}
-                ORDER BY v COLLATE NOCASE
-                """,
-                bind,
-            )
-        ]
+        sql_tenant_facets = (
+            "SELECT DISTINCT "
+            + alerts_tenant_disp
+            + " AS v "
+            + base_from
+            + " "
+            + where_sql
+            + " ORDER BY v COLLATE NOCASE"
+        )
+        tenants = [r[0] for r in conn.execute(sql_tenant_facets, bind)]
         fw_from = """
             FROM alerts a
             LEFT JOIN firewalls fw ON fw.id = json_extract(a.managed_agent_json, '$')
         """
-        hosts = [
-            r[0]
-            for r in conn.execute(
-                f"""
+        sql_host_facets = (
+            """
                 SELECT DISTINCT COALESCE(NULLIF(fw.hostname, ''), NULLIF(fw.name, ''), '—') AS v
-                {fw_from}
-                {where_sql}
-                ORDER BY v COLLATE NOCASE
-                """,
-                bind,
-            )
-        ]
+                """
+            + fw_from
+            + " "
+            + where_sql
+            + " ORDER BY v COLLATE NOCASE"
+        )
+        hosts = [r[0] for r in conn.execute(sql_host_facets, bind)]
     return {"tenant_names": tenants, "firewall_hostnames": hosts}
 
 
@@ -1435,6 +2305,10 @@ def api_alerts(
         default=None,
         description="Repeat param: filter by firewall hostname / name label (OR within list)",
     ),
+    firewall_id: str | None = Query(
+        default=None,
+        description="Filter alerts whose managed agent is this firewall id",
+    ),
     q: str | None = Query(
         default=None,
         max_length=500,
@@ -1445,34 +2319,45 @@ def api_alerts(
     search = str(q).strip() if q else None
     if search == "":
         search = None
-    where_sql, bind = _alerts_where_sql(severity, tenant_name, firewall_hostname, search)
+    fw_id_f = str(firewall_id).strip() if firewall_id else None
+    if fw_id_f == "":
+        fw_id_f = None
+    where_sql, bind = _alerts_where_sql(
+        severity, tenant_name, firewall_hostname, search, fw_id_f
+    )
     sql_from = """
         FROM alerts a
         LEFT JOIN tenants t ON t.id = a.tenant_id
         LEFT JOIN firewalls fw ON fw.id = json_extract(a.managed_agent_json, '$')
     """
+    alerts_tenant_disp = _sql_alerts_tenant_display()
     with get_db_with_sec() as conn:
         total = conn.execute(
-            f"SELECT COUNT(*) {sql_from} {where_sql}",
+            "SELECT COUNT(*) " + sql_from + " " + where_sql,
             bind,
         ).fetchone()[0]
-        cur = conn.execute(
-            f"""
+        sql_alerts_page = (
+            """
             SELECT
               a.id,
               a.severity,
               a.description,
               a.raised_at,
               a.category,
-              {_sql_alerts_tenant_display()} AS tenant_name,
+              """
+            + alerts_tenant_disp
+            + """ AS tenant_name,
               COALESCE(NULLIF(fw.hostname, ''), NULLIF(fw.name, ''), '—') AS firewall_hostname
-            {sql_from}
-            {where_sql}
+            """
+            + sql_from
+            + " "
+            + where_sql
+            + """
             ORDER BY datetime(a.raised_at) DESC
             LIMIT ? OFFSET ?
-            """,
-            (*bind, page_size, offset),
+            """
         )
+        cur = conn.execute(sql_alerts_page, (*bind, page_size, offset))
         items = [row_to_dict(r) for r in cur.fetchall()]
     return {
         "items": items,
@@ -1499,9 +2384,10 @@ def api_alerts_recent(limit: int = Query(default=20, ge=1, le=200)):
 
 @app.get("/api/alerts/{alert_id}")
 def api_alert_detail(alert_id: str):
+    alerts_tenant_disp = _sql_alerts_tenant_display()
     with get_db_with_sec() as conn:
-        cur = conn.execute(
-            f"""
+        sql_alert_one = (
+            """
             SELECT
               a.id,
               a.tenant_id,
@@ -1519,13 +2405,15 @@ def api_alert_detail(alert_id: str):
               a.first_sync,
               a.last_sync,
               a.sync_id,
-              {_sql_alerts_tenant_display()} AS tenant_name
+              """
+            + alerts_tenant_disp
+            + """ AS tenant_name
             FROM alerts a
             LEFT JOIN tenants t ON t.id = a.tenant_id
             WHERE a.id = ?
-            """,
-            (alert_id,),
+            """
         )
+        cur = conn.execute(sql_alert_one, (alert_id,))
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Alert not found")
@@ -1568,6 +2456,77 @@ class CentralCredentialRenameBody(BaseModel):
 
 class CentralCredentialSyncIntervalBody(BaseModel):
     sync_interval: Literal["hourly", "3h", "6h", "12h", "daily", "none"]
+
+
+class AppUiSettingsBody(BaseModel):
+    """Firewall list recency badges: NEW / UPD windows in hours (defaults 168 and 48)."""
+
+    fw_new_max_age_hours: int = Field(ge=1, le=8760)
+    fw_updated_max_age_hours: int = Field(ge=1, le=8760)
+    session_idle_timeout_minutes: int = Field(
+        ge=0,
+        le=525600,
+        description="0 disables idle logout; cookie max_age still applies.",
+    )
+
+
+@app.get("/api/settings/ui")
+def api_settings_ui_get(_: str = Depends(current_user_id_dep)):
+    if not DB_PATH.exists():
+        return {
+            "fw_new_max_age_hours": 168,
+            "fw_updated_max_age_hours": 48,
+            "session_idle_timeout_minutes": 60,
+        }
+    with get_db() as conn:
+        ensure_app_ui_schema(conn)
+        row = conn.execute(
+            "SELECT fw_new_max_age_hours, fw_updated_max_age_hours, session_idle_timeout_minutes "
+            "FROM app_ui_settings WHERE id = 1"
+        ).fetchone()
+    if not row:
+        return {
+            "fw_new_max_age_hours": 168,
+            "fw_updated_max_age_hours": 48,
+            "session_idle_timeout_minutes": 60,
+        }
+    return {
+        "fw_new_max_age_hours": int(row["fw_new_max_age_hours"]),
+        "fw_updated_max_age_hours": int(row["fw_updated_max_age_hours"]),
+        "session_idle_timeout_minutes": int(row["session_idle_timeout_minutes"]),
+    }
+
+
+@app.patch("/api/settings/ui")
+def api_settings_ui_patch(
+    body: AppUiSettingsBody,
+    _: str = Depends(current_user_id_dep),
+):
+    if not DB_PATH.exists():
+        raise HTTPException(status_code=503, detail="Database not available")
+    with get_db() as conn:
+        ensure_app_ui_schema(conn)
+        conn.execute(
+            """
+            UPDATE app_ui_settings SET
+              fw_new_max_age_hours = ?,
+              fw_updated_max_age_hours = ?,
+              session_idle_timeout_minutes = ?
+            WHERE id = 1
+            """,
+            (
+                body.fw_new_max_age_hours,
+                body.fw_updated_max_age_hours,
+                body.session_idle_timeout_minutes,
+            ),
+        )
+        conn.commit()
+    invalidate_session_idle_timeout_cache()
+    return {
+        "fw_new_max_age_hours": body.fw_new_max_age_hours,
+        "fw_updated_max_age_hours": body.fw_updated_max_age_hours,
+        "session_idle_timeout_minutes": body.session_idle_timeout_minutes,
+    }
 
 
 @app.get("/api/settings/credentials")
@@ -1653,9 +2612,20 @@ def api_settings_credentials_rename(
 
 @app.get("/api/sync/status")
 def api_sync_status(_: str = Depends(current_user_id_dep)):
+    activity = get_public_sync_activity()
     with get_secrets_db() as conn:
         ts = max_last_successful_sync_at(conn)
-    return {"last_successful_data_sync": ts}
+        by_type = count_credentials_by_id_type(conn)
+        creds = list_credentials(conn)
+    return {
+        "last_successful_data_sync": ts,
+        "credential_counts_by_id_type": by_type,
+        "sync_interval_summary": credentials_interval_summary(creds),
+        "sync_busy": activity["busy"],
+        "sync_credential_name": activity["credential_name"],
+        "sync_credential_id": activity["credential_id"],
+        "sync_trigger": activity["trigger"],
+    }
 
 
 @app.patch("/api/settings/credentials/{cred_id}/sync-interval")

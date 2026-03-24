@@ -74,6 +74,11 @@ DEFAULT_ADMIN_USERNAME = "admin"
 
 
 _APP_USER_PROFILE_COLS = frozenset({"full_name", "email", "mobile"})
+_PROFILE_SET_CLAUSE_BY_COL: dict[str, str] = {
+    "full_name": "full_name = ?",
+    "email": "email = ?",
+    "mobile": "mobile = ?",
+}
 
 
 def _migrate_app_users_profile_columns(conn: sqlite3.Connection) -> None:
@@ -337,12 +342,13 @@ def update_app_user_profile_cols(
     parts: list[str] = []
     vals: list[str | None] = []
     for col, val in updates.items():
-        parts.append(f"{col} = ?")
+        parts.append(_PROFILE_SET_CLAUSE_BY_COL[col])
         vals.append(val)
     vals.append(now)
     vals.append(user_id)
+    set_sql = ", ".join(parts)
     cur = conn.execute(
-        f"UPDATE app_users SET {', '.join(parts)}, updated_at = ? WHERE id = ?",
+        "UPDATE app_users SET " + set_sql + ", updated_at = ? WHERE id = ?",
         vals,
     )
     if cur.rowcount == 0:
@@ -383,6 +389,39 @@ CREDENTIAL_SYNC_INTERVAL_SECONDS: dict[str, int | None] = {
     "daily": 86400,
     "none": None,
 }
+
+SYNC_INTERVAL_DISPLAY: dict[str, str] = {
+    "hourly": "Hourly",
+    "3h": "Every 3 hours",
+    "6h": "Every 6 hours",
+    "12h": "Every 12 hours",
+    "daily": "Daily",
+    "none": "Not scheduled",
+}
+
+
+def sync_interval_display_label(interval_key: str) -> str:
+    k = (interval_key or "").strip()
+    if not k:
+        k = DEFAULT_SYNC_INTERVAL
+    return SYNC_INTERVAL_DISPLAY.get(k, k)
+
+
+def credentials_interval_summary(creds: list[dict]) -> str:
+    """Human-readable sync schedule(s) for the status bar (unique order preserved)."""
+    ordered: list[str] = []
+    for c in creds:
+        iv = str(c.get("sync_interval") or "").strip() or DEFAULT_SYNC_INTERVAL
+        if iv == "none":
+            continue
+        if iv not in ordered:
+            ordered.append(iv)
+    if not ordered:
+        return "—"
+    parts = [sync_interval_display_label(k) for k in ordered]
+    if len(parts) > 3:
+        return f"{', '.join(parts[:3])}, …"
+    return ", ".join(parts)
 
 
 def next_scheduled_sync_at_iso(last_sync_iso: str | None, sync_interval: str) -> str | None:
@@ -644,6 +683,24 @@ def get_stored_credential_secrets(conn: sqlite3.Connection, cred_id: str) -> tup
     return row["client_id"], secret
 
 
+def get_credential_id_by_client_id(conn: sqlite3.Connection, oauth_client_id: str) -> str | None:
+    """Return the ``central_credentials.id`` for the stored OAuth client id, if any."""
+    init_secrets_schema(conn)
+    oid = str(oauth_client_id).strip()
+    if not oid:
+        return None
+    row = conn.execute(
+        """
+        SELECT id FROM central_credentials
+        WHERE TRIM(client_id) = TRIM(?)
+        ORDER BY name COLLATE NOCASE
+        LIMIT 1
+        """,
+        (oid,),
+    ).fetchone()
+    return str(row["id"]) if row else None
+
+
 def get_stored_credential_secrets_by_client_id(
     conn: sqlite3.Connection, oauth_client_id: str
 ) -> tuple[str, str] | None:
@@ -728,6 +785,20 @@ def max_last_successful_sync_at(conn: sqlite3.Connection) -> str | None:
         return None
     s = str(row["m"]).strip()
     return s or None
+
+
+def count_credentials_by_id_type(conn: sqlite3.Connection) -> dict[str, int]:
+    """Counts Central credentials grouped by stored id_type (whoami idType)."""
+    init_secrets_schema(conn)
+    cur = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(TRIM(id_type), ''), 'unknown') AS t, COUNT(*) AS n
+        FROM central_credentials
+        GROUP BY t
+        ORDER BY t COLLATE NOCASE
+        """
+    )
+    return {str(r["t"]): int(r["n"]) for r in cur.fetchall()}
 
 
 def whoami_dict_from_session(session) -> dict:

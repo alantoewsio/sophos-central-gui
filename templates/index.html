@@ -87,7 +87,14 @@
     </footer>
   </div>
 
-  <div class="app-chrome-sticky">
+  <div class="app-shell" id="app-shell">
+    <script>
+      try {
+        if (localStorage.getItem("sophos-central-sidebar-collapsed") === "1") {
+          document.getElementById("app-shell").classList.add("app-shell--nav-collapsed");
+        }
+      } catch (e) { /* ignore */ }
+    </script>
     <header class="top-bar" role="banner">
       <div class="top-bar__inner">
         <div class="top-bar__left">
@@ -174,22 +181,90 @@
       </div>
     </header>
 
+    <div class="app-body">
+    <aside class="app-sidebar" aria-label="Primary navigation">
+      <div class="app-sidebar__inner">
+        <button type="button" class="app-sidebar__toggle" id="app-sidebar-toggle" aria-expanded="true"
+          title="Collapse navigation" aria-label="Collapse navigation">
+          <span class="app-sidebar__toggle-icon" aria-hidden="true">
+            <svg class="app-sidebar__collapse-svg" viewBox="0 0 28 22" width="25" height="20" aria-hidden="true">
+              <path class="app-sidebar__collapse-bars" fill="currentColor"
+                d="M1.25 4.25h14.5v2.35H1.25zm0 5.575h10.25v2.35H1.25zm0 5.575h16.25v2.35H1.25z" />
+              <g class="app-sidebar__collapse-arrow-wrap">
+                <path fill="currentColor" d="M16.35 11L25 3.35v15.3L16.35 11z" />
+              </g>
+            </svg>
+          </span>
+        </button>
+        <p class="app-sidebar__title" id="app-nav-heading">Firewall Management</p>
+        <nav class="app-nav" role="tablist" aria-label="Main" aria-labelledby="app-nav-heading"
+          aria-orientation="vertical">
+          <button type="button" class="tabs__tab app-nav__item is-active" data-tab="dashboard" role="tab"
+            aria-selected="true" aria-controls="panel-dashboard" id="tab-dashboard" title="Dashboard">
+            <span class="app-nav__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor"
+                  d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" />
+              </svg>
+            </span>
+            <span class="app-nav__label">Dashboard</span>
+          </button>
+          <button type="button" class="tabs__tab app-nav__item" data-tab="firewalls" role="tab"
+            aria-selected="false" aria-controls="panel-firewalls" id="tab-firewalls" title="Firewalls">
+            <span class="app-nav__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor"
+                  d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 15h2v2h-2v-2zm0-8h2v6h-2V8z" />
+              </svg>
+            </span>
+            <span class="app-nav__label">Firewalls</span>
+          </button>
+          <button type="button" class="tabs__tab app-nav__item" data-tab="groups" role="tab"
+            aria-selected="false" aria-controls="panel-groups" id="tab-groups" title="Groups">
+            <span class="app-nav__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor"
+                  d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+              </svg>
+            </span>
+            <span class="app-nav__label">Groups</span>
+          </button>
+          <button type="button" class="tabs__tab app-nav__item" data-tab="tenants" role="tab"
+            aria-selected="false" aria-controls="panel-tenants" id="tab-tenants" title="Tenants">
+            <span class="app-nav__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor"
+                  d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z" />
+              </svg>
+            </span>
+            <span class="app-nav__label">Tenants</span>
+          </button>
+          <button type="button" class="tabs__tab app-nav__item" data-tab="licenses" role="tab"
+            aria-selected="false" aria-controls="panel-licenses" id="tab-licenses" title="Licenses">
+            <span class="app-nav__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor"
+                  d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zm-9-6h2v2H9v-2zm0-4h2v2H9v-2zm0-4h2v2H9V8zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V8h2v2z" />
+              </svg>
+            </span>
+            <span class="app-nav__label">Licenses</span>
+          </button>
+        </nav>
+      </div>
+    </aside>
+
+    <div class="app-content">
+    <div class="app-main">
+    <div class="app-chrome-sticky">
     <div class="page-head">
       <h1 id="page-title" class="page-title">Dashboard</h1>
     </div>
-
-    <nav class="tabs" aria-label="Main">
-      <button type="button" class="tabs__tab is-active" data-tab="dashboard" role="tab"
-        aria-selected="true">Dashboard</button>
-      <button type="button" class="tabs__tab" data-tab="firewalls" role="tab" aria-selected="false">Firewalls</button>
-      <button type="button" class="tabs__tab" data-tab="tenants" role="tab" aria-selected="false">Tenants</button>
-      <button type="button" class="tabs__tab" data-tab="licenses" role="tab" aria-selected="false">Licenses</button>
-    </nav>
   </div>
 
   <main class="main">
     <!-- Dashboard -->
-    <section id="panel-dashboard" class="panel is-active" role="tabpanel" data-panel="dashboard">
+    <section id="panel-dashboard" class="panel is-active" role="tabpanel" data-panel="dashboard"
+      aria-labelledby="tab-dashboard">
       <div class="fw-map-section fw-map-section--dashboard" id="dash-fw-map-wrap" data-fw-map-context="dashboard">
         <div class="fw-map-section__head">
           <button type="button" class="fw-map-section__toggle" id="dash-fw-map-toggle" aria-expanded="true"
@@ -197,10 +272,6 @@
         </div>
         <div id="dash-fw-map-body" class="fw-map-section__body">
           <div id="dash-fw-map" class="fw-map-leaflet fw-map-leaflet--dashboard" role="img" aria-label="Firewalls on world map"></div>
-          <p class="fw-map-attribution muted">
-            Map © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>
-            contributors
-          </p>
         </div>
       </div>
       <div class="dashboard-grid" id="dashboard-stats"></div>
@@ -288,7 +359,8 @@
     </section>
 
     <!-- Firewalls -->
-    <section id="panel-firewalls" class="panel" role="tabpanel" data-panel="firewalls" hidden>
+    <section id="panel-firewalls" class="panel" role="tabpanel" data-panel="firewalls" hidden
+      aria-labelledby="tab-firewalls">
       <div class="firewalls-panel">
         <div class="fw-map-section fw-map-section--firewalls" id="panel-fw-map-wrap" data-fw-map-context="firewalls">
           <div class="fw-map-section__head">
@@ -297,10 +369,7 @@
           </div>
           <div id="panel-fw-map-body" class="fw-map-section__body">
             <div id="panel-fw-map" class="fw-map-leaflet fw-map-leaflet--firewalls" role="img" aria-label="Firewalls on world map"></div>
-            <p class="fw-map-attribution muted">
-              Map © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>
-              contributors
-            </p>
+            <p class="fw-map-section__footer" id="panel-fw-map-count" aria-live="polite"></p>
           </div>
         </div>
         <div class="split">
@@ -335,28 +404,47 @@
                     </div>
                   </div>
                 </div>
-                <div class="toolbar__actions">
-                  <button type="button" class="link-btn">Delete</button>
-                  <button type="button" class="link-btn">Replace Management</button>
-                  <button type="button" class="link-btn">Update Firmware</button>
-                  <button type="button" class="link-btn">Manage tags</button>
-                </div>
-                <div class="toolbar__search-cluster">
-                  <div class="search-field">
-                    <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                      <path fill="currentColor"
-                        d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
-                    </svg>
-                    <input type="search" id="fw-search" class="search-field__input" placeholder="Search" autocomplete="off"
-                      aria-label="Search firewalls" />
+                <div class="toolbar__fw-quick-wrap" id="fw-toolbar-quick-wrap">
+                  <span class="toolbar__fw-quick-label muted">View</span>
+                  <div class="toolbar__fw-quick" id="fw-toolbar-quick" role="group" aria-label="Quick filter firewalls">
+                    <button type="button" class="link-btn toolbar__fw-quick-btn" data-fw-quick="online">Online</button>
+                    <button type="button" class="link-btn toolbar__fw-quick-btn" data-fw-quick="offline">Offline</button>
+                    <button type="button" class="link-btn toolbar__fw-quick-btn" data-fw-quick="suspended">Suspended</button>
+                    <button type="button" class="link-btn toolbar__fw-quick-btn" data-fw-quick="pending"
+                      title="Firewalls waiting for management approval">Pending Approval</button>
+                    <button type="button" class="link-btn toolbar__fw-quick-btn" data-fw-quick="firmware_updates"
+                      title="Firewalls with at least one available firmware upgrade">Firmware Updates</button>
                   </div>
-                  <span id="fw-cols-trigger" class="toolbar__cols-icon" role="button" tabindex="0" aria-expanded="false"
-                    aria-haspopup="true" aria-controls="fw-cols-modal" title="Columns" aria-label="Choose table columns">
-                    <svg class="toolbar__cols-icon-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-                      <path fill="currentColor"
-                        d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
-                    </svg>
-                  </span>
+                </div>
+                <div class="toolbar__fw-toolbar-end">
+                  <div class="toolbar__fw-admin-actions">
+                    <button type="button" class="btn btn--secondary" id="fw-delete-local-btn" disabled hidden
+                      title="Remove selected firewalls from the local database only (not Sophos Central)"
+                      aria-label="Delete selected firewalls from local database">Delete</button>
+                    <button type="button" class="btn btn--secondary" id="fw-firmware-upgrade-batch-btn" disabled hidden
+                      title="Schedule firmware upgrades for selected firewalls"
+                      aria-label="Firmware upgrade for selected firewalls">Firmware Upgrade</button>
+                    <button type="button" class="btn btn--secondary" id="fw-approve-btn" disabled hidden
+                      title="Approve management for selected firewalls (pending approval)"
+                      aria-label="Approve management for selected firewalls">Approve</button>
+                  </div>
+                  <div class="toolbar__search-cluster">
+                    <div class="search-field">
+                      <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path fill="currentColor"
+                          d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                      </svg>
+                      <input type="search" id="fw-search" class="search-field__input" placeholder="Search" autocomplete="off"
+                        aria-label="Search firewalls" />
+                    </div>
+                    <span id="fw-cols-trigger" class="toolbar__cols-icon" role="button" tabindex="0" aria-expanded="false"
+                      aria-haspopup="true" aria-controls="fw-cols-modal" title="Columns" aria-label="Choose table columns">
+                      <svg class="toolbar__cols-icon-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                        <path fill="currentColor"
+                          d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                      </svg>
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -393,8 +481,93 @@
       </div>
     </section>
 
+    <!-- Groups -->
+    <section id="panel-groups" class="panel" role="tabpanel" data-panel="groups" hidden
+      aria-labelledby="tab-groups">
+      <div class="split">
+        <aside class="filters filters--collapsed" aria-label="Group filters">
+          <div id="gr-filters-drawer" class="filters__drawer" hidden>
+            <div id="group-filters"></div>
+          </div>
+        </aside>
+        <div class="content-pane">
+            <div class="table-wrap">
+          <div class="toolbar">
+            <div class="toolbar__sheet">
+              <div class="toolbar__line toolbar__line--export">
+                <div class="toolbar__export-row">
+                  <button type="button" class="link-btn toolbar__export-btn" id="gr-export-btn" aria-haspopup="true"
+                    aria-expanded="false" aria-controls="table-export-popover">Export</button>
+                </div>
+              </div>
+              <div class="toolbar__line toolbar__line--main">
+                <div class="toolbar__filters">
+                  <div class="filters__head">
+                    <button type="button" class="filters__toggle" aria-expanded="false" aria-controls="gr-filters-drawer"
+                      aria-label="Filters" title="Filters">
+                      <svg class="filters__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z" />
+                      </svg>
+                      <span class="filters__title-label">Filters</span>
+                    </button>
+                    <div class="filters__head-actions" id="gr-filters-head-actions" hidden>
+                      <span class="filters__facet-count" id="gr-facet-count" aria-live="polite"></span>
+                      <button type="button" class="filters__facet-reset link-btn" id="gr-facet-reset" hidden>Reset</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="toolbar__actions"></div>
+                <div class="toolbar__search-cluster">
+                  <div class="search-field">
+                    <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                      <path fill="currentColor"
+                        d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                    </svg>
+                    <input type="search" id="gr-search" class="search-field__input" placeholder="Search" autocomplete="off"
+                      aria-label="Search groups" />
+                  </div>
+                  <span id="gr-cols-trigger" class="toolbar__cols-icon" role="button" tabindex="0" aria-expanded="false"
+                    aria-haspopup="true" aria-controls="gr-cols-panel" title="Columns" aria-label="Choose table columns">
+                    <svg class="toolbar__cols-icon-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                      <path fill="currentColor"
+                        d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                    </svg>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table data-table--dense" id="gr-table">
+              <thead>
+                <tr id="gr-thead-row"></tr>
+              </thead>
+              <tbody id="gr-tbody"></tbody>
+            </table>
+          </div>
+          <footer class="table-footer">
+            <span class="table-footer__count" id="gr-count"></span>
+            <div class="table-footer__lazy-cluster">
+              <label class="pager__per">
+                Rows per load
+                <select id="gr-page-size" aria-label="Rows loaded at a time">
+                  <option value="10">10</option>
+                  <option value="25">25</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+              <span class="table-footer__lazy-hint muted" id="gr-lazy-hint" aria-live="polite"></span>
+            </div>
+          </footer>
+            </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Tenants -->
-    <section id="panel-tenants" class="panel" role="tabpanel" data-panel="tenants" hidden>
+    <section id="panel-tenants" class="panel" role="tabpanel" data-panel="tenants" hidden
+      aria-labelledby="tab-tenants">
       <div class="split">
         <aside class="filters filters--collapsed" aria-label="Tenant filters">
           <div id="tn-filters-drawer" class="filters__drawer" hidden>
@@ -477,7 +650,8 @@
     </section>
 
     <!-- Licenses -->
-    <section id="panel-licenses" class="panel" role="tabpanel" data-panel="licenses" hidden>
+    <section id="panel-licenses" class="panel" role="tabpanel" data-panel="licenses" hidden
+      aria-labelledby="tab-licenses">
       <div class="split">
         <aside class="filters filters--collapsed" aria-label="License filters">
           <div id="lc-filters-drawer" class="filters__drawer" hidden>
@@ -565,13 +739,40 @@
       </div>
     </section>
   </main>
+    </div>
 
-  <footer id="app-sync-status-bar" class="app-sync-status-bar" role="contentinfo" aria-live="polite">
+  <footer id="app-sync-status-bar" class="app-sync-status-bar" role="contentinfo" aria-live="polite"
+    aria-busy="false">
     <div class="app-sync-status-bar__inner">
-      <span class="app-sync-status-bar__label">Last successful data sync</span>
-      <span id="app-sync-status-value" class="app-sync-status-bar__value">—</span>
+      <div class="app-sync-status-bar__left">
+        <span id="app-sync-status-spinner" class="app-sync-status-bar__spinner" hidden aria-hidden="true"
+          aria-label="Sync in progress"></span>
+        <button type="button" id="app-sync-bar-sync-btn" class="app-sync-status-bar__sync-btn"
+          title="Sync all credentials now" aria-label="Sync all credentials now" hidden>
+          <svg class="app-sync-status-bar__sync-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path fill="currentColor"
+              d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.96 7.96 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.96 7.96 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z" />
+          </svg>
+        </button>
+        <span id="app-sync-progress" class="app-sync-status-bar__progress" hidden aria-live="polite"></span>
+      </div>
+      <div class="app-sync-status-bar__right">
+        <span class="app-sync-status-bar__pair">
+          <span class="app-sync-status-bar__k">Last sync</span>
+          <span id="app-sync-status-value" class="app-sync-status-bar__value">—</span>
+        </span>
+        <span class="app-sync-status-bar__sep muted" aria-hidden="true">·</span>
+        <span class="app-sync-status-bar__pair">
+          <span class="app-sync-status-bar__k">Interval</span>
+          <span id="app-sync-interval-value" class="app-sync-status-bar__value">—</span>
+        </span>
+        <span id="app-sync-cred-counts" class="app-sync-status-bar__cred-counts muted" aria-live="polite">—</span>
+      </div>
     </div>
   </footer>
+    </div>
+    </div>
+  </div>
 
   <div id="fw-cols-modal" class="fw-cols-modal" hidden aria-hidden="true">
     <div class="fw-cols-modal__backdrop" aria-hidden="true"></div>
@@ -589,6 +790,25 @@
       <input type="search" id="fw-cols-filter" class="fw-cols-modal__filter" placeholder="Search columns"
         autocomplete="off" aria-label="Filter column list" />
       <ul id="fw-cols-list" class="fw-cols-modal__list"></ul>
+    </div>
+  </div>
+
+  <div id="gr-cols-modal" class="fw-cols-modal" hidden aria-hidden="true">
+    <div class="fw-cols-modal__backdrop" aria-hidden="true"></div>
+    <div id="gr-cols-panel" class="fw-cols-modal__panel" role="dialog" aria-modal="true"
+      aria-labelledby="gr-cols-modal-title">
+      <div class="fw-cols-modal__header">
+        <h2 id="gr-cols-modal-title" class="fw-cols-modal__title">Table columns</h2>
+        <button type="button" class="fw-cols-modal__close" id="gr-cols-close" aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <input type="search" id="gr-cols-filter" class="fw-cols-modal__filter" placeholder="Search columns"
+        autocomplete="off" aria-label="Filter column list" />
+      <ul id="gr-cols-list" class="fw-cols-modal__list"></ul>
     </div>
   </div>
 
@@ -692,6 +912,87 @@
     </div>
   </div>
 
+  <div id="fw-firmware-batch-modal" class="fw-firmware-batch-modal" hidden aria-hidden="true">
+    <div class="fw-firmware-batch-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
+    <div class="fw-firmware-batch-modal__panel" role="dialog" aria-modal="true"
+      aria-labelledby="fw-firmware-batch-modal-title">
+      <div class="fw-firmware-batch-modal__header">
+        <h2 id="fw-firmware-batch-modal-title" class="fw-firmware-batch-modal__title">Firmware upgrade</h2>
+        <button type="button" class="fw-firmware-batch-modal__close" id="fw-firmware-batch-modal-close"
+          aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <div class="fw-firmware-batch-modal__body">
+        <div id="fw-firmware-batch-notes-root" class="fw-firmware-batch-modal__notes" hidden></div>
+        <div class="table-wrap fw-firmware-batch-modal__table-wrap">
+          <table class="data-table data-table--dense fw-firmware-batch-modal__table">
+            <thead>
+              <tr>
+                <th scope="col">Hostname</th>
+                <th scope="col">Tenant</th>
+                <th scope="col">Current firmware</th>
+                <th scope="col">Update to</th>
+              </tr>
+            </thead>
+            <tbody id="fw-firmware-batch-tbody"></tbody>
+          </table>
+        </div>
+        <div class="fw-firmware-batch-modal__schedule">
+          <label for="fw-firmware-batch-schedule" class="fw-firmware-batch-modal__schedule-label muted">Schedule for
+            (optional)</label>
+          <div class="fw-firmware-batch-modal__schedule-row">
+            <input type="datetime-local" id="fw-firmware-batch-schedule" class="fw-firmware-batch-modal__datetime"
+              step="60" autocomplete="off" />
+            <button type="button" class="fw-firmware-batch-modal__clear-sched" id="fw-firmware-batch-schedule-clear"
+              hidden title="Clear scheduled date and time" aria-label="Clear schedule">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm5 13.59L15.59 17 12 13.41 8.41 17 7 15.59 10.59 12 7 8.41 8.41 7 12 10.59 15.59 7 17 8.41 13.41 12 17 15.59z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <p id="fw-firmware-batch-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+      </div>
+      <div class="fw-firmware-batch-modal__footer">
+        <button type="button" class="btn" id="fw-firmware-batch-cancel">Cancel</button>
+        <button type="button" class="btn btn--primary" id="fw-firmware-batch-confirm" disabled>Upgrade now</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="fw-delete-local-modal" class="fw-delete-local-modal" hidden aria-hidden="true">
+    <div class="fw-delete-local-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
+    <div class="fw-delete-local-modal__panel" role="dialog" aria-modal="true"
+      aria-labelledby="fw-delete-local-modal-title">
+      <div class="fw-delete-local-modal__header">
+        <h2 id="fw-delete-local-modal-title" class="fw-delete-local-modal__title">Remove from local database?</h2>
+        <button type="button" class="fw-delete-local-modal__close" id="fw-delete-local-modal-close"
+          aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <div class="fw-delete-local-modal__body">
+        <p class="fw-delete-local-modal__lead">This will remove the selected firewall(s) from this app&rsquo;s
+          <strong>local database only</strong>. They are <strong>not</strong> removed from Sophos Central.</p>
+        <p class="muted">If a firewall still exists in Sophos Central, it will be added back on the next sync.</p>
+        <p id="fw-delete-local-modal-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+      </div>
+      <div class="fw-delete-local-modal__footer">
+        <button type="button" class="btn btn--secondary" id="fw-delete-local-cancel">Cancel Delete</button>
+        <button type="button" class="btn btn--danger" id="fw-delete-local-proceed"
+          aria-label="Delete selected firewalls from local database">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <div id="settings-modal" class="settings-modal" hidden aria-hidden="true">
     <div class="settings-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
     <div class="settings-modal__panel" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
@@ -709,6 +1010,13 @@
             </div>
           </div>
           <nav class="settings-nav" id="settings-nav">
+            <button type="button" class="settings-nav__item" data-settings-section="general">
+              <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z" />
+              </svg>
+              <span>General</span>
+            </button>
             <button type="button" class="settings-nav__item is-active" data-settings-section="users"
               aria-current="page">
               <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -745,6 +1053,46 @@
             </button>
           </div>
           <div class="settings-modal__main-scroll">
+            <section id="settings-panel-general" class="settings-panel" data-settings-panel="general" hidden>
+              <h3 class="settings-panel__heading">General</h3>
+              <p class="settings-panel__lead muted">Firewall list badges next to the status icon use these time windows.
+                <strong>NEW</strong> requires both first seen and last state change within the new-firewall window.
+                <strong>UPD</strong> applies when the firewall is not NEW or OLD and state changed recently.
+                <strong>OLD</strong> compares each firewall&rsquo;s last sync time to others using the same API client.</p>
+              <form id="settings-general-form" class="settings-form settings-form--general">
+                <div class="settings-form__row">
+                  <label class="settings-form__label" for="settings-general-new-hours">Show NEW (hours)</label>
+                  <input type="number" name="fw_new_max_age_hours" id="settings-general-new-hours"
+                    class="settings-form__input settings-form__input--narrow" min="1" max="8760" step="1" required
+                    aria-describedby="settings-general-new-hint" />
+                  <p id="settings-general-new-hint" class="settings-form__hint muted">Default 168 (7 days). Both
+                    <code>created_at</code> and <code>state_changed_at</code> must fall within this window.</p>
+                </div>
+                <div class="settings-form__row">
+                  <label class="settings-form__label" for="settings-general-upd-hours">Show UPD (hours)</label>
+                  <input type="number" name="fw_updated_max_age_hours" id="settings-general-upd-hours"
+                    class="settings-form__input settings-form__input--narrow" min="1" max="8760" step="1" required
+                    aria-describedby="settings-general-upd-hint" />
+                  <p id="settings-general-upd-hint" class="settings-form__hint muted">Default 48. Uses
+                    <code>state_changed_at</code> when the row is not NEW or OLD.</p>
+                </div>
+                <div class="settings-form__row">
+                  <label class="settings-form__label" for="settings-general-session-idle">Session idle timeout
+                    (minutes)</label>
+                  <input type="number" name="session_idle_timeout_minutes" id="settings-general-session-idle"
+                    class="settings-form__input settings-form__input--narrow" min="0" max="525600" step="1" required
+                    aria-describedby="settings-general-session-idle-hint" />
+                  <p id="settings-general-session-idle-hint" class="settings-form__hint muted">Sign out after this
+                    many minutes without any request from the browser. Use <strong>0</strong> to disable idle logout
+                    (the signed cookie can still expire). Moving the mouse, scrolling, or typing counts as activity.
+                    Default 60.</p>
+                </div>
+                <div class="settings-form__actions">
+                  <button type="submit" class="btn btn--primary" id="settings-general-save">Save</button>
+                </div>
+                <p id="settings-general-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+              </form>
+            </section>
             <section id="settings-panel-users" class="settings-panel is-active" data-settings-panel="users">
               <h3 class="settings-panel__heading">Users</h3>
               <p class="settings-panel__lead muted">Local accounts for this application. Passwords are stored with
@@ -1089,6 +1437,46 @@
   </div>
 
   <div id="app-toast-host" class="app-toast-host" aria-live="polite" aria-relevant="additions"></div>
+
+  <div id="fw-detail-flyout-backdrop" class="flyout-backdrop flyout-backdrop--fw-detail" hidden aria-hidden="true"></div>
+  <aside id="fw-detail-flyout" class="flyout flyout--fw-detail" hidden role="dialog" aria-modal="true"
+    aria-labelledby="fw-detail-flyout-title">
+    <div class="flyout__header">
+      <h2 id="fw-detail-flyout-title" class="flyout__title">Firewall</h2>
+      <button type="button" class="flyout__close icon-btn flyout__close-btn" aria-label="Close" title="Close">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path fill="currentColor"
+            d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+        </svg>
+      </button>
+    </div>
+    <div class="flyout__body fw-detail-flyout__body">
+      <div class="fw-detail-flyout__map-wrap">
+        <div id="fw-detail-flyout-map" class="fw-map-leaflet fw-detail-flyout__map" role="img"
+          aria-label="Firewall location"></div>
+        <p id="fw-detail-flyout-map-placeholder" class="fw-detail-flyout__map-placeholder muted" hidden>No location set
+          for this firewall.</p>
+      </div>
+      <p class="fw-detail-flyout__loc-line">
+        <button type="button" class="cell-link" id="fw-detail-flyout-loc-link">Set or change location</button>
+      </p>
+      <div id="fw-detail-flyout-firmware-banner" class="fw-detail-flyout__firmware-banner" hidden role="status"
+        aria-live="polite"></div>
+      <div id="fw-detail-flyout-sync-suspend-banner" class="fw-detail-flyout__sync-suspend-banner" hidden role="status"
+        aria-live="polite"></div>
+      <div id="fw-detail-flyout-card" class="fw-detail-flyout__card"></div>
+      <div class="fw-detail-flyout__tabs" role="tablist" aria-label="Firewall details">
+        <button type="button" role="tab" class="fw-detail-flyout__tab" id="fw-detail-tab-alerts"
+          aria-selected="true" aria-controls="fw-detail-panel-alerts" tabindex="0">Alerts</button>
+        <button type="button" role="tab" class="fw-detail-flyout__tab" id="fw-detail-tab-subs"
+          aria-selected="false" aria-controls="fw-detail-panel-subs" tabindex="-1">Subscriptions</button>
+      </div>
+      <div id="fw-detail-panel-alerts" class="fw-detail-flyout__tab-panel" role="tabpanel"
+        aria-labelledby="fw-detail-tab-alerts"></div>
+      <div id="fw-detail-panel-subs" class="fw-detail-flyout__tab-panel" role="tabpanel"
+        aria-labelledby="fw-detail-tab-subs" hidden></div>
+    </div>
+  </aside>
 
   <div id="alert-flyout-backdrop" class="flyout-backdrop" hidden aria-hidden="true"></div>
   <aside id="alert-flyout" class="flyout" hidden role="dialog" aria-modal="true" aria-labelledby="alert-flyout-title">

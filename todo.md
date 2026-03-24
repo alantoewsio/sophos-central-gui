@@ -40,15 +40,17 @@
     - [x] Alert count
     - [x] view firmware updates
     - [ ] schedule updates
-    - [ ] flyout view
-    - [ ] Approve management
+    - [x] Set location
+    - [x] Set label
+    - [x] flyout view
+    - [x] Approve management
     - [ ] group/ungroup
-    - [ ] Import / Export config management
+    - [ ] Import / Export config management *FUTURE*
 - [x] Tenants tab
     - [x] Firewall count
     - [x] clickable names - filter firewall view
     - [ ] Hide tab if tenants list is empty
-- [ ] Licenses tab
+- [x] Licenses tab
     - [x] clickable flyout
         - [x] gantt chart licens expiry view
     - [x] Firewall hostname
@@ -60,7 +62,7 @@
         - [x] user role - can trigger central callbacks : schedule firmware, ack alerts
         - [ ] viewer role - can change their password and view all tabs
     - [x] self-service password change
-    - [ ] session timeouut
+    - [ ] session timeout
     - [ ] forgot password flow
         - [ ] email challenge loop
         - [ ] text challenge loop
@@ -77,7 +79,6 @@
 - [ ] Sync management
     - [x] set sync interval UI
     - [x] Implement sync action
-    - [ ] Add visual indicator to show last sync
-    - [ ] Event logging
+    - [x] Add visual indicator to show last sync
+    - [x] Event logging
     - [ ] Notifications panel
-    
