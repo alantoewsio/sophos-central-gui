@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard — Help — SFOS Central Firewall Management</title>
+  <link rel="stylesheet" href="help-doc.css" />
+</head>
+
+<body class="help-doc">
+  <header class="help-doc__masthead">
+    <div class="help-doc__masthead-inner">
+      <span class="help-doc__product">SFOS Central Firewall Management</span>
+      <span class="help-doc__sep">/</span>
+      <span class="help-doc__breadcrumb">Dashboard</span>
+    </div>
+  </header>
+  <div class="help-doc__layout">
+    <aside class="help-doc__toc" aria-label="On this page">
+      <p class="help-doc__toc-title">On this page</p>
+      <ul>
+        <li><a href="#introduction">Introduction</a></li>
+        <li><a href="#map">Firewall map</a></li>
+        <li><a href="#stats">Summary cards</a></li>
+        <li><a href="#alerts">Alerts</a></li>
+      </ul>
+    </aside>
+    <main class="help-doc__main">
+      <p class="help-doc__back"><a href="index.html">← All help topics</a></p>
+      <h1 class="help-doc__h1">Dashboard</h1>
+      <p class="help-doc__meta">Overview of synchronized Sophos Central data for your stored API credentials.</p>
+
+      <h2 class="help-doc__h2" id="introduction">Introduction</h2>
+      <p>The Dashboard is the home view after you sign in. It combines a geographic map, high-level counters, and a
+        searchable list of recent alerts pulled from your local database (updated on the sync schedule you configure in
+        Settings).</p>
+
+      <h2 class="help-doc__h2" id="map">Firewall map</h2>
+      <p>The collapsible <strong>Firewall map</strong> plots firewalls that have coordinates. Markers reflect the data
+        from your last successful sync. If a firewall has no location, open it from the <a href="page-firewalls.html">Firewalls</a>
+        list and set coordinates in the location dialog.</p>
+
+      <h2 class="help-doc__h2" id="stats">Summary cards</h2>
+      <p>Cards summarize counts such as online and offline appliances, license-related totals, and other aggregates. Many
+        cards link to a filtered view on another tab so you can drill in with one click.</p>
+
+      <h2 class="help-doc__h2" id="alerts">Alerts</h2>
+      <p>Use <strong>Filters</strong> to narrow alerts by tenant, firewall, severity, and other facets. Search matches
+        visible columns. <strong>Export</strong> downloads the current result set. <strong>Rows per load</strong> controls
+        how many rows are requested at a time as you scroll or load more.</p>
+      <p>Open a row to inspect full alert text and metadata in the <a href="flyout-alert.html">Alert details panel</a>.</p>
+
+      <div class="help-doc__resources">
+        <h2>Related topics</h2>
+        <ul>
+          <li><a href="page-firewalls.html">Firewalls</a></li>
+          <li><a href="settings-sync.html">Sync intervals</a></li>
+          <li><a href="flyout-alert.html">Alert details panel</a></li>
+        </ul>
+      </div>
+    </main>
+  </div>
+</body>
+
+</html>

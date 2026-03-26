@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Remove from local database — Help — SFOS Central Firewall Management</title>
+  <link rel="stylesheet" href="help-doc.css" />
+</head>
+
+<body class="help-doc">
+  <header class="help-doc__masthead">
+    <div class="help-doc__masthead-inner">
+      <span class="help-doc__product">SFOS Central Firewall Management</span>
+      <span class="help-doc__sep">/</span>
+      <span class="help-doc__breadcrumb">Remove from local database</span>
+    </div>
+  </header>
+  <div class="help-doc__layout">
+    <aside class="help-doc__toc" aria-label="On this page">
+      <p class="help-doc__toc-title">On this page</p>
+      <ul>
+        <li><a href="#introduction">Introduction</a></li>
+        <li><a href="#effect">What changes</a></li>
+        <li><a href="#central">Relationship to Sophos Central</a></li>
+      </ul>
+    </aside>
+    <main class="help-doc__main">
+      <p class="help-doc__back"><a href="index.html">← All help topics</a></p>
+      <h1 class="help-doc__h1">Remove from local database</h1>
+      <p class="help-doc__meta">Administrator action on selected firewall rows.</p>
+
+      <h2 class="help-doc__h2" id="introduction">Introduction</h2>
+      <p>This confirmation dialog appears when you choose to delete selected firewalls from the <em>local</em> SQLite
+        database used by SFOS Central Firewall Management.</p>
+
+      <h2 class="help-doc__h2" id="effect">What changes</h2>
+      <p>After confirmation, the rows disappear from this application’s tables until the next sync. Custom fields stored
+        only locally (such as map coordinates) are removed with the record.</p>
+
+      <h2 class="help-doc__h2" id="central">Relationship to Sophos Central</h2>
+      <p>The appliance is <strong>not</strong> deleted or unmanaged in Sophos Central. If Central still returns that
+        firewall during sync, it will be recreated locally automatically.</p>
+
+      <div class="help-doc__resources">
+        <h2>Related topics</h2>
+        <ul>
+          <li><a href="page-firewalls.html">Firewalls</a></li>
+          <li><a href="settings-sync.html">Sync behavior</a></li>
+        </ul>
+      </div>
+    </main>
+  </div>
+</body>
+
+</html>

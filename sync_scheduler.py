@@ -8,7 +8,12 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from credential_store import CREDENTIAL_SYNC_INTERVAL_SECONDS, get_secrets_db, list_credentials
+from credential_store import (
+    CREDENTIAL_INCREMENTAL_SYNC_INTERVAL_SECONDS,
+    CREDENTIAL_SYNC_INTERVAL_SECONDS,
+    get_secrets_db,
+    list_credentials,
+)
 from sync_runner import configure_sync_file_logging, run_credential_sync
 
 POLL_INTERVAL_SEC = 60
@@ -19,6 +24,13 @@ def _interval_seconds(raw: str | None) -> int | None:
         return None
     key = str(raw).strip()
     return CREDENTIAL_SYNC_INTERVAL_SECONDS.get(key)
+
+
+def _incremental_interval_seconds(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    key = str(raw).strip()
+    return CREDENTIAL_INCREMENTAL_SYNC_INTERVAL_SECONDS.get(key)
 
 
 def _parse_iso_utc(s: str | None) -> datetime | None:
@@ -82,8 +94,6 @@ def _scheduler_tick() -> None:
         if not cid:
             continue
         interval_sec = _interval_seconds(c.get("sync_interval"))
-        if interval_sec is None:
-            continue
         last_sync = c.get("last_sync")
         if isinstance(last_sync, str):
             pass
@@ -91,13 +101,44 @@ def _scheduler_tick() -> None:
             last_sync = str(last_sync)
         else:
             last_sync = None
-        if not _credential_due(last_sync_iso=last_sync, interval_sec=interval_sec, now_utc=now_utc):
+        full_due = (
+            interval_sec is not None
+            and _credential_due(
+                last_sync_iso=last_sync, interval_sec=interval_sec, now_utc=now_utc
+            )
+        )
+        incr_sec = _incremental_interval_seconds(c.get("incremental_sync_interval"))
+        li_raw = c.get("last_incremental_sync")
+        if isinstance(li_raw, str):
+            last_incr = li_raw
+        elif li_raw is not None:
+            last_incr = str(li_raw)
+        else:
+            last_incr = None
+        incr_due = (
+            incr_sec is not None
+            and _credential_due(
+                last_sync_iso=last_incr, interval_sec=incr_sec, now_utc=now_utc
+            )
+        )
+        if full_due:
+            run_incr = False
+        elif incr_due:
+            if not last_sync or not str(last_sync).strip():
+                continue
+            run_incr = True
+        else:
             continue
         try:
             from main import get_db
 
             with get_db() as central_conn:
-                run_credential_sync(cid, central_conn=central_conn, trigger="scheduler")
+                run_credential_sync(
+                    cid,
+                    central_conn=central_conn,
+                    trigger="scheduler",
+                    incremental=run_incr,
+                )
         except sqlite3.Error as e:
             configure_sync_file_logging().info(
                 "sync cred_id=%s client_id=%s success=false trigger=scheduler error=%s",

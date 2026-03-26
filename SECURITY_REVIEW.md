@@ -1,4 +1,4 @@
-# Security Review — Sophos Central GUI
+# Security Review — SFOS Central Firewall Management
 
 **Document version:** 1.1  
 **Review date:** 2026-03-24  
@@ -14,7 +14,7 @@ This document summarizes automated scans, dependency checks, and a manual read o
 | Activity | Tool / approach | Notes |
 |----------|-----------------|--------|
 | Python static analysis | Bandit 1.9.4 (`uv run bandit -r . -c pyproject.toml -ll`); **`[tool.bandit]`** skips **B608** | Low through high severity; see §2. |
-| Dependency CVE scan | pip-audit (via `uv run --with pip-audit`) | Requirements exported with `uv export --no-dev --no-editable --no-hashes` (local project name `sophos-central-gui` is not on PyPI and was skipped by the auditor). |
+| Dependency CVE scan | pip-audit (via `uv run --with pip-audit`) | Requirements exported with `uv export --no-dev --no-editable --no-hashes` (local project name `sfos-central-firewall-management` is not on PyPI and was skipped by the auditor). |
 | Manual review | Source inspection | Auth, crypto, storage, middleware, high-risk API patterns. |
 
 ---

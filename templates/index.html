@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Firewalls Managed by Sophos Central</title>
+  <title>SFOS Central Firewall Management</title>
   <link rel="icon" href="/static/img/favicon.ico" type="image/x-icon" sizes="any" />
   <link rel="stylesheet" href="/static/css/app.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -95,16 +95,21 @@
           <a href="/" class="top-bar__brand" aria-label="Home">
             <img class="top-bar__logo" src="/static/img/sophos-wordmark.png" alt="" width="140" />
           </a>
-          <span class="top-bar__app-title">Firewalls Managed by Sophos Central</span>
+          <span class="top-bar__app-title">SFOS Central Firewall Management</span>
         </div>
         <div class="top-bar__tools">
-          <button type="button" class="icon-btn" title="Notifications" aria-label="Notifications">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-              <path fill="currentColor"
-                d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 0 0 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
-            </svg>
-          </button>
-          <button type="button" class="icon-btn" title="Help" aria-label="Help">
+          <span class="top-bar__notif-wrap">
+            <button type="button" class="icon-btn" id="btn-notifications-toggle" title="Notifications"
+              aria-label="Notifications" aria-expanded="false" aria-controls="notifications-flyout">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 0 0 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
+              </svg>
+              <span id="notifications-badge" class="notifications-badge" hidden aria-hidden="true"></span>
+            </button>
+          </span>
+          <button type="button" class="icon-btn" id="btn-top-help" title="Help (opens in new tab)"
+            aria-label="Help opens documentation in a new tab">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
               <path fill="currentColor"
                 d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
@@ -221,6 +226,16 @@
             </span>
             <span class="app-nav__label">Dashboard</span>
           </button>
+          <button type="button" class="tabs__tab app-nav__item" data-tab="operations" role="tab"
+            aria-selected="false" aria-controls="panel-operations" id="tab-operations" title="Operations view">
+            <span class="app-nav__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor"
+                  d="M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z" />
+              </svg>
+            </span>
+            <span class="app-nav__label">Operations</span>
+          </button>
           <button type="button" class="tabs__tab app-nav__item" data-tab="firewalls" role="tab"
             aria-selected="false" aria-controls="panel-firewalls" id="tab-firewalls" title="Firewalls">
             <span class="app-nav__icon" aria-hidden="true">
@@ -232,11 +247,11 @@
             <span class="app-nav__label">Firewalls</span>
           </button>
           <button type="button" class="tabs__tab app-nav__item" data-tab="groups" role="tab"
-            aria-selected="false" aria-controls="panel-groups" id="tab-groups" title="Groups">
+            aria-selected="false" aria-controls="panel-groups" id="tab-groups" title="Firewall groups">
             <span class="app-nav__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="16" height="16">
                 <path fill="currentColor"
-                  d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+                  d="M22 11V3h-7v3H9V3H2v8h7V8h2v10h4v3h7v-8h-7v3h-4V8h2v3h7zM7 9H4V5h3v4zm10 12h-3v-4h3v4zm0-12h-3V5h3v4z" />
               </svg>
             </span>
             <span class="app-nav__label">Groups</span>
@@ -320,16 +335,56 @@
                           <span class="filters__facet-count" id="da-facet-count" aria-live="polite"></span>
                           <button type="button" class="filters__facet-reset link-btn" id="da-facet-reset" hidden>Reset</button>
                         </div>
+                        <div class="da-tenant-ms" id="da-tenant-ms">
+                          <button type="button" class="da-tenant-ms__trigger" id="da-tenant-ms-trigger"
+                            aria-haspopup="listbox" aria-expanded="false" aria-controls="da-tenant-ms-list"
+                            aria-label="Filter alerts by tenant">
+                            <span class="da-tenant-ms__trigger-text" id="da-tenant-ms-summary">All tenants</span>
+                            <svg class="da-tenant-ms__chev" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                              <path fill="currentColor" d="M7 10l5 5 5-5H7z" />
+                            </svg>
+                          </button>
+                          <button type="button" class="da-tenant-ms__clear" id="da-tenant-ms-clear" hidden
+                            title="Show all tenants" aria-label="Clear tenant filter">
+                            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75" />
+                              <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"
+                                d="M9 9l6 6M15 9l-6 6" />
+                            </svg>
+                          </button>
+                          <div class="da-tenant-ms__panel" id="da-tenant-ms-panel" hidden>
+                            <input type="search" class="da-tenant-ms__search" id="da-tenant-ms-search"
+                              placeholder="Search tenants…" autocomplete="off" aria-label="Search tenants" />
+                            <div class="da-tenant-ms__list" id="da-tenant-ms-list" role="listbox"
+                              aria-multiselectable="true" aria-label="Tenants"></div>
+                          </div>
+                        </div>
+                        <div class="da-raised-quick-filters" id="da-raised-quick-filters" role="group"
+                          aria-label="Quick filters by date raised">
+                          <button type="button" class="link-btn da-raised-quick-btn" data-da-raised-quick="hour">This
+                            hour</button>
+                          <span class="da-raised-quick-sep" aria-hidden="true">·</span>
+                          <button type="button" class="link-btn da-raised-quick-btn" data-da-raised-quick="today">Today</button>
+                          <span class="da-raised-quick-sep" aria-hidden="true">·</span>
+                          <button type="button" class="link-btn da-raised-quick-btn" data-da-raised-quick="week">This
+                            week</button>
+                          <span class="da-raised-quick-sep" aria-hidden="true">·</span>
+                          <button type="button" class="link-btn da-raised-quick-btn" data-da-raised-quick="month">This
+                            month</button>
+                        </div>
                       </div>
                     </div>
-                    <div class="toolbar__search-cluster">
-                      <div class="search-field">
-                        <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                          <path fill="currentColor"
-                            d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
-                        </svg>
-                        <input type="search" id="da-search" class="search-field__input" placeholder="Search"
-                          autocomplete="off" aria-label="Search alerts" />
+                    <div class="toolbar__alerts-end">
+                      <button type="button" class="btn btn--primary" id="da-ack-btn" disabled>Acknowledge</button>
+                      <div class="toolbar__search-cluster">
+                        <div class="search-field">
+                          <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                            <path fill="currentColor"
+                              d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                          </svg>
+                          <input type="search" id="da-search" class="search-field__input" placeholder="Search"
+                            autocomplete="off" aria-label="Search alerts" />
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -339,6 +394,10 @@
                 <table class="data-table" id="dashboard-alerts-table">
                   <thead>
                     <tr>
+                      <th scope="col" class="data-table__col-check th-check">
+                        <input type="checkbox" id="da-alert-select-all" class="da-alert-select-all"
+                          aria-label="Select all loaded alerts that can be acknowledged" title="Select all loaded" />
+                      </th>
                       <th scope="col">Severity</th>
                       <th scope="col">Tenant</th>
                       <th scope="col">Firewall</th>
@@ -364,6 +423,111 @@
                   <span class="table-footer__lazy-hint muted" id="da-lazy-hint" aria-live="polite"></span>
                 </div>
               </footer>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Operations (card grid, shared filters with Firewalls) -->
+    <section id="panel-operations" class="panel" role="tabpanel" data-panel="operations" hidden
+      aria-labelledby="tab-operations">
+      <div class="operations-panel">
+        <div class="split split--operations">
+          <aside class="filters filters--collapsed" aria-label="Operations filters">
+            <div id="ops-filters-drawer" class="filters__drawer" hidden>
+              <div id="ops-firewall-filters"></div>
+            </div>
+          </aside>
+          <div class="content-pane content-pane--operations">
+            <div class="operations-pane">
+              <div class="toolbar toolbar--operations">
+                <div class="toolbar__sheet">
+                  <div class="toolbar__line toolbar__line--main">
+                    <div class="toolbar__filters">
+                      <div class="filters__head">
+                        <button type="button" class="filters__toggle" aria-expanded="false"
+                          aria-controls="ops-filters-drawer" aria-label="Filters" title="Filters">
+                          <svg class="filters__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                            <path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z" />
+                          </svg>
+                          <span class="filters__title-label">Filters</span>
+                        </button>
+                        <div class="filters__head-actions" id="ops-filters-head-actions" hidden>
+                          <span class="filters__facet-count" id="ops-facet-count" aria-live="polite"></span>
+                          <button type="button" class="filters__facet-reset link-btn" id="ops-facet-reset" hidden>Reset</button>
+                        </div>
+                        <div class="da-tenant-ms" id="ops-tenant-ms">
+                          <button type="button" class="da-tenant-ms__trigger" id="ops-tenant-ms-trigger"
+                            aria-haspopup="listbox" aria-expanded="false" aria-controls="ops-tenant-ms-list"
+                            aria-label="Filter firewalls by tenant">
+                            <span class="da-tenant-ms__trigger-text" id="ops-tenant-ms-summary">All tenants</span>
+                            <svg class="da-tenant-ms__chev" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                              <path fill="currentColor" d="M7 10l5 5 5-5H7z" />
+                            </svg>
+                          </button>
+                          <button type="button" class="da-tenant-ms__clear" id="ops-tenant-ms-clear" hidden
+                            title="Show all tenants" aria-label="Clear tenant filter">
+                            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75" />
+                              <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"
+                                d="M9 9l6 6M15 9l-6 6" />
+                            </svg>
+                          </button>
+                          <div class="da-tenant-ms__panel" id="ops-tenant-ms-panel" hidden>
+                            <input type="search" class="da-tenant-ms__search" id="ops-tenant-ms-search"
+                              placeholder="Search tenants…" autocomplete="off" aria-label="Search tenants" />
+                            <div class="da-tenant-ms__list" id="ops-tenant-ms-list" role="listbox"
+                              aria-multiselectable="true" aria-label="Tenants"></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="toolbar__fw-quick-wrap">
+                      <span class="toolbar__fw-quick-label muted">View</span>
+                      <div class="toolbar__fw-quick" id="ops-toolbar-quick" role="group" aria-label="Quick filter firewalls">
+                        <button type="button" class="link-btn toolbar__fw-quick-btn" data-ops-quick="online">Online</button>
+                        <button type="button" class="link-btn toolbar__fw-quick-btn" data-ops-quick="offline">Offline</button>
+                        <button type="button" class="link-btn toolbar__fw-quick-btn" data-ops-quick="suspended">Suspended</button>
+                        <button type="button" class="link-btn toolbar__fw-quick-btn" data-ops-quick="pending"
+                          title="Firewalls waiting for management approval">Pending Approval</button>
+                        <button type="button" class="link-btn toolbar__fw-quick-btn" data-ops-quick="firmware_updates"
+                          title="Firewalls with at least one available firmware upgrade">Firmware Updates</button>
+                      </div>
+                    </div>
+                    <div class="toolbar__fw-toolbar-end">
+                      <div class="toolbar__search-cluster">
+                        <div class="search-field">
+                          <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                            <path fill="currentColor"
+                              d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                          </svg>
+                          <input type="search" id="ops-search" class="search-field__input" placeholder="Search"
+                            autocomplete="off" aria-label="Search operations grid" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ops-sort-bar">
+                <span class="ops-sort-bar__label muted">Sort by</span>
+                <label class="visually-hidden" for="ops-sort">Sort firewalls</label>
+                <select id="ops-sort" class="ops-sort-bar__select" aria-label="Sort firewalls">
+                  <option value="state_online_first">State · Online first</option>
+                  <option value="state_offline_first">State · Offline first</option>
+                  <option value="hostname">Host name</option>
+                  <option value="tenant">Tenant</option>
+                  <option value="last_sync">Last sync</option>
+                  <option value="state_changed">Last state change</option>
+                </select>
+              </div>
+              <p class="operations-refresh muted" id="ops-refresh-status" aria-live="polite"></p>
+              <div id="ops-card-grid" class="ops-card-grid" aria-live="polite"></div>
+              <div class="ops-change-strip" id="ops-change-strip" aria-live="polite" hidden>
+                <div class="ops-change-strip__cell ops-change-strip__cell--pos" id="ops-change-strip-pos" hidden></div>
+                <div class="ops-change-strip__cell ops-change-strip__cell--neg" id="ops-change-strip-neg" hidden></div>
+              </div>
             </div>
           </div>
         </div>
@@ -413,6 +577,30 @@
                     <div class="filters__head-actions" id="fw-filters-head-actions" hidden>
                       <span class="filters__facet-count" id="fw-facet-count" aria-live="polite"></span>
                       <button type="button" class="filters__facet-reset link-btn" id="fw-facet-reset" hidden>Reset</button>
+                    </div>
+                    <div class="da-tenant-ms" id="fw-tenant-ms">
+                      <button type="button" class="da-tenant-ms__trigger" id="fw-tenant-ms-trigger"
+                        aria-haspopup="listbox" aria-expanded="false" aria-controls="fw-tenant-ms-list"
+                        aria-label="Filter firewalls by tenant">
+                        <span class="da-tenant-ms__trigger-text" id="fw-tenant-ms-summary">All tenants</span>
+                        <svg class="da-tenant-ms__chev" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                          <path fill="currentColor" d="M7 10l5 5 5-5H7z" />
+                        </svg>
+                      </button>
+                      <button type="button" class="da-tenant-ms__clear" id="fw-tenant-ms-clear" hidden
+                        title="Show all tenants" aria-label="Clear tenant filter">
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75" />
+                          <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"
+                            d="M9 9l6 6M15 9l-6 6" />
+                        </svg>
+                      </button>
+                      <div class="da-tenant-ms__panel" id="fw-tenant-ms-panel" hidden>
+                        <input type="search" class="da-tenant-ms__search" id="fw-tenant-ms-search"
+                          placeholder="Search tenants…" autocomplete="off" aria-label="Search tenants" />
+                        <div class="da-tenant-ms__list" id="fw-tenant-ms-list" role="listbox"
+                          aria-multiselectable="true" aria-label="Tenants"></div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -526,10 +714,35 @@
                       <span class="filters__facet-count" id="gr-facet-count" aria-live="polite"></span>
                       <button type="button" class="filters__facet-reset link-btn" id="gr-facet-reset" hidden>Reset</button>
                     </div>
+                    <div class="da-tenant-ms" id="gr-tenant-ms">
+                      <button type="button" class="da-tenant-ms__trigger" id="gr-tenant-ms-trigger"
+                        aria-haspopup="listbox" aria-expanded="false" aria-controls="gr-tenant-ms-list"
+                        aria-label="Filter groups by tenant">
+                        <span class="da-tenant-ms__trigger-text" id="gr-tenant-ms-summary">All tenants</span>
+                        <svg class="da-tenant-ms__chev" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                          <path fill="currentColor" d="M7 10l5 5 5-5H7z" />
+                        </svg>
+                      </button>
+                      <button type="button" class="da-tenant-ms__clear" id="gr-tenant-ms-clear" hidden
+                        title="Show all tenants" aria-label="Clear tenant filter">
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75" />
+                          <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"
+                            d="M9 9l6 6M15 9l-6 6" />
+                        </svg>
+                      </button>
+                      <div class="da-tenant-ms__panel" id="gr-tenant-ms-panel" hidden>
+                        <input type="search" class="da-tenant-ms__search" id="gr-tenant-ms-search"
+                          placeholder="Search tenants…" autocomplete="off" aria-label="Search tenants" />
+                        <div class="da-tenant-ms__list" id="gr-tenant-ms-list" role="listbox"
+                          aria-multiselectable="true" aria-label="Tenants"></div>
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div class="toolbar__actions"></div>
-                <div class="toolbar__search-cluster">
+                <div class="toolbar__gr-toolbar-end">
+                  <button type="button" class="btn btn--primary" id="gr-create-group-btn" hidden>Create New Group</button>
+                  <div class="toolbar__search-cluster">
                   <div class="search-field">
                     <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                       <path fill="currentColor"
@@ -545,6 +758,7 @@
                         d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
                     </svg>
                   </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -694,6 +908,30 @@
                       <span class="filters__facet-count" id="lc-facet-count" aria-live="polite"></span>
                       <button type="button" class="filters__facet-reset link-btn" id="lc-facet-reset" hidden>Reset</button>
                     </div>
+                    <div class="da-tenant-ms" id="lc-tenant-ms">
+                      <button type="button" class="da-tenant-ms__trigger" id="lc-tenant-ms-trigger"
+                        aria-haspopup="listbox" aria-expanded="false" aria-controls="lc-tenant-ms-list"
+                        aria-label="Filter licenses by tenant">
+                        <span class="da-tenant-ms__trigger-text" id="lc-tenant-ms-summary">All tenants</span>
+                        <svg class="da-tenant-ms__chev" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                          <path fill="currentColor" d="M7 10l5 5 5-5H7z" />
+                        </svg>
+                      </button>
+                      <button type="button" class="da-tenant-ms__clear" id="lc-tenant-ms-clear" hidden
+                        title="Show all tenants" aria-label="Clear tenant filter">
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75" />
+                          <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"
+                            d="M9 9l6 6M15 9l-6 6" />
+                        </svg>
+                      </button>
+                      <div class="da-tenant-ms__panel" id="lc-tenant-ms-panel" hidden>
+                        <input type="search" class="da-tenant-ms__search" id="lc-tenant-ms-search"
+                          placeholder="Search tenants…" autocomplete="off" aria-label="Search tenants" />
+                        <div class="da-tenant-ms__list" id="lc-tenant-ms-list" role="listbox"
+                          aria-multiselectable="true" aria-label="Tenants"></div>
+                      </div>
+                    </div>
                   </div>
                 </div>
                 <div class="toolbar__actions"></div>
@@ -760,7 +998,7 @@
         <span id="app-sync-status-spinner" class="app-sync-status-bar__spinner" hidden aria-hidden="true"
           aria-label="Sync in progress"></span>
         <button type="button" id="app-sync-bar-sync-btn" class="app-sync-status-bar__sync-btn"
-          title="Sync all credentials now" aria-label="Sync all credentials now" hidden>
+          title="Full sync all credentials now" aria-label="Full sync all credentials now" hidden>
           <svg class="app-sync-status-bar__sync-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
             <path fill="currentColor"
               d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.96 7.96 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.96 7.96 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z" />
@@ -770,12 +1008,12 @@
       </div>
       <div class="app-sync-status-bar__right">
         <span class="app-sync-status-bar__pair">
-          <span class="app-sync-status-bar__k">Last sync</span>
+          <span class="app-sync-status-bar__k">Last data update</span>
           <span id="app-sync-status-value" class="app-sync-status-bar__value">—</span>
         </span>
         <span class="app-sync-status-bar__sep muted" aria-hidden="true">·</span>
         <span class="app-sync-status-bar__pair">
-          <span class="app-sync-status-bar__k">Interval</span>
+          <span class="app-sync-status-bar__k">Schedules</span>
           <span id="app-sync-interval-value" class="app-sync-status-bar__value">—</span>
         </span>
         <span id="app-sync-cred-counts" class="app-sync-status-bar__cred-counts muted" aria-live="polite">—</span>
@@ -802,6 +1040,110 @@
       <input type="search" id="fw-cols-filter" class="fw-cols-modal__filter" placeholder="Search columns"
         autocomplete="off" aria-label="Filter column list" />
       <ul id="fw-cols-list" class="fw-cols-modal__list"></ul>
+    </div>
+  </div>
+
+  <div id="gr-create-group-modal" class="gr-create-group-modal" hidden aria-hidden="true">
+    <div class="gr-create-group-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
+    <div class="gr-create-group-modal__panel" role="dialog" aria-modal="true"
+      aria-labelledby="gr-create-group-modal-title">
+      <div class="gr-create-group-modal__header">
+        <h2 id="gr-create-group-modal-title" class="gr-create-group-modal__title">Create firewall group</h2>
+        <button type="button" class="gr-create-group-modal__close" id="gr-create-group-modal-close"
+          aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <div class="gr-create-group-modal__body">
+        <div class="gr-create-group-modal__field">
+          <label class="gr-create-group-modal__label" for="gr-create-tenant">Tenant</label>
+          <select id="gr-create-tenant" class="gr-create-group-modal__select" aria-required="true">
+            <option value="">Select tenant…</option>
+          </select>
+        </div>
+        <p id="gr-create-group-modal-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+        <div class="gr-create-group-modal__top-row">
+          <div id="gr-create-group-main-lock" class="gr-create-group-modal__main-lock gr-create-group-modal__main-lock--inactive">
+            <div class="gr-create-group-modal__field gr-create-group-modal__field--grow">
+              <label class="gr-create-group-modal__label" for="gr-create-group-name"><span class="gr-create-group-modal__req"
+                  aria-hidden="true">*</span> Group Name</label>
+              <input type="text" id="gr-create-group-name" class="gr-create-group-modal__input"
+                placeholder="Group Name" maxlength="256" autocomplete="off" disabled />
+            </div>
+            <div class="gr-create-group-modal__top-actions">
+              <button type="button" class="btn btn--primary" id="gr-create-group-submit" disabled>Create Group</button>
+            </div>
+          </div>
+          <button type="button" class="btn btn--secondary gr-create-group-modal__cancel-btn" id="gr-create-group-cancel">Cancel</button>
+        </div>
+        <fieldset id="gr-create-group-fields" class="gr-create-group-modal__fieldset" disabled>
+          <p class="muted gr-create-group-modal__hint">Select an initial configuration for your group. You can customize
+            it later.</p>
+          <div class="gr-create-group-modal__radios" role="radiogroup" aria-label="Initial configuration">
+            <label class="gr-create-group-modal__radio-label">
+              <input type="radio" name="gr-create-config-mode" id="gr-create-config-default" value="default" checked />
+              <span>Use Sophos default</span>
+            </label>
+            <label class="gr-create-group-modal__radio-label">
+              <input type="radio" name="gr-create-config-mode" id="gr-create-config-import" value="import" />
+              <span>Import configuration from</span>
+            </label>
+          </div>
+          <div id="gr-create-import-wrap" class="gr-create-group-modal__import-wrap" hidden>
+            <label class="visually-hidden" id="gr-create-import-list-label">Firewall to import configuration from</label>
+            <ul id="gr-create-import-list" class="gr-create-group-modal__import-list" role="listbox"
+              aria-labelledby="gr-create-import-list-label" tabindex="0"></ul>
+          </div>
+          <hr class="gr-create-group-modal__rule" />
+          <div class="gr-create-group-modal__fw-head">
+            <span class="gr-create-group-modal__fw-title">Select firewalls for this group</span>
+            <span class="gr-create-group-modal__fw-info muted" role="img"
+              title="Eligibility is based on Central management status and existing group membership in this app."
+              aria-label="Information">(i)</span>
+          </div>
+          <p class="muted gr-create-group-modal__fw-sub">Only Sophos Central managed firewalls that are approved and not
+            already listed in a synced group membership can be added.</p>
+          <div class="gr-create-group-modal__dual">
+            <div class="gr-create-group-modal__list-col">
+              <div class="search-field gr-create-group-modal__list-search">
+                <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="currentColor"
+                    d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                </svg>
+                <input type="search" id="gr-create-avail-search" class="search-field__input" placeholder="Search"
+                  autocomplete="off" aria-label="Search available firewalls" />
+              </div>
+              <ul id="gr-create-avail-list" class="gr-create-group-modal__fw-list" role="listbox"
+                aria-label="Available firewalls"></ul>
+            </div>
+            <div class="gr-create-group-modal__transfer" role="group" aria-label="Move firewalls">
+              <button type="button" class="gr-create-group-modal__xfer-btn" id="gr-create-xfer-one-right"
+                title="Add selected" aria-label="Add selected">&gt;</button>
+              <button type="button" class="gr-create-group-modal__xfer-btn gr-create-group-modal__xfer-btn--primary"
+                id="gr-create-xfer-all-right" title="Add all" aria-label="Add all">&gt;&gt;</button>
+              <button type="button" class="gr-create-group-modal__xfer-btn" id="gr-create-xfer-one-left"
+                title="Remove selected" aria-label="Remove selected">&lt;</button>
+              <button type="button" class="gr-create-group-modal__xfer-btn" id="gr-create-xfer-all-left"
+                title="Remove all" aria-label="Remove all">&lt;&lt;</button>
+            </div>
+            <div class="gr-create-group-modal__list-col">
+              <div class="search-field gr-create-group-modal__list-search">
+                <svg class="search-field__icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="currentColor"
+                    d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                </svg>
+                <input type="search" id="gr-create-assigned-search" class="search-field__input" placeholder="Search"
+                  autocomplete="off" aria-label="Search assigned firewalls" />
+              </div>
+              <ul id="gr-create-assigned-list" class="gr-create-group-modal__fw-list" role="listbox"
+                aria-label="Assigned firewalls"></ul>
+            </div>
+          </div>
+        </fieldset>
+      </div>
     </div>
   </div>
 
@@ -1021,6 +1363,7 @@
                 autocomplete="off" aria-label="Filter settings sections" />
             </div>
           </div>
+          <div class="settings-sidebar-stack">
           <nav class="settings-nav" id="settings-nav">
             <button type="button" class="settings-nav__item" data-settings-section="general">
               <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -1053,6 +1396,17 @@
               <span>Sync</span>
             </button>
           </nav>
+          <div class="settings-modal__sidebar-footer">
+            <button type="button" class="settings-nav__item settings-nav__item--footer" id="settings-nav-about"
+              data-settings-section="about">
+              <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />
+              </svg>
+              <span>About</span>
+            </button>
+          </div>
+          </div>
         </aside>
         <div class="settings-modal__main">
           <div class="settings-modal__main-toolbar">
@@ -1185,8 +1539,10 @@
             </section>
             <section id="settings-panel-sync" class="settings-panel" data-settings-panel="sync" hidden>
               <h3 class="settings-panel__heading">Sync</h3>
-              <p class="settings-panel__lead muted">Set how often each credential should sync. The <strong>sync</strong>
-                icon re-authenticates with Central and refreshes stored profile metadata.</p>
+              <p class="settings-panel__lead muted">Set full and incremental sync intervals per credential. Full sync
+                pulls the complete Central snapshot; incremental sync updates firewalls and alerts more often. The
+                <strong>sync</strong> icon runs a full sync, re-authenticates with Central, and refreshes stored profile
+                metadata.</p>
               <div class="settings-cred-table-wrap table-wrap">
                 <div class="table-scroll">
                   <table class="data-table data-table--dense settings-cred-table settings-sync-table"
@@ -1194,16 +1550,43 @@
                     <colgroup>
                       <col class="settings-sync-col-name" />
                       <col class="settings-sync-col-interval" />
+                      <col class="settings-sync-col-incr" />
                       <col class="settings-sync-col-last" />
-                      <col class="settings-sync-col-next" />
+                      <col class="settings-sync-col-last-incr" />
                       <col class="settings-sync-col-actions" />
                     </colgroup>
                     <thead>
                       <tr>
-                        <th scope="col">Credential</th>
-                        <th scope="col">Sync interval</th>
-                        <th scope="col">Last sync</th>
-                        <th scope="col">Next sync</th>
+                        <th scope="col" title="Stored Central API credential">
+                          <div class="settings-sync-th-stack">
+                            <span class="settings-sync-th-stack__line">Credential</span>
+                            <span class="settings-sync-th-stack__line settings-sync-th-stack__line--sub">name</span>
+                          </div>
+                        </th>
+                        <th scope="col" title="Full sync: interval and next scheduled run">
+                          <div class="settings-sync-th-stack">
+                            <span class="settings-sync-th-stack__line">Full sync</span>
+                            <span class="settings-sync-th-stack__line settings-sync-th-stack__line--sub">interval</span>
+                          </div>
+                        </th>
+                        <th scope="col" title="Incremental sync: interval and next scheduled run">
+                          <div class="settings-sync-th-stack">
+                            <span class="settings-sync-th-stack__line">Incremental</span>
+                            <span class="settings-sync-th-stack__line settings-sync-th-stack__line--sub">interval</span>
+                          </div>
+                        </th>
+                        <th scope="col" title="Last successful full sync">
+                          <div class="settings-sync-th-stack">
+                            <span class="settings-sync-th-stack__line">Last</span>
+                            <span class="settings-sync-th-stack__line settings-sync-th-stack__line--sub">full</span>
+                          </div>
+                        </th>
+                        <th scope="col" title="Last successful incremental sync">
+                          <div class="settings-sync-th-stack">
+                            <span class="settings-sync-th-stack__line">Last</span>
+                            <span class="settings-sync-th-stack__line settings-sync-th-stack__line--sub">incr.</span>
+                          </div>
+                        </th>
                         <th scope="col" class="settings-cred-actions-col">Actions</th>
                       </tr>
                     </thead>
@@ -1211,6 +1594,35 @@
                   </table>
                 </div>
               </div>
+            </section>
+            <section id="settings-panel-about" class="settings-panel" data-settings-panel="about" hidden>
+              <h3 class="settings-panel__heading">About</h3>
+              <dl class="settings-about">
+                <div class="settings-about__row">
+                  <dt class="settings-about__term">Application</dt>
+                  <dd class="settings-about__def">{{ app_about.app_name }}</dd>
+                </div>
+                {% if app_about.project_name %}
+                <div class="settings-about__row">
+                  <dt class="settings-about__term">Project</dt>
+                  <dd class="settings-about__def"><code class="settings-about__code">{{ app_about.project_name }}</code></dd>
+                </div>
+                {% endif %}
+                {% if app_about.description %}
+                <div class="settings-about__row settings-about__row--description">
+                  <dt class="settings-about__term">Description</dt>
+                  <dd class="settings-about__def settings-about__def--description">{{ app_about.description }}</dd>
+                </div>
+                {% endif %}
+                <div class="settings-about__row">
+                  <dt class="settings-about__term">Version</dt>
+                  <dd class="settings-about__def">{{ app_about.app_version }}</dd>
+                </div>
+                <div class="settings-about__row">
+                  <dt class="settings-about__term">License</dt>
+                  <dd class="settings-about__def">{{ app_about.license }}</dd>
+                </div>
+              </dl>
             </section>
           </div>
         </div>
@@ -1448,7 +1860,25 @@
     </div>
   </div>
 
-  <div id="app-toast-host" class="app-toast-host" aria-live="polite" aria-relevant="additions"></div>
+  <div id="notifications-flyout-backdrop" class="notifications-flyout-backdrop" aria-hidden="true"></div>
+  <aside id="notifications-flyout" class="notifications-flyout" role="complementary" aria-label="Notifications"
+    aria-hidden="true">
+    <div class="notifications-flyout__header">
+      <h2 class="notifications-flyout__title">Notifications</h2>
+      <button type="button" class="icon-btn notifications-flyout__close" id="btn-notifications-close"
+        aria-label="Close notifications panel" title="Close">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path fill="currentColor"
+            d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+        </svg>
+      </button>
+    </div>
+    <div class="notifications-flyout__body">
+      <p id="notifications-flyout-empty" class="notifications-flyout__empty muted">No notifications yet.</p>
+      <div id="notifications-flyout-list" class="notifications-flyout__list" role="list" aria-live="polite"
+        aria-relevant="additions removals"></div>
+    </div>
+  </aside>
 
   <div id="fw-detail-flyout-backdrop" class="flyout-backdrop flyout-backdrop--fw-detail" hidden aria-hidden="true"></div>
   <aside id="fw-detail-flyout" class="flyout flyout--fw-detail" hidden role="dialog" aria-modal="true"

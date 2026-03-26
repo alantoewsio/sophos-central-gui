@@ -32,9 +32,9 @@ Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: $DEB_ARCH
-Maintainer: Sophos Central GUI <local@localhost>
-Description: Web UI for Sophos Central (bundled runtime)
- Bundled CPython and dependencies; does not use the system Python install.
+Maintainer: SFOS Central Firewall Management <local@localhost>
+Description: Showcase UI for Sophos Central APIs — Central-managed firewalls (bundled runtime)
+ Uses https://developer.sophos.com APIs; bundled CPython and dependencies (no system Python).
 EOF
 
 mkdir -p "$ROOT/dist/installers"

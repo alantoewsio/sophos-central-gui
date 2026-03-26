@@ -1,6 +1,8 @@
-# Sophos Central GUI
+# SFOS Central Firewall Management
 
-Web-based UI to view Sophos Central firewalls discovered via the Central API.
+**SFOS Central Firewall Management** is a sample web application that demonstrates how to use the [Sophos Central APIs](https://developer.sophos.com) to work with firewalls enrolled in Sophos Central. It is intended as a showcase: dashboards, inventory, sync, and firewall operations are driven through Central’s HTTP APIs (for example via the bundled `sfos-central-sdk` / Central client), not by logging into the Central admin console for day-to-day tasks.
+
+The UI reads and updates a local SQLite cache (`sophos_central.db`) populated by those API calls.
 
 ## Prerequisites
 

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Create firewall group — Help — SFOS Central Firewall Management</title>
+  <link rel="stylesheet" href="help-doc.css" />
+</head>
+
+<body class="help-doc">
+  <header class="help-doc__masthead">
+    <div class="help-doc__masthead-inner">
+      <span class="help-doc__product">SFOS Central Firewall Management</span>
+      <span class="help-doc__sep">/</span>
+      <span class="help-doc__breadcrumb">Create firewall group</span>
+    </div>
+  </header>
+  <div class="help-doc__layout">
+    <aside class="help-doc__toc" aria-label="On this page">
+      <p class="help-doc__toc-title">On this page</p>
+      <ul>
+        <li><a href="#introduction">Introduction</a></li>
+        <li><a href="#tenant-name">Tenant and name</a></li>
+        <li><a href="#config">Initial configuration</a></li>
+        <li><a href="#members">Members</a></li>
+      </ul>
+    </aside>
+    <main class="help-doc__main">
+      <p class="help-doc__back"><a href="index.html">← All help topics</a></p>
+      <h1 class="help-doc__h1">Create firewall group</h1>
+      <p class="help-doc__meta">Wizard for registering a new group in Sophos Central from this portal.</p>
+
+      <h2 class="help-doc__h2" id="introduction">Introduction</h2>
+      <p>This modal collects everything Central needs to create a firewall group: owning tenant, display name, optional
+        configuration seed, and member appliances.</p>
+
+      <h2 class="help-doc__h2" id="tenant-name">Tenant and name</h2>
+      <p>Select the tenant that will own the group, then enter a unique name. The form stays locked until a tenant is
+        chosen so the API receives a valid scope.</p>
+
+      <h2 class="help-doc__h2" id="config">Initial configuration</h2>
+      <p>You can start from a blank template or import baseline settings from an existing managed firewall. When import is
+        selected, pick a source appliance from the list—only approved, eligible firewalls appear.</p>
+
+      <h2 class="help-doc__h2" id="members">Members</h2>
+      <p>Use the dual lists to move firewalls into the group. Search narrows each side. Transfer buttons add or remove
+        members in bulk. After submission, the new group appears following the next sync (or immediately when the API
+        confirms creation).</p>
+
+      <div class="help-doc__resources">
+        <h2>Related topics</h2>
+        <ul>
+          <li><a href="page-groups.html">Firewall groups</a></li>
+          <li><a href="page-firewalls.html">Firewalls</a></li>
+        </ul>
+      </div>
+    </main>
+  </div>
+</body>
+
+</html>

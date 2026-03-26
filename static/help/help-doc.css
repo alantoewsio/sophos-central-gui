@@ -1,0 +1,238 @@
+/* Help documentation — layout inspired by product admin help, standalone from app shell */
+:root {
+  --help-bg: #f5f7fa;
+  --help-surface: #ffffff;
+  --help-border: #d4dbe5;
+  --help-text: #1a1d21;
+  --help-muted: #5c6570;
+  --help-accent: #0d5c91;
+  --help-accent-hover: #094a75;
+  --help-masthead: #0d5c91;
+  --help-masthead-text: #ffffff;
+  --help-link: #0d5c91;
+  --help-radius: 4px;
+  --help-max: 56rem;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+}
+
+body.help-doc {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--help-text);
+  background: var(--help-bg);
+  line-height: 1.55;
+}
+
+.help-doc__masthead {
+  background: var(--help-masthead);
+  color: var(--help-masthead-text);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+
+.help-doc__masthead-inner {
+  max-width: var(--help-max);
+  margin: 0 auto;
+  padding: 0.65rem 1.25rem;
+  font-size: 0.875rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.help-doc__product {
+  font-weight: 600;
+}
+
+.help-doc__sep {
+  opacity: 0.75;
+}
+
+.help-doc__breadcrumb {
+  opacity: 0.95;
+}
+
+.help-doc__layout {
+  max-width: var(--help-max);
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+  display: grid;
+  gap: 1.75rem;
+}
+
+@media (min-width: 52rem) {
+  .help-doc__layout {
+    grid-template-columns: 13rem 1fr;
+    align-items: start;
+  }
+}
+
+.help-doc__toc {
+  position: sticky;
+  top: 1rem;
+  padding: 1rem 1rem 1.1rem;
+  background: var(--help-surface);
+  border: 1px solid var(--help-border);
+  border-radius: var(--help-radius);
+  font-size: 0.875rem;
+}
+
+.help-doc__toc-title {
+  margin: 0 0 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--help-muted);
+}
+
+.help-doc__toc ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.help-doc__toc li {
+  margin: 0.35rem 0;
+}
+
+.help-doc__toc a {
+  color: var(--help-link);
+  text-decoration: none;
+}
+
+.help-doc__toc a:hover,
+.help-doc__toc a:focus-visible {
+  text-decoration: underline;
+}
+
+.help-doc__main {
+  background: var(--help-surface);
+  border: 1px solid var(--help-border);
+  border-radius: var(--help-radius);
+  padding: 1.75rem 1.5rem 2.25rem;
+  max-width: 100%;
+}
+
+.help-doc__back {
+  margin: 0 0 1rem;
+  font-size: 0.875rem;
+}
+
+.help-doc__back a {
+  color: var(--help-link);
+  text-decoration: none;
+}
+
+.help-doc__back a:hover,
+.help-doc__back a:focus-visible {
+  text-decoration: underline;
+}
+
+.help-doc__h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--help-text);
+}
+
+.help-doc__meta {
+  margin: 0 0 1.5rem;
+  font-size: 0.8125rem;
+  color: var(--help-muted);
+}
+
+.help-doc__h2 {
+  margin: 1.75rem 0 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--help-border);
+  scroll-margin-top: 1rem;
+}
+
+.help-doc__h2:first-of-type,
+.help-doc__main > .help-doc__h2:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.help-doc__h3 {
+  margin: 1.25rem 0 0.4rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.help-doc__main p {
+  margin: 0 0 0.85rem;
+}
+
+.help-doc__main ul,
+.help-doc__main ol {
+  margin: 0 0 0.85rem;
+  padding-left: 1.35rem;
+}
+
+.help-doc__main li {
+  margin: 0.35rem 0;
+}
+
+.help-doc__note {
+  margin: 1rem 0;
+  padding: 0.85rem 1rem;
+  background: #f0f6fb;
+  border-left: 4px solid var(--help-accent);
+  border-radius: 0 var(--help-radius) var(--help-radius) 0;
+  font-size: 0.9375rem;
+}
+
+.help-doc__resources {
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--help-border);
+}
+
+.help-doc__resources h2 {
+  margin: 0 0 0.65rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.help-doc__resources ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.help-doc a {
+  color: var(--help-link);
+}
+
+.help-doc a:hover,
+.help-doc a:focus-visible {
+  color: var(--help-accent-hover);
+}
+
+.help-doc code {
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 0.88em;
+  background: #eef1f5;
+  padding: 0.12em 0.35em;
+  border-radius: 3px;
+}
+
+.help-doc strong {
+  font-weight: 600;
+}

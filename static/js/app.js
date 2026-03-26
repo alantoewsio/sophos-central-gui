@@ -1,6 +1,7 @@
 (() => {
   const TITLES = {
     dashboard: "Dashboard",
+    operations: "Operations View",
     firewalls: "Central Firewalls",
     groups: "Central Groups",
     tenants: "Central Tenants",
@@ -108,7 +109,11 @@
     return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
   }
 
-  function formatSyncLastRelative(iso) {
+  /**
+   * @param {string|number|Date} iso
+   * @param {boolean} [extendedMonthsYears] When true, ages ≥30 days use months; ≥365 days use years (groups Updated at).
+   */
+  function formatSyncLastRelative(iso, extendedMonthsYears) {
     if (!iso) return "—";
     const d = new Date(iso);
     const t = d.getTime();
@@ -117,14 +122,25 @@
     if (ageSec < 60) return "Just now";
     if (ageSec < 3600) {
       const m = Math.floor(ageSec / 60);
-      return `${m} minute${m === 1 ? "" : "s"} ago`;
+      return m === 1 ? "1 min ago" : `${m} mins ago`;
     }
     if (ageSec < 86400) {
       const h = Math.floor(ageSec / 3600);
-      return `${h} hour${h === 1 ? "" : "s"} ago`;
+      return h === 1 ? "1 hr ago" : `${h} hrs ago`;
     }
     const days = Math.floor(ageSec / 86400);
-    return `${days} day${days === 1 ? "" : "s"} ago`;
+    if (!extendedMonthsYears) {
+      return `${days} day${days === 1 ? "" : "s"} ago`;
+    }
+    if (days < 30) {
+      return `${days} day${days === 1 ? "" : "s"} ago`;
+    }
+    if (days < 365) {
+      const months = Math.max(1, Math.floor(days / 30));
+      return `${months} month${months === 1 ? "" : "s"} ago`;
+    }
+    const years = Math.max(1, Math.floor(days / 365));
+    return `${years} year${years === 1 ? "" : "s"} ago`;
   }
 
   const CRED_ID_TYPE_BAR_ORDER = ["tenant", "partner", "organization", "unknown"];
@@ -166,7 +182,12 @@
   }
 
   /** From /api/sync/status when the browser is not driving progress (e.g. scheduler). */
-  let lastServerSyncActivity = { busy: false, credential_name: null, credential_id: null };
+  let lastServerSyncActivity = {
+    busy: false,
+    credential_name: null,
+    credential_id: null,
+    sync_kind: null,
+  };
   /** { name: string, current: number, total: number } while this tab runs a sync (sync-all or one cred). */
   let appSyncLocalProgress = null;
 
@@ -213,12 +234,16 @@
       const { name, current, total } = appSyncLocalProgress;
       const label = name != null && String(name).trim() !== "" ? String(name).trim() : "Credential";
       const counter = total > 1 ? ` (${current} of ${total})` : "";
-      el.textContent = `Syncing ${label}${counter}`;
+      const kind = appSyncLocalProgress.syncKind === "incremental" ? "incremental" : "full";
+      const kindSuffix = kind === "incremental" ? " (incremental)" : " (full)";
+      el.textContent = `Syncing ${label}${kindSuffix}${counter}`;
       el.hidden = false;
       return;
     }
     if (lastServerSyncActivity.busy && lastServerSyncActivity.credential_name) {
-      el.textContent = `Syncing ${lastServerSyncActivity.credential_name}`;
+      const sk = lastServerSyncActivity.sync_kind;
+      const suffix = sk === "incremental" ? " (incremental)" : sk === "full" ? " (full)" : "";
+      el.textContent = `Syncing ${lastServerSyncActivity.credential_name}${suffix}`;
       el.hidden = false;
       return;
     }
@@ -272,7 +297,12 @@
         el.removeAttribute("title");
         updateAppSyncCredCountsFromPayload(null);
         updateAppSyncIntervalFromPayload(null);
-        lastServerSyncActivity = { busy: false, credential_name: null, credential_id: null };
+        lastServerSyncActivity = {
+          busy: false,
+          credential_name: null,
+          credential_id: null,
+          sync_kind: null,
+        };
         applyAppSyncBarBusyUi();
         return;
       }
@@ -288,6 +318,10 @@
         credential_id:
           data?.sync_credential_id != null && String(data.sync_credential_id).trim() !== ""
             ? String(data.sync_credential_id).trim()
+            : null,
+        sync_kind:
+          data?.sync_kind != null && String(data.sync_kind).trim() !== ""
+            ? String(data.sync_kind).trim()
             : null,
       };
       applyAppSyncBarBusyUi();
@@ -310,7 +344,12 @@
       el.removeAttribute("title");
       updateAppSyncCredCountsFromPayload(null);
       updateAppSyncIntervalFromPayload(null);
-      lastServerSyncActivity = { busy: false, credential_name: null, credential_id: null };
+      lastServerSyncActivity = {
+        busy: false,
+        credential_name: null,
+        credential_id: null,
+        sync_kind: null,
+      };
       applyAppSyncBarBusyUi();
     }
   }
@@ -342,7 +381,12 @@
     }
     lastKnownSuccessfulDataSync = null;
     syncStatusSampleCount = 0;
-    lastServerSyncActivity = { busy: false, credential_name: null, credential_id: null };
+    lastServerSyncActivity = {
+      busy: false,
+      credential_name: null,
+      credential_id: null,
+      sync_kind: null,
+    };
     appSyncLocalProgress = null;
     setAppSyncBarBusy(false);
     const el = document.getElementById("app-sync-status-value");
@@ -367,6 +411,25 @@
     if (sev.includes("high") || sev.includes("critical")) cls = "sev-high";
     else if (sev.includes("medium")) cls = "sev-medium";
     return cls;
+  }
+
+  function severityTier(severity) {
+    const sev = (severity || "").toLowerCase();
+    if (sev.includes("high") || sev.includes("critical")) return "high";
+    if (sev.includes("medium")) return "medium";
+    return "low";
+  }
+
+  /** Inline SVG for dashboard alert severity (table + facet labels). */
+  function severityIconSvgHtml(severity) {
+    const tier = severityTier(severity);
+    if (tier === "high") {
+      return `<svg class="alert-sev-icon alert-sev-icon--high" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>`;
+    }
+    if (tier === "medium") {
+      return `<svg class="alert-sev-icon alert-sev-icon--medium" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2V9h2v6z"/></svg>`;
+    }
+    return `<svg class="alert-sev-icon alert-sev-icon--low" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>`;
   }
 
   function formatJsonish(raw) {
@@ -448,6 +511,7 @@
 
   function handleSessionExpired(message) {
     stopSessionIdleWatch();
+    stopOperationsAutoRefresh();
     stopAppSyncStatusPolling();
     currentSessionUser = null;
     const btnUser = document.getElementById("btn-user-menu");
@@ -961,7 +1025,7 @@
 
   function applySettingsNavForRole() {
     const admin = isAdmin();
-    document.querySelectorAll(".settings-nav__item[data-requires-admin='true']").forEach((el) => {
+    document.querySelectorAll("#settings-nav .settings-nav__item[data-requires-admin='true']").forEach((el) => {
       el.hidden = !admin;
     });
     const actions = document.getElementById("settings-users-actions");
@@ -1003,7 +1067,7 @@
     document.body.style.overflow = "hidden";
     const filter = document.getElementById("settings-nav-filter");
     if (filter) filter.value = "";
-    document.querySelectorAll(".settings-nav__item").forEach((btn) => {
+    document.querySelectorAll("#settings-modal [data-settings-section]").forEach((btn) => {
       btn.hidden = false;
     });
     applySettingsNavForRole();
@@ -1076,13 +1140,13 @@
     if ((s === "credentials" || s === "sync") && !isAdmin()) {
       s = "users";
     }
-    document.querySelectorAll(".settings-nav__item").forEach((btn) => {
+    document.querySelectorAll("#settings-modal [data-settings-section]").forEach((btn) => {
       const on = btn.dataset.settingsSection === s;
       btn.classList.toggle("is-active", on);
       if (on) btn.setAttribute("aria-current", "page");
       else btn.removeAttribute("aria-current");
     });
-    document.querySelectorAll(".settings-panel").forEach((p) => {
+    document.querySelectorAll("#settings-modal .settings-panel").forEach((p) => {
       const on = p.dataset.settingsPanel === s;
       p.classList.toggle("is-active", on);
       p.hidden = !on;
@@ -1103,12 +1167,18 @@
 
   function filterSettingsNav() {
     const q = (document.getElementById("settings-nav-filter")?.value || "").trim().toLowerCase();
-    document.querySelectorAll(".settings-nav__item").forEach((btn) => {
+    document.querySelectorAll("#settings-nav .settings-nav__item").forEach((btn) => {
       const t = (btn.querySelector("span")?.textContent || "").toLowerCase();
       const match = q === "" || t.includes(q);
       const needsAdmin = btn.dataset.requiresAdmin === "true";
       btn.hidden = !match || (needsAdmin && !isAdmin());
     });
+    const aboutBtn = document.getElementById("settings-nav-about");
+    if (aboutBtn) {
+      const t = (aboutBtn.querySelector("span")?.textContent || "").toLowerCase();
+      const match = q === "" || t.includes(q);
+      aboutBtn.hidden = !match;
+    }
   }
 
   const CRED_ROW_ICONS = {
@@ -1167,46 +1237,123 @@
       .join("");
   }
 
-  const CRED_TOAST_SUCCESS_MS = 4800;
+  let _appNotifIdSeq = 0;
 
-  function dismissAppToast(el) {
-    if (!el?.parentNode) return;
-    if (el._toastTimer != null) {
-      window.clearTimeout(el._toastTimer);
-      el._toastTimer = null;
+  function getNotificationsFlyoutListEl() {
+    return document.getElementById("notifications-flyout-list");
+  }
+
+  function updateNotificationsBadge() {
+    const list = getNotificationsFlyoutListEl();
+    const badge = document.getElementById("notifications-badge");
+    const n = list ? list.querySelectorAll(".app-notification").length : 0;
+    if (!badge) return;
+    if (n > 0) {
+      badge.hidden = false;
+      badge.removeAttribute("aria-hidden");
+      badge.setAttribute("aria-label", `${n} unacknowledged notification${n === 1 ? "" : "s"}`);
+    } else {
+      badge.hidden = true;
+      badge.setAttribute("aria-hidden", "true");
+      badge.removeAttribute("aria-label");
     }
-    el.classList.add("app-toast--out");
-    window.setTimeout(() => el.remove(), 220);
+  }
+
+  function updateNotificationsEmptyState() {
+    const list = getNotificationsFlyoutListEl();
+    const empty = document.getElementById("notifications-flyout-empty");
+    if (!list || !empty) return;
+    const n = list.querySelectorAll(".app-notification").length;
+    empty.hidden = n > 0;
+  }
+
+  function removeAppNotification(elOrId) {
+    const el = typeof elOrId === "string" ? document.getElementById(elOrId) : elOrId;
+    el?.remove();
+    updateNotificationsBadge();
+    updateNotificationsEmptyState();
+  }
+
+  function addAppNotification(variant, title, detailText) {
+    const list = getNotificationsFlyoutListEl();
+    if (!list) return null;
+    const id = `app-notif-${++_appNotifIdSeq}`;
+    const el = document.createElement("div");
+    el.id = id;
+    const v = variant === "success" || variant === "info" ? variant : "error";
+    el.className = `app-notification app-notification--${v}`;
+    el.setAttribute("role", "listitem");
+    const t = title != null && String(title).trim() !== "" ? String(title) : "Notice";
+    const msg = escapeHtml(detailText != null && String(detailText) !== "" ? String(detailText) : "");
+    const closeSvg =
+      '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
+    el.innerHTML = `<div class="app-notification__body">
+      <p class="app-notification__title">${escapeHtml(t)}</p>
+      <p class="app-notification__msg">${msg}</p>
+    </div><button type="button" class="app-notification__close" aria-label="Dismiss notification" title="Dismiss">${closeSvg}</button>`;
+    el.querySelector(".app-notification__close")?.addEventListener("click", () => removeAppNotification(id));
+    list.prepend(el);
+    updateNotificationsBadge();
+    updateNotificationsEmptyState();
+    return id;
+  }
+
+  /** In-app notification in the right-hand panel (replaces blocking browser alerts for routine feedback). */
+  function notifyAppUser(title, message, variant = "error") {
+    const v = variant === "success" || variant === "info" ? variant : "error";
+    addAppNotification(v, title || "Notice", message == null ? "" : String(message));
   }
 
   function showCredentialRowTestToast(success, detailText, opts) {
-    const host = document.getElementById("app-toast-host");
-    if (!host) return;
-    const el = document.createElement("div");
-    el.className = `app-toast ${success ? "app-toast--success" : "app-toast--error"}`;
-    el.setAttribute("role", success ? "status" : "alert");
     const title =
       opts && opts.title != null && opts.title !== ""
         ? opts.title
         : success
           ? "Connection OK"
           : "Test failed";
-    const msg = escapeHtml(detailText || (success ? "Verified with Sophos Central." : "Unknown error"));
-    const closeBtn = success
-      ? ""
-      : `<button type="button" class="app-toast__close" aria-label="Dismiss notification" title="Dismiss">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>`;
-    el.innerHTML = `<div class="app-toast__body">
-      <p class="app-toast__title">${escapeHtml(title)}</p>
-      <p class="app-toast__msg">${msg}</p>
-    </div>${closeBtn}`;
-    host.appendChild(el);
-    if (success) {
-      el._toastTimer = window.setTimeout(() => dismissAppToast(el), CRED_TOAST_SUCCESS_MS);
-    } else {
-      el.querySelector(".app-toast__close")?.addEventListener("click", () => dismissAppToast(el));
+    const body =
+      detailText != null && String(detailText) !== ""
+        ? String(detailText)
+        : success
+          ? "Verified with Sophos Central."
+          : "Unknown error";
+    addAppNotification(success ? "success" : "error", title, body);
+  }
+
+  function initNotificationsFlyout() {
+    const toggle = document.getElementById("btn-notifications-toggle");
+    const backdrop = document.getElementById("notifications-flyout-backdrop");
+    const panel = document.getElementById("notifications-flyout");
+    const closeBtn = document.getElementById("btn-notifications-close");
+    if (!toggle || !backdrop || !panel) return;
+
+    updateNotificationsEmptyState();
+
+    function setOpen(open) {
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      backdrop.classList.toggle("is-open", open);
+      panel.classList.toggle("is-open", open);
+      backdrop.setAttribute("aria-hidden", open ? "false" : "true");
+      panel.setAttribute("aria-hidden", open ? "false" : "true");
+      if (open) {
+        closeBtn?.focus({ preventScroll: true });
+      }
     }
+
+    function isOpen() {
+      return panel.classList.contains("is-open");
+    }
+
+    toggle.addEventListener("click", () => setOpen(!isOpen()));
+    backdrop.addEventListener("click", () => setOpen(false));
+    closeBtn?.addEventListener("click", () => setOpen(false));
+    panel.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && isOpen()) {
+        e.stopPropagation();
+        setOpen(false);
+        toggle.focus();
+      }
+    });
   }
 
   async function loadSettingsCredentials() {
@@ -1249,10 +1396,13 @@
   }
 
   const SYNC_INTERVAL_OPTIONS = [
+    { value: "10m", label: "10 mins" },
+    { value: "15m", label: "15 mins" },
+    { value: "30m", label: "30 mins" },
     { value: "hourly", label: "Hourly" },
-    { value: "3h", label: "3 hours" },
-    { value: "6h", label: "6 Hours" },
-    { value: "12h", label: "12 Hours" },
+    { value: "3h", label: "3 hrs" },
+    { value: "6h", label: "6 hrs" },
+    { value: "12h", label: "12 hrs" },
     { value: "daily", label: "Daily" },
     { value: "none", label: "None" },
   ];
@@ -1271,7 +1421,57 @@
       (o) =>
         `<option value="${escapeHtml(o.value)}"${o.value === sel ? " selected" : ""}>${escapeHtml(o.label)}</option>`
     ).join("");
-    return `<select class="settings-sync-interval-select" data-credential-id="${eid}" aria-label="Sync interval for this credential">${opts}</select>`;
+    return `<select class="settings-sync-interval-select" data-credential-id="${eid}" aria-label="Full sync interval for this credential">${opts}</select>`;
+  }
+
+  const INCREMENTAL_SYNC_INTERVAL_OPTIONS = [
+    { value: "1m", label: "1 min" },
+    { value: "5m", label: "5 mins" },
+    { value: "10m", label: "10 mins" },
+    { value: "15m", label: "15 mins" },
+    { value: "30m", label: "30 mins" },
+    { value: "60m", label: "60 mins" },
+    { value: "none", label: "None" },
+  ];
+
+  const INCREMENTAL_SYNC_INTERVAL_ALLOWED = new Set(
+    INCREMENTAL_SYNC_INTERVAL_OPTIONS.map((o) => o.value)
+  );
+
+  function normalizeCredentialIncrementalSyncInterval(raw) {
+    const v = raw != null && String(raw).trim() !== "" ? String(raw).trim() : "15m";
+    return INCREMENTAL_SYNC_INTERVAL_ALLOWED.has(v) ? v : "15m";
+  }
+
+  function incrementalSyncIntervalSelectHtml(credentialId, selected) {
+    const sel = normalizeCredentialIncrementalSyncInterval(selected);
+    const eid = escapeAttr(credentialId);
+    const opts = INCREMENTAL_SYNC_INTERVAL_OPTIONS.map(
+      (o) =>
+        `<option value="${escapeHtml(o.value)}"${o.value === sel ? " selected" : ""}>${escapeHtml(o.label)}</option>`
+    ).join("");
+    return `<select class="settings-inc-sync-interval-select" data-credential-id="${eid}" aria-label="Incremental sync interval for this credential">${opts}</select>`;
+  }
+
+  function settingsSyncNextHintHtml(nextInfo) {
+    const nextTitle = nextInfo.title ? escapeAttr(nextInfo.title) : "";
+    const nextText = escapeHtml(nextInfo.text);
+    if (nextTitle) {
+      return `<div class="settings-sync-next-hint settings-sync-relative muted" title="${nextTitle}">${nextText}</div>`;
+    }
+    return `<div class="settings-sync-next-hint settings-sync-relative muted">${nextText}</div>`;
+  }
+
+  function settingsSyncFullIntervalStackHtml(row) {
+    const iv = normalizeCredentialSyncInterval(row.sync_interval);
+    const next = formatSyncNextRelative(row.next_scheduled_sync_at, iv);
+    return `<div class="settings-sync-interval-stack">${syncIntervalSelectHtml(row.id, row.sync_interval)}${settingsSyncNextHintHtml(next)}</div>`;
+  }
+
+  function settingsSyncIncrementalIntervalStackHtml(row) {
+    const ij = normalizeCredentialIncrementalSyncInterval(row.incremental_sync_interval);
+    const nxi = formatSyncNextRelative(row.next_scheduled_incremental_sync_at, ij);
+    return `<div class="settings-sync-interval-stack">${incrementalSyncIntervalSelectHtml(row.id, row.incremental_sync_interval)}${settingsSyncNextHintHtml(nxi)}</div>`;
   }
 
   function formatSyncNextRelative(nextIso, intervalNorm) {
@@ -1293,11 +1493,11 @@
     if (deltaSec < 60) return { text: "Soon", title: precise };
     if (deltaSec < 3600) {
       const m = Math.floor(deltaSec / 60);
-      return { text: `in ${m} min${m === 1 ? "" : "s"}`, title: precise };
+      return { text: m === 1 ? "in 1 min" : `in ${m} mins`, title: precise };
     }
     if (deltaSec < 86400) {
       const h = Math.floor(deltaSec / 3600);
-      return { text: `in ${h} hour${h === 1 ? "" : "s"}`, title: precise };
+      return { text: h === 1 ? "in 1 hr" : `in ${h} hrs`, title: precise };
     }
     const days = Math.floor(deltaSec / 86400);
     return { text: `in ${days} day${days === 1 ? "" : "s"}`, title: precise };
@@ -1309,7 +1509,7 @@
     if (!tbody) return;
     if (!rows.length) {
       tbody.innerHTML =
-        '<tr><td colspan="5" class="muted">No credentials yet. Add credentials under <strong>Central credentials</strong>.</td></tr>';
+        '<tr><td colspan="6" class="muted">No credentials yet. Add credentials under <strong>Central credentials</strong>.</td></tr>';
       return;
     }
     tbody.innerHTML = rows
@@ -1318,28 +1518,33 @@
         const idAttr = escapeAttr(row.id);
         const lastTitle = row.last_sync ? escapeAttr(syncPreciseTimeForTitle(row.last_sync)) : "";
         const lastText = escapeHtml(formatSyncLastRelative(row.last_sync));
-        const iv = normalizeCredentialSyncInterval(row.sync_interval);
-        const next = formatSyncNextRelative(row.next_scheduled_sync_at, iv);
-        const nextTitle = next.title ? escapeAttr(next.title) : "";
-        const nextText = escapeHtml(next.text);
         const lastCell = row.last_sync
           ? `<span class="settings-sync-relative" title="${lastTitle}">${lastText}</span>`
           : `<span class="settings-sync-relative">${lastText}</span>`;
-        const nextCell = next.title
-          ? `<span class="settings-sync-relative" title="${nextTitle}">${nextText}</span>`
-          : `<span class="settings-sync-relative">${nextText}</span>`;
+
+        const liRaw = row.last_incremental_sync;
+        const liTitle = liRaw ? escapeAttr(syncPreciseTimeForTitle(liRaw)) : "";
+        const liText = escapeHtml(formatSyncLastRelative(liRaw));
+        const lastIncrCell = liRaw
+          ? `<span class="settings-sync-relative" title="${liTitle}">${liText}</span>`
+          : `<span class="settings-sync-relative">${liText}</span>`;
+
         return `<tr data-credential-id="${idAttr}">
           <td><strong>${name}</strong></td>
-          <td>${syncIntervalSelectHtml(row.id, row.sync_interval)}</td>
+          <td>${settingsSyncFullIntervalStackHtml(row)}</td>
+          <td>${settingsSyncIncrementalIntervalStackHtml(row)}</td>
           <td>${lastCell}</td>
-          <td>${nextCell}</td>
+          <td>${lastIncrCell}</td>
           <td class="settings-cred-actions">
-            <span role="button" tabindex="0" class="settings-cred-icon-btn cred-sync-now" data-id="${idAttr}" title="Sync now" aria-label="Sync now">${CRED_ROW_ICONS.sync}</span>
+            <span role="button" tabindex="0" class="settings-cred-icon-btn cred-sync-now" data-id="${idAttr}" title="Full sync now" aria-label="Full sync now">${CRED_ROW_ICONS.sync}</span>
           </td>
         </tr>`;
       })
       .join("");
     tbody.querySelectorAll(".settings-sync-interval-select").forEach((el) => {
+      el.dataset.lastValue = el.value;
+    });
+    tbody.querySelectorAll(".settings-inc-sync-interval-select").forEach((el) => {
       el.dataset.lastValue = el.value;
     });
   }
@@ -1355,18 +1560,18 @@
     if (!isAdmin()) return;
     const btn = document.getElementById("app-sync-bar-sync-btn");
     if (!btn || btn.disabled || btn.hidden) return;
-    appSyncLocalProgress = { name: "Preparing…", current: 0, total: 1 };
+    appSyncLocalProgress = { name: "Preparing…", current: 0, total: 1, syncKind: "full" };
     applyAppSyncBarBusyUi();
     try {
       const rows = await loadJson("/api/settings/credentials");
       if (!rows.length) {
-        showCredentialRowTestToast(false, "No credentials to sync.", { title: "Sync" });
+        showCredentialRowTestToast(false, "No credentials to full sync.", { title: "Full sync" });
         return;
       }
       const toSync = rows.filter((r) => r && r.id);
       const total = toSync.length;
       if (!total) {
-        showCredentialRowTestToast(false, "No credentials to sync.", { title: "Sync" });
+        showCredentialRowTestToast(false, "No credentials to full sync.", { title: "Full sync" });
         return;
       }
       const firstNm =
@@ -1377,6 +1582,7 @@
         name: total === 1 ? firstNm : "Credentials",
         current: 0,
         total,
+        syncKind: "full",
       };
       applyAppSyncBarBusyUi();
       const errors = [];
@@ -1384,7 +1590,7 @@
         const row = toSync[i];
         const id = row.id;
         const nm = row.name != null && String(row.name).trim() !== "" ? String(row.name).trim() : id;
-        appSyncLocalProgress = { name: nm, current: i + 1, total };
+        appSyncLocalProgress = { name: nm, current: i + 1, total, syncKind: "full" };
         applyAppSyncBarBusyUi();
         try {
           await apiRequestJson(`/api/settings/credentials/${encodeURIComponent(id)}/sync-now`, {
@@ -1399,16 +1605,16 @@
       if (errors.length) {
         const detail =
           errors.slice(0, 3).join(" ") + (errors.length > 3 ? " …" : "");
-        showCredentialRowTestToast(false, detail, { title: "Some syncs failed" });
+        showCredentialRowTestToast(false, detail, { title: "Some full syncs failed" });
       } else {
         showCredentialRowTestToast(
           true,
-          `Synced ${total} credential${total === 1 ? "" : "s"}.`,
-          { title: "Sync complete" }
+          `Full synced ${total} credential${total === 1 ? "" : "s"}.`,
+          { title: "Full sync complete" }
         );
       }
     } catch (e) {
-      showCredentialRowTestToast(false, e.message || "Could not sync.", { title: "Sync failed" });
+      showCredentialRowTestToast(false, e.message || "Could not full sync.", { title: "Full sync failed" });
     } finally {
       setAppSyncBarBusy(false);
     }
@@ -1446,7 +1652,7 @@
 
     document.getElementById("settings-nav-filter")?.addEventListener("input", filterSettingsNav);
 
-    document.querySelectorAll(".settings-nav__item").forEach((btn) => {
+    document.querySelectorAll("#settings-modal [data-settings-section]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const s = btn.dataset.settingsSection;
         if (s) setSettingsSection(s);
@@ -1504,6 +1710,16 @@
         }
         applyFirewallRecencyTags(fwPrepared);
         fwController.render();
+        applyListRecencyTags(grPrepared, {
+          createdKey: "created_at",
+          stateKey: "updated_at",
+          lastSyncKey: "last_sync",
+          clientKey: "client_id",
+        });
+        applyTenantRecencyTags(tnPrepared);
+        grController.render();
+        tnController.render();
+        loadDashboardAlerts({ reset: true }).catch(console.error);
       } catch (err) {
         if (st) {
           st.textContent = err.message || "Could not save.";
@@ -1660,7 +1876,7 @@
           await loadSettingsCredentials();
           refreshSettingsSyncIfVisible();
         } catch (err) {
-          window.alert(err.message || "Rename failed.");
+          notifyAppUser("Rename failed", err.message || "Rename failed.", "error");
         }
         return;
       }
@@ -1681,7 +1897,7 @@
           await loadSettingsCredentials();
           refreshSettingsSyncIfVisible();
         } catch (err) {
-          window.alert(err.message || "Delete failed.");
+          notifyAppUser("Delete failed", err.message || "Delete failed.", "error");
         }
       }
     });
@@ -1707,6 +1923,33 @@
       }
     });
 
+    document.getElementById("settings-sync-body")?.addEventListener("change", async (e) => {
+      const sel = e.target.closest(".settings-inc-sync-interval-select");
+      if (!sel) return;
+      const id = sel.getAttribute("data-credential-id");
+      if (!id) return;
+      const prev =
+        sel.dataset.lastValue != null
+          ? sel.dataset.lastValue
+          : normalizeCredentialIncrementalSyncInterval(null);
+      const value = sel.value;
+      try {
+        await apiRequestJson(
+          `/api/settings/credentials/${encodeURIComponent(id)}/incremental-sync-interval`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ incremental_sync_interval: value }),
+          }
+        );
+        sel.dataset.lastValue = value;
+      } catch (err) {
+        sel.value = prev;
+        showCredentialRowTestToast(false, err.message || "Could not save incremental interval.", {
+          title: "Save failed",
+        });
+      }
+    });
+
     document.getElementById("settings-sync-body")?.addEventListener("keydown", (e) => {
       const el = e.target.closest(".cred-sync-now");
       if (!el || el.getAttribute("aria-disabled") === "true") return;
@@ -1727,7 +1970,7 @@
           ? String(nameCell.textContent).trim()
           : id;
       btn.setAttribute("aria-disabled", "true");
-      appSyncLocalProgress = { name: credName, current: 1, total: 1 };
+      appSyncLocalProgress = { name: credName, current: 1, total: 1, syncKind: "full" };
       applyAppSyncBarBusyUi();
       try {
         const res = await apiRequestJson(`/api/settings/credentials/${encodeURIComponent(id)}/sync-now`, {
@@ -1736,11 +1979,11 @@
         const c = res?.credential;
         const who = c?.whoami?.id != null ? String(c.whoami.id) : "";
         const detail = who ? `Central ID ${who} refreshed.` : "Profile metadata refreshed.";
-        showCredentialRowTestToast(true, detail, { title: "Sync complete" });
+        showCredentialRowTestToast(true, detail, { title: "Full sync complete" });
         await loadSettingsSync();
         refreshAppSyncStatusBar();
       } catch (err) {
-        showCredentialRowTestToast(false, err.message || "Sync failed.", { title: "Sync failed" });
+        showCredentialRowTestToast(false, err.message || "Full sync failed.", { title: "Full sync failed" });
       } finally {
         appSyncLocalProgress = null;
         applyAppSyncBarBusyUi();
@@ -1870,7 +2113,7 @@
         if (choice == null) return;
         const r = choice.trim().toLowerCase();
         if (r !== "admin" && r !== "user") {
-          window.alert('Role must be "admin" or "user".');
+          notifyAppUser("Invalid role", 'Role must be "admin" or "user".', "error");
           return;
         }
         try {
@@ -1885,7 +2128,7 @@
             applySessionUserToChrome();
           }
         } catch (err) {
-          window.alert(err.message || "Could not update role.");
+          notifyAppUser("Could not update role", err.message || "Could not update role.", "error");
         }
         return;
       }
@@ -1896,7 +2139,7 @@
         const pw = window.prompt("New password (min. 10 characters)");
         if (pw == null) return;
         if (pw.length < 10) {
-          window.alert("Password must be at least 10 characters.");
+          notifyAppUser("Password too short", "Password must be at least 10 characters.", "error");
           return;
         }
         try {
@@ -1906,7 +2149,7 @@
           });
           await loadSettingsUsers();
         } catch (err) {
-          window.alert(err.message || "Could not set password.");
+          notifyAppUser("Could not set password", err.message || "Could not set password.", "error");
         }
         return;
       }
@@ -1928,7 +2171,7 @@
           }
           await loadSettingsUsers();
         } catch (err) {
-          window.alert(err.message || "Delete failed.");
+          notifyAppUser("Delete failed", err.message || "Delete failed.", "error");
         }
       }
     });
@@ -1965,6 +2208,8 @@
     pageTitle.textContent = TITLES[name] || name;
     if (persist) schedulePersistUiState();
     hideFwMapHoverPortalNow();
+    if (name === "operations") startOperationsAutoRefresh();
+    else stopOperationsAutoRefresh();
     const lazyFwMapInit =
       (name === "dashboard" && !dashFwMap) || (name === "firewalls" && !panelFwMap);
     if (lazyFwMapInit) {
@@ -1980,6 +2225,76 @@
 
   tabButtons.forEach((btn) => {
     btn.addEventListener("click", () => activateTab(btn.dataset.tab, true));
+  });
+
+  /** Context-sensitive help: static pages under /static/help/ */
+  function helpDocUrl(fileWithOptionalHash) {
+    return new URL(`/static/help/${fileWithOptionalHash}`, window.location.origin).href;
+  }
+
+  function visibleEl(id) {
+    const el = document.getElementById(id);
+    return el && !el.hidden ? el : null;
+  }
+
+  function resolveHelpTarget() {
+    if (visibleEl("user-edit-profile-dialog")) return "modal-edit-user-profile.html";
+    if (visibleEl("user-form-dialog")) return "modal-add-user.html";
+    if (visibleEl("credential-form-dialog")) return "modal-central-credential.html";
+    const exportPop = visibleEl("table-export-popover");
+    if (exportPop) return "modal-export-table.html";
+        if (visibleEl("fw-cols-modal")) return "modal-table-columns.html#firewalls";
+    if (visibleEl("gr-cols-modal")) return "modal-table-columns.html#groups";
+    if (visibleEl("tn-cols-modal")) return "modal-table-columns.html#tenants";
+    if (visibleEl("lc-cols-modal")) return "modal-table-columns.html#licenses";
+    if (visibleEl("gr-create-group-modal")) return "modal-create-firewall-group.html";
+    if (visibleEl("fw-firmware-batch-modal")) return "modal-firmware.html#batch";
+    if (visibleEl("fw-firmware-modal")) return "modal-firmware.html#single";
+    if (visibleEl("fw-delete-local-modal")) return "modal-delete-local.html";
+    if (visibleEl("fw-location-modal")) return "modal-firewall-location.html";
+    const profileModal = visibleEl("profile-modal");
+    if (profileModal) {
+      const sec =
+        profileModal.querySelector(".settings-nav__item.is-active[data-profile-section]")?.getAttribute(
+          "data-profile-section",
+        ) || "profile";
+      return sec === "password" ? "account-password.html" : "account-profile.html";
+    }
+    const settingsModal = visibleEl("settings-modal");
+    if (settingsModal) {
+      const sec =
+        settingsModal.querySelector(".settings-nav__item.is-active[data-settings-section]")?.getAttribute(
+          "data-settings-section",
+        ) || "users";
+      const map = {
+        general: "settings-general.html",
+        users: "settings-users.html",
+        credentials: "settings-credentials.html",
+        sync: "settings-sync.html",
+        about: "settings-about.html",
+      };
+      return map[sec] || "settings-users.html";
+    }
+    if (visibleEl("fw-detail-flyout")) return "flyout-firewall-detail.html";
+    if (visibleEl("alert-flyout")) return "flyout-alert.html";
+    if (visibleEl("license-flyout")) return "flyout-license.html";
+    const authOverlay = visibleEl("auth-overlay");
+    if (authOverlay) return "sign-in.html";
+    const activeTabBtn = document.querySelector('.app-nav__item.tabs__tab.is-active[data-tab]');
+    const tab = activeTabBtn?.getAttribute("data-tab") || "dashboard";
+    const pages = {
+      dashboard: "page-dashboard.html",
+      firewalls: "page-firewalls.html",
+      groups: "page-groups.html",
+      tenants: "page-tenants.html",
+      licenses: "page-licenses.html",
+    };
+    return pages[tab] || "page-dashboard.html";
+  }
+
+  document.getElementById("btn-top-help")?.addEventListener("click", () => {
+    const url = helpDocUrl(resolveHelpTarget());
+    window.open(url, "_blank", "noopener,noreferrer");
   });
 
   const appShell = document.getElementById("app-shell");
@@ -2418,7 +2733,7 @@
   }
 
   /* ---------- Dashboard alerts (lazy / server pages) + flyout ---------- */
-  const daState = { pageSize: 25, total: 0, severity: "all" };
+  const daState = { pageSize: 25, total: 0 };
   let daAlertsNextPage = 1;
   let daAlertsLoading = false;
   let daAlertsIo = null;
@@ -2464,11 +2779,259 @@
     tenant_name: new Set(),
     firewall_hostname: new Set(),
   };
+  /** Empty set = all severities; otherwise OR of selected levels (high / medium / low). */
+  const daSeverityLevels = new Set();
+  /** ``all`` | ``hour`` | ``today`` | ``week`` | ``month`` | ``older`` | ``custom`` */
+  let daRaisedPreset = "all";
+  const daRaisedCustomStored = { from: "", to: "" };
   let daFacets = { tenant_names: [], firewall_hostnames: [] };
+
+  function appendDashboardSeverityParams(params) {
+    if (daSeverityLevels.size === 0 || daSeverityLevels.size >= 3) return;
+    daSeverityLevels.forEach((x) => params.append("severity", x));
+  }
+
+  function startOfLocalWeekMonday(d) {
+    const x = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+    const day = (x.getDay() + 6) % 7;
+    x.setDate(x.getDate() - day);
+    return x;
+  }
+
+  function startOfLocalMonth(d) {
+    return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+  }
+
+  function toIsoUtc(d) {
+    return d.toISOString();
+  }
+
+  function getDashboardRaisedBoundsForApi() {
+    if (daRaisedPreset === "all") return null;
+    const now = new Date();
+    if (daRaisedPreset === "hour") {
+      const start = new Date(now);
+      start.setMinutes(0, 0, 0);
+      return { from: toIsoUtc(start), to: toIsoUtc(now) };
+    }
+    if (daRaisedPreset === "today") {
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      return { from: toIsoUtc(start), to: toIsoUtc(now) };
+    }
+    if (daRaisedPreset === "week") {
+      const start = startOfLocalWeekMonday(now);
+      return { from: toIsoUtc(start), to: toIsoUtc(now) };
+    }
+    if (daRaisedPreset === "month") {
+      const start = startOfLocalMonth(now);
+      return { from: toIsoUtc(start), to: toIsoUtc(now) };
+    }
+    if (daRaisedPreset === "older") {
+      const end = new Date(now);
+      end.setMonth(end.getMonth() - 1);
+      const start = new Date(Date.UTC(2000, 0, 1, 0, 0, 0));
+      return { from: toIsoUtc(start), to: toIsoUtc(end) };
+    }
+    if (daRaisedPreset === "custom") {
+      const fromEl = document.getElementById("da-raised-custom-from");
+      const toEl = document.getElementById("da-raised-custom-to");
+      const fromRaw = (fromEl && fromEl.value) || "";
+      const toRaw = (toEl && toEl.value) || "";
+      let fromMs;
+      let toMs;
+      if (fromRaw) fromMs = new Date(fromRaw).getTime();
+      else fromMs = Date.UTC(2000, 0, 1, 0, 0, 0);
+      if (toRaw) toMs = new Date(toRaw).getTime();
+      else toMs = Date.now();
+      return { from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString() };
+    }
+    return null;
+  }
+
+  function appendDashboardRaisedParams(params) {
+    const b = getDashboardRaisedBoundsForApi();
+    if (!b) return;
+    params.set("raised_from", b.from);
+    params.set("raised_to", b.to);
+  }
+
+  function appendDashboardAlertApiParams(params) {
+    appendDashboardSeverityParams(params);
+    appendDashboardRaisedParams(params);
+  }
+
+  function dashboardAlertsFacetsQuerySuffix() {
+    const p = new URLSearchParams();
+    appendDashboardAlertApiParams(p);
+    const s = p.toString();
+    return s ? `?${s}` : "";
+  }
+
+  function syncDashboardRaisedQuickActive() {
+    const root = document.getElementById("da-raised-quick-filters");
+    if (!root) return;
+    root.querySelectorAll("[data-da-raised-quick]").forEach((btn) => {
+      const v = btn.getAttribute("data-da-raised-quick");
+      btn.classList.toggle("is-active", v === daRaisedPreset);
+    });
+  }
+
+  function setDashboardRaisedPreset(preset) {
+    daRaisedPreset = preset;
+    syncDashboardRaisedQuickActive();
+  }
+
+  function dashboardAlertAllowedAck(a) {
+    const aa = Array.isArray(a.allowed_actions) ? a.allowed_actions : [];
+    return aa.some((x) => String(x).toLowerCase() === "acknowledge");
+  }
+
+  function syncDaAlertSelectAllCheckbox() {
+    const sa = document.getElementById("da-alert-select-all");
+    const tbody = document.getElementById("dashboard-alerts-body");
+    if (!sa || !tbody) return;
+    const boxes = [
+      ...tbody.querySelectorAll("tr.alert-row input.da-alert-row-check:not(:disabled)"),
+    ];
+    const n = boxes.length;
+    const checked = boxes.filter((b) => b.checked).length;
+    sa.checked = n > 0 && checked === n;
+    sa.indeterminate = checked > 0 && checked < n;
+  }
+
+  function updateDashboardAckButtonState() {
+    const btn = document.getElementById("da-ack-btn");
+    const tbody = document.getElementById("dashboard-alerts-body");
+    if (!btn || !tbody) return;
+    const selected = tbody.querySelectorAll("tr.alert-row input.da-alert-row-check:checked");
+    btn.disabled = selected.length === 0;
+    syncDaAlertSelectAllCheckbox();
+  }
+
+  function findDashboardAlertRowById(alertId) {
+    const tb = document.getElementById("dashboard-alerts-body");
+    if (!tb || !alertId) return null;
+    for (const tr of tb.querySelectorAll("tr.alert-row")) {
+      if (tr.getAttribute("data-alert-id") === alertId) return tr;
+    }
+    return null;
+  }
+
+  function summarizeDashboardAlertRow(tr) {
+    const cells = tr.querySelectorAll("td");
+    const sev = cells[1]?.querySelector(".alert-sev-cell__text")?.textContent?.trim() || "—";
+    const tenant = cells[2]?.textContent?.replace(/\s+/g, " ").trim() || "—";
+    const fw = cells[3]?.textContent?.replace(/\s+/g, " ").trim() || "—";
+    const descEl = cells[4]?.querySelector(".alert-row__desc-text");
+    const desc = (descEl?.textContent || cells[4]?.textContent || "—").replace(/\s+/g, " ").trim() || "—";
+    const raised = cells[5]?.textContent?.replace(/\s+/g, " ").trim() || "—";
+    return { severity: sev, tenant, firewall: fw, description: desc, raised };
+  }
+
+  function truncateNotifyDetail(s, maxLen) {
+    const t = String(s || "");
+    if (t.length <= maxLen) return t;
+    return `${t.slice(0, Math.max(0, maxLen - 1))}…`;
+  }
+
+  function buildAcknowledgeResultMessage(res, idToSummary) {
+    const ack = (res && res.acknowledged) || [];
+    const errs = (res && res.errors) || [];
+    const lines = [];
+    if (ack.length) {
+      lines.push(`Acknowledged ${ack.length} alert(s) in Sophos Central.`);
+      lines.push("");
+      ack.forEach((entry, idx) => {
+        const aid = entry && entry.id != null ? String(entry.id) : "";
+        const s = aid ? idToSummary.get(aid) : null;
+        if (s) {
+          const desc = truncateNotifyDetail(s.description, 220);
+          lines.push(
+            `${idx + 1}) [${s.severity}] ${s.tenant} · ${s.firewall} — ${desc} (${s.raised})`
+          );
+        } else {
+          lines.push(`${idx + 1}) Alert id: ${aid || "—"}`);
+        }
+      });
+    }
+    if (errs.length) {
+      if (lines.length) lines.push("");
+      lines.push(`${errs.length} not acknowledged:`);
+      errs.slice(0, 12).forEach((e, idx) => {
+        const id = e && e.id != null ? String(e.id) : "—";
+        const det = e && e.detail != null ? String(e.detail) : "Error";
+        const s = idToSummary.get(id);
+        const hint = s ? ` — was: ${truncateNotifyDetail(s.description, 100)}` : "";
+        lines.push(`  ${idx + 1}. ${id}: ${det}${hint}`);
+      });
+      if (errs.length > 12) lines.push(`  … and ${errs.length - 12} more`);
+    }
+    const syncBad = (res && res.credential_syncs) || [];
+    const syncFailed = syncBad.filter((x) => x && !x.ok);
+    if (syncFailed.length) {
+      lines.push("");
+      lines.push("Post-acknowledge sync:");
+      syncFailed.slice(0, 5).forEach((s) => {
+        lines.push(`  ${s.credential_id || "?"}: ${s.error || "failed"}`);
+      });
+      if (syncFailed.length > 5) lines.push(`  … and ${syncFailed.length - 5} more`);
+    }
+    return lines.join("\n");
+  }
+
+  async function acknowledgeSelectedDashboardAlerts() {
+    const tbody = document.getElementById("dashboard-alerts-body");
+    const btn = document.getElementById("da-ack-btn");
+    if (!tbody || !btn || btn.disabled) return;
+    const ids = [...tbody.querySelectorAll("tr.alert-row input.da-alert-row-check:checked")]
+      .map((cb) => cb.closest("tr.alert-row")?.getAttribute("data-alert-id"))
+      .filter(Boolean);
+    if (!ids.length) return;
+    const idToSummary = new Map();
+    for (const id of ids) {
+      const tr = findDashboardAlertRowById(id);
+      if (tr) idToSummary.set(id, summarizeDashboardAlertRow(tr));
+    }
+    btn.disabled = true;
+    try {
+      const res = await apiRequestJson("/api/alerts/acknowledge", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      });
+      const nOk = (res && res.acknowledged && res.acknowledged.length) || 0;
+      const nErr = (res && res.errors && res.errors.length) || 0;
+      const body = buildAcknowledgeResultMessage(res, idToSummary);
+      if (nErr === 0 && nOk > 0) {
+        showCredentialRowTestToast(true, body, { title: "Acknowledge" });
+      } else if (nErr > 0) {
+        showCredentialRowTestToast(false, body, { title: "Acknowledge" });
+      } else {
+        showCredentialRowTestToast(false, body || "No alerts were acknowledged.", { title: "Acknowledge" });
+      }
+      await loadDashboardAlerts({ reset: true });
+    } catch (err) {
+      showCredentialRowTestToast(false, err.message || "Request failed.", { title: "Acknowledge" });
+    } finally {
+      updateDashboardAckButtonState();
+    }
+  }
 
   function hydrateDashboardFromSaved(d) {
     if (!d || typeof d !== "object") return;
-    if (typeof d.severity === "string") daState.severity = d.severity;
+    daSeverityLevels.clear();
+    if (Array.isArray(d.severity_levels)) {
+      d.severity_levels.forEach((x) => {
+        const s = String(x).toLowerCase();
+        if (s === "high" || s === "medium" || s === "low") daSeverityLevels.add(s);
+      });
+    } else if (typeof d.severity === "string") {
+      const s = d.severity.toLowerCase();
+      if (s === "high" || s === "medium" || s === "low") daSeverityLevels.add(s);
+    }
+    if (typeof d.raised_preset === "string") {
+      const rp = d.raised_preset;
+      if (["all", "hour", "today", "week", "month", "older", "custom"].includes(rp)) daRaisedPreset = rp;
+    }
     const sel = document.getElementById("da-page-size");
     if (typeof d.pageSize === "number") {
       const ps = Math.max(1, d.pageSize);
@@ -2491,6 +3054,9 @@
     }
     const daSearchEl = document.getElementById("da-search");
     if (daSearchEl && typeof d.search === "string") daSearchEl.value = d.search;
+    if (typeof d.raised_custom_from === "string") daRaisedCustomStored.from = d.raised_custom_from;
+    if (typeof d.raised_custom_to === "string") daRaisedCustomStored.to = d.raised_custom_to;
+    refreshDashboardTenantMultiselect();
   }
 
   function getDashboardAlertsSearchQuery() {
@@ -2499,7 +3065,11 @@
   }
 
   function dashboardFacetFilterCount() {
-    return daFilterState.tenant_name.size + daFilterState.firewall_hostname.size;
+    let n = daFilterState.firewall_hostname.size;
+    const sevN = daSeverityLevels.size;
+    if (sevN > 0 && sevN < 3) n += sevN;
+    if (daRaisedPreset !== "all") n += 1;
+    return n;
   }
 
   function updateDashboardFiltersChrome() {
@@ -2519,19 +3089,167 @@
   }
 
   function resetDashboardFacetFilters() {
-    daFilterState.tenant_name.clear();
     daFilterState.firewall_hostname.clear();
+    daSeverityLevels.clear();
+    daRaisedPreset = "all";
+    daRaisedCustomStored.from = "";
+    daRaisedCustomStored.to = "";
+    syncDashboardRaisedQuickActive();
     syncDashboardAlertFilterCheckboxes();
     setFiltersPanelCollapsed(document.querySelector("#panel-dashboard .filters"), true);
-    loadDashboardAlerts({ reset: true }).catch(console.error);
+    loadDashboardAlertFacets()
+      .then(() => {
+        buildDashboardAlertFilters();
+        return loadDashboardAlerts({ reset: true });
+      })
+      .catch(console.error);
+  }
+
+  function dashboardTenantMultiselectOptionNames() {
+    const fromFacets = Array.isArray(daFacets.tenant_names) ? daFacets.tenant_names.map(String) : [];
+    const merged = new Set(fromFacets);
+    daFilterState.tenant_name.forEach((t) => merged.add(String(t)));
+    return [...merged].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }
+
+  function updateDashboardTenantMultiselectSummary() {
+    const sumEl = document.getElementById("da-tenant-ms-summary");
+    const clearBtn = document.getElementById("da-tenant-ms-clear");
+    if (!sumEl) return;
+    const n = daFilterState.tenant_name.size;
+    if (n === 0) {
+      sumEl.textContent = "All tenants";
+      if (clearBtn) clearBtn.hidden = true;
+      return;
+    }
+    if (clearBtn) clearBtn.hidden = false;
+    if (n === 1) {
+      const one = [...daFilterState.tenant_name][0];
+      sumEl.textContent = one.length > 42 ? `${one.slice(0, 39)}…` : one;
+      return;
+    }
+    sumEl.textContent = `${n} tenants`;
+  }
+
+  function applyDashboardTenantMultiselectSearch() {
+    const inp = document.getElementById("da-tenant-ms-search");
+    const list = document.getElementById("da-tenant-ms-list");
+    if (!inp || !list) return;
+    const q = (inp.value || "").trim().toLowerCase();
+    // Inline display overrides .da-tenant-ms__opt { display:flex } (see applyFwFacetListSearchInput).
+    list.querySelectorAll(".da-tenant-ms__opt").forEach((row) => {
+      const t = (row.getAttribute("data-tenant-label") || "").toLowerCase();
+      row.style.display = !q || t.includes(q) ? "" : "none";
+    });
+  }
+
+  function refreshDashboardTenantMultiselect() {
+    const list = document.getElementById("da-tenant-ms-list");
+    if (!list) return;
+    const names = dashboardTenantMultiselectOptionNames();
+    const maxOpts = 200;
+    const slice = names.slice(0, maxOpts);
+    list.innerHTML = slice
+      .map(
+        (name) => `
+      <label class="da-tenant-ms__opt" data-tenant-label="${escapeAttr(name)}">
+        <input type="checkbox" class="da-tenant-ms__cb" value="${escapeAttr(name)}" />
+        <span class="da-tenant-ms__opt-text">${escapeHtml(name)}</span>
+      </label>`
+      )
+      .join("");
+    if (names.length > maxOpts) {
+      list.insertAdjacentHTML(
+        "beforeend",
+        `<p class="da-tenant-ms__cap muted">Showing first ${maxOpts} of ${names.length} tenants. Refine filters to narrow the list.</p>`
+      );
+    }
+    list.querySelectorAll(".da-tenant-ms__cb").forEach((cb) => {
+      cb.checked = daFilterState.tenant_name.has(cb.value);
+      cb.addEventListener("change", () => {
+        if (cb.checked) daFilterState.tenant_name.add(cb.value);
+        else daFilterState.tenant_name.delete(cb.value);
+        updateDashboardTenantMultiselectSummary();
+        schedulePersistUiState();
+        loadDashboardAlerts({ reset: true }).catch(console.error);
+      });
+    });
+    updateDashboardTenantMultiselectSummary();
+    applyDashboardTenantMultiselectSearch();
+  }
+
+  function setDashboardTenantMultiselectOpen(open) {
+    const panel = document.getElementById("da-tenant-ms-panel");
+    const trig = document.getElementById("da-tenant-ms-trigger");
+    if (!panel || !trig) return;
+    panel.hidden = !open;
+    trig.setAttribute("aria-expanded", open ? "true" : "false");
+    trig.classList.toggle("is-open", open);
+    if (open) {
+      const s = document.getElementById("da-tenant-ms-search");
+      if (s) {
+        s.value = "";
+        applyDashboardTenantMultiselectSearch();
+        queueMicrotask(() => s.focus());
+      }
+    }
+  }
+
+  function initDashboardTenantMultiselect() {
+    const root = document.getElementById("da-tenant-ms");
+    const trig = document.getElementById("da-tenant-ms-trigger");
+    const panel = document.getElementById("da-tenant-ms-panel");
+    const clearBtn = document.getElementById("da-tenant-ms-clear");
+    const searchInp = document.getElementById("da-tenant-ms-search");
+    if (!root || !trig || !panel) return;
+
+    trig.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setDashboardTenantMultiselectOpen(panel.hidden);
+    });
+
+    clearBtn?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (daFilterState.tenant_name.size === 0) return;
+      daFilterState.tenant_name.clear();
+      refreshDashboardTenantMultiselect();
+      setDashboardTenantMultiselectOpen(false);
+      schedulePersistUiState();
+      loadDashboardAlerts({ reset: true }).catch(console.error);
+    });
+
+    searchInp?.addEventListener("input", () => applyDashboardTenantMultiselectSearch());
+    searchInp?.addEventListener("search", () => applyDashboardTenantMultiselectSearch());
+
+    searchInp?.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setDashboardTenantMultiselectOpen(false);
+        trig.focus();
+      }
+    });
+
+    document.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (panel.hidden) return;
+        if (e.target.closest("#da-tenant-ms")) return;
+        setDashboardTenantMultiselectOpen(false);
+      },
+      true
+    );
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (panel.hidden) return;
+      setDashboardTenantMultiselectOpen(false);
+      trig.focus();
+    });
   }
 
   async function loadDashboardAlertFacets() {
-    const sevQ =
-      daState.severity && daState.severity !== "all"
-        ? `?severity=${encodeURIComponent(daState.severity)}`
-        : "";
-    daFacets = await loadJson(`/api/alerts/facets${sevQ}`);
+    daFacets = await loadJson(`/api/alerts/facets${dashboardAlertsFacetsQuerySuffix()}`);
   }
 
   function syncDashboardAlertFilterCheckboxes() {
@@ -2543,26 +3261,85 @@
       if (!st) return;
       cb.checked = st.has(cb.value);
     });
+    host.querySelectorAll('input[type="checkbox"][data-da-severity]').forEach((cb) => {
+      const v = (cb.getAttribute("data-da-severity") || "").toLowerCase();
+      cb.checked = daSeverityLevels.has(v);
+    });
+    host.querySelectorAll('input[type="radio"][name="da-raised-preset"]').forEach((rb) => {
+      rb.checked = rb.value === daRaisedPreset;
+    });
+    const customWrap = host.querySelector("[data-da-raised-custom-wrap]");
+    if (customWrap) customWrap.hidden = daRaisedPreset !== "custom";
   }
 
   function buildDashboardAlertFilters() {
     const host = document.getElementById("da-filters");
     if (!host) return;
+    const sevOpts = [
+      { v: "high", label: "High" },
+      { v: "medium", label: "Medium" },
+      { v: "low", label: "Low" },
+    ];
+    const severityBody = sevOpts
+      .map(
+        (o) => `
+        <label class="filter-opt filter-opt--severity">
+          <input type="checkbox" data-da-severity="${escapeHtml(o.v)}" value="${escapeHtml(o.v)}" />
+          <span class="filter-opt__severity-icon">${severityIconSvgHtml(o.v)}</span>
+          <span>${escapeHtml(o.label)}</span>
+        </label>`
+      )
+      .join("");
+
+    const raisedPresets = [
+      { v: "all", label: "Any time" },
+      { v: "hour", label: "This hour" },
+      { v: "today", label: "Today" },
+      { v: "week", label: "This week" },
+      { v: "month", label: "This month" },
+      { v: "older", label: ">1 month ago" },
+      { v: "custom", label: "Custom" },
+    ];
+    const raisedRadios = raisedPresets
+      .map(
+        (p) => `
+        <label class="filter-opt filter-opt--radio">
+          <input type="radio" name="da-raised-preset" value="${escapeHtml(p.v)}" />
+          <span>${escapeHtml(p.label)}</span>
+        </label>`
+      )
+      .join("");
+    const customHidden = daRaisedPreset !== "custom";
+    const customBlock = `
+      <div class="da-raised-custom-wrap" data-da-raised-custom-wrap="" ${customHidden ? "hidden" : ""}>
+        <label class="da-raised-custom-field">
+          <span class="da-raised-custom-label">From</span>
+          <input type="datetime-local" id="da-raised-custom-from" class="da-raised-custom-input" step="1" autocomplete="off" aria-label="Raised from date and time" />
+        </label>
+        <label class="da-raised-custom-field">
+          <span class="da-raised-custom-label">To</span>
+          <input type="datetime-local" id="da-raised-custom-to" class="da-raised-custom-input" step="1" autocomplete="off" aria-label="Raised to date and time" />
+        </label>
+        <p class="da-raised-custom-hint muted">Leave blank to use Jan 1, 2000 (from) or now (to).</p>
+      </div>`;
+
     const groups = [
-      { key: "tenant_name", label: "Tenant", optsKey: "tenant_names" },
+      { key: "severity_facet", label: "Severity", body: severityBody, wrapKey: "severity_facet" },
+      { key: "raised_facet", label: "Date raised", body: raisedRadios + customBlock, wrapKey: "raised_facet" },
       { key: "firewall_hostname", label: "Firewall", optsKey: "firewall_hostnames" },
     ];
     const optsByKey = {
-      tenant_names: Array.isArray(daFacets.tenant_names) ? daFacets.tenant_names : [],
       firewall_hostnames: Array.isArray(daFacets.firewall_hostnames)
         ? daFacets.firewall_hostnames
         : [],
     };
 
-    host.innerHTML = groups
-      .map((g, idx) => {
+    let idx = 0;
+    const parts = groups.map((g) => {
+      if (g.optsKey) {
         const opts = (optsByKey[g.optsKey] || []).slice(0, 120);
         const open = idx < 2 ? "is-open" : "";
+        idx += 1;
         const optsHtml = opts
           .map(
             (o) => `
@@ -2574,14 +3351,26 @@
           .join("");
         return `
         <div class="filter-group ${open}" data-cat-wrap="${escapeHtml(g.key)}">
-          <button type="button" class="filter-group__head" aria-expanded="${idx < 2}">
+          <button type="button" class="filter-group__head" aria-expanded="${open === "is-open"}">
             <span>${escapeHtml(g.label)}</span>
             <span class="filter-group__chev">▼</span>
           </button>
           <div class="filter-group__body">${optsHtml}</div>
         </div>`;
-      })
-      .join("");
+      }
+      const open = idx < 2 ? "is-open" : "";
+      idx += 1;
+      return `
+        <div class="filter-group ${open}" data-cat-wrap="${escapeHtml(g.wrapKey)}">
+          <button type="button" class="filter-group__head" aria-expanded="${open === "is-open"}">
+            <span>${escapeHtml(g.label)}</span>
+            <span class="filter-group__chev">▼</span>
+          </button>
+          <div class="filter-group__body">${g.body}</div>
+        </div>`;
+    });
+
+    host.innerHTML = parts.join("");
 
     host.querySelectorAll(".filter-group__head").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -2602,27 +3391,92 @@
       });
     });
 
+    host.querySelectorAll('input[type="checkbox"][data-da-severity]').forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const v = (cb.getAttribute("data-da-severity") || "").toLowerCase();
+        if (!v) return;
+        if (cb.checked) daSeverityLevels.add(v);
+        else daSeverityLevels.delete(v);
+        if (daSeverityLevels.size >= 3) daSeverityLevels.clear();
+        loadDashboardAlertFacets()
+          .then(() => {
+            buildDashboardAlertFilters();
+            updateDashboardAlertsHeading();
+            syncDashboardAlertStatActive();
+            schedulePersistUiState();
+            return loadDashboardAlerts({ reset: true });
+          })
+          .catch(console.error);
+      });
+    });
+
+    host.querySelectorAll('input[type="radio"][name="da-raised-preset"]').forEach((rb) => {
+      rb.addEventListener("change", () => {
+        if (!rb.checked) return;
+        daRaisedPreset = rb.value;
+        syncDashboardRaisedQuickActive();
+        schedulePersistUiState();
+        const cw = host.querySelector("[data-da-raised-custom-wrap]");
+        if (cw) cw.hidden = daRaisedPreset !== "custom";
+        loadDashboardAlertFacets()
+          .then(() => {
+            buildDashboardAlertFilters();
+            return loadDashboardAlerts({ reset: true });
+          })
+          .catch(console.error);
+      });
+    });
+
+    host.querySelectorAll("#da-raised-custom-from, #da-raised-custom-to").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        daRaisedCustomStored.from = document.getElementById("da-raised-custom-from")?.value ?? "";
+        daRaisedCustomStored.to = document.getElementById("da-raised-custom-to")?.value ?? "";
+        schedulePersistUiState();
+        if (daRaisedPreset !== "custom") return;
+        loadDashboardAlerts({ reset: true }).catch(console.error);
+      });
+    });
+
+    if (daRaisedPreset === "custom") {
+      const cf = document.getElementById("da-raised-custom-from");
+      const ct = document.getElementById("da-raised-custom-to");
+      if (cf) cf.value = daRaisedCustomStored.from;
+      if (ct) ct.value = daRaisedCustomStored.to;
+    }
+
     syncDashboardAlertFilterCheckboxes();
+    syncDashboardRaisedQuickActive();
     updateDashboardFiltersChrome();
+    refreshDashboardTenantMultiselect();
   }
 
   function updateDashboardAlertsHeading() {
     const el = document.getElementById("dashboard-alerts-heading");
     if (!el) return;
-    const titles = {
-      all: "Alerts",
-      high: "Alerts — High severity",
-      medium: "Alerts — Medium severity",
-      low: "Alerts — Low severity",
-    };
-    el.textContent = titles[daState.severity] || titles.all;
+    const levels = [...daSeverityLevels].sort();
+    if (levels.length === 0) {
+      el.textContent = "Alerts";
+      return;
+    }
+    if (levels.length === 1) {
+      const u = levels[0].charAt(0).toUpperCase() + levels[0].slice(1);
+      el.textContent = `Alerts — ${u} severity`;
+      return;
+    }
+    const parts = levels.map((x) => x.charAt(0).toUpperCase() + x.slice(1));
+    el.textContent = `Alerts — ${parts.join(", ")}`;
   }
 
   function syncDashboardAlertStatActive() {
     const root = document.getElementById("dashboard-stats");
     if (!root) return;
     root.querySelectorAll("[data-alert-severity]").forEach((el) => {
-      el.classList.toggle("is-active", el.dataset.alertSeverity === daState.severity);
+      const sev = el.dataset.alertSeverity;
+      let on = false;
+      if (sev === "all") on = daSeverityLevels.size === 0;
+      else if (sev === "high" || sev === "medium" || sev === "low")
+        on = daSeverityLevels.size === 1 && daSeverityLevels.has(sev);
+      el.classList.toggle("is-active", on);
     });
   }
 
@@ -2655,9 +3509,7 @@
       const params = new URLSearchParams();
       params.set("page", String(daAlertsNextPage));
       params.set("page_size", String(daState.pageSize));
-      if (daState.severity && daState.severity !== "all") {
-        params.set("severity", daState.severity);
-      }
+      appendDashboardAlertApiParams(params);
       daFilterState.tenant_name.forEach((v) => params.append("tenant_name", v));
       daFilterState.firewall_hostname.forEach((v) => params.append("firewall_hostname", v));
       const q = getDashboardAlertsSearchQuery();
@@ -2671,15 +3523,24 @@
         .map((a) => {
           const cls = severityClass(a.severity);
           const id = escapeHtml(a.id);
+          const canAck = dashboardAlertAllowedAck(a);
+          const dis = canAck ? "" : " disabled";
+          const titleDis = canAck ? "" : ' title="This alert does not allow acknowledge"';
+          const ackLabel = canAck ? "Select alert for acknowledge" : "Cannot acknowledge this alert";
           const tn = escapeHtml(a.tenant_name != null && a.tenant_name !== "" ? a.tenant_name : "—");
           const fh = escapeHtml(
             a.firewall_hostname != null && a.firewall_hostname !== "" ? a.firewall_hostname : "—"
           );
-          return `<tr class="alert-row" tabindex="0" data-alert-id="${id}" aria-label="View alert details">
-          <td class="${cls}">${escapeHtml(a.severity || "—")}</td>
+          const rp = renderFwRecencyPillHtml(a.recency_tag);
+          const descText = escapeHtml(a.description || "—");
+          return `<tr class="alert-row" tabindex="0" data-alert-id="${id}" data-can-acknowledge="${canAck ? "1" : "0"}" aria-label="View alert details">
+          <td class="data-table__col-check th-check"${titleDis}>
+            <input type="checkbox" class="da-alert-row-check"${dis} aria-label="${escapeAttr(ackLabel)}" />
+          </td>
+          <td class="alert-sev-cell ${cls}"><span class="alert-sev-cell__icon" aria-hidden="true">${severityIconSvgHtml(a.severity)}</span><span class="alert-sev-cell__text">${escapeHtml(a.severity || "—")}</span></td>
           <td class="alert-row__cell--truncate muted" title="${tn}">${tn}</td>
           <td class="alert-row__cell--truncate muted" title="${fh}">${fh}</td>
-          <td class="alert-row__desc">${escapeHtml(a.description || "—")}</td>
+          <td class="alert-row__desc"><span class="table-recency-inline">${rp}<span class="alert-row__desc-text">${descText}</span></span></td>
           <td class="muted">${fmtDate(a.raised_at)}</td>
         </tr>`;
         })
@@ -2702,6 +3563,7 @@
       updateDashboardAlertsHeading();
       syncDashboardAlertStatActive();
       updateDashboardFiltersChrome();
+      updateDashboardAckButtonState();
       schedulePersistUiState();
     } finally {
       daAlertsLoading = false;
@@ -2758,7 +3620,7 @@
         formatFirewallDisplay(d.firewall_hostname, d.firewall_name) ||
         `<pre class="flyout-pre">${formatJsonish(d.managed_agent_json)}</pre>`;
       body.innerHTML = `
-        <p class="flyout-lead"><span class="${sev}">${escapeHtml(d.severity || "—")}</span> · ${escapeHtml(d.product || "—")}</p>
+        <p class="flyout-lead flyout-lead--alert"><span class="alert-sev-flyout ${sev}" aria-hidden="true">${severityIconSvgHtml(d.severity)}</span><span class="${sev}">${escapeHtml(d.severity || "—")}</span> · ${escapeHtml(d.product || "—")}</p>
         <dl class="flyout-dl">
           ${flyoutDetailRow("Raised", fmtDate(d.raised_at))}
           ${flyoutDetailRow("Category", escapeHtml(d.category || "—"))}
@@ -2816,6 +3678,11 @@
       resetDashboardFacetFilters();
     });
     document.getElementById("fw-facet-reset")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetFirewallFacetFilters();
+    });
+    document.getElementById("ops-facet-reset")?.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       resetFirewallFacetFilters();
@@ -2897,10 +3764,14 @@
       if (act === "alerts-sev") {
         const sev = t.dataset.alertSeverity;
         if (!sev) return;
-        daState.severity = sev;
+        daSeverityLevels.clear();
+        if (sev !== "all") daSeverityLevels.add(sev);
         loadDashboardAlertFacets()
           .then(() => {
             buildDashboardAlertFilters();
+            updateDashboardAlertsHeading();
+            syncDashboardAlertStatActive();
+            schedulePersistUiState();
             return loadDashboardAlerts({ reset: true });
           })
           .catch(console.error);
@@ -2908,18 +3779,58 @@
     });
 
     const tbody = document.getElementById("dashboard-alerts-body");
+    tbody.addEventListener("change", (e) => {
+      const cb = e.target.closest("input.da-alert-row-check");
+      if (cb) updateDashboardAckButtonState();
+    });
     tbody.addEventListener("click", (e) => {
+      if (e.target.closest("input.da-alert-row-check")) return;
       const tr = e.target.closest("tr.alert-row[data-alert-id]");
       if (!tr) return;
       openAlertFlyout(tr.getAttribute("data-alert-id")).catch(console.error);
     });
     tbody.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target.closest("input.da-alert-row-check")) return;
       const tr = e.target.closest("tr.alert-row[data-alert-id]");
       if (!tr) return;
       e.preventDefault();
       openAlertFlyout(tr.getAttribute("data-alert-id")).catch(console.error);
     });
+
+    document.getElementById("da-alert-select-all")?.addEventListener("change", (ev) => {
+      const on = ev.target.checked;
+      const tb = document.getElementById("dashboard-alerts-body");
+      if (!tb) return;
+      tb.querySelectorAll("tr.alert-row input.da-alert-row-check:not(:disabled)").forEach((cb) => {
+        cb.checked = on;
+      });
+      updateDashboardAckButtonState();
+    });
+
+    document.getElementById("da-ack-btn")?.addEventListener("click", () => {
+      acknowledgeSelectedDashboardAlerts().catch(console.error);
+    });
+
+    document.getElementById("da-raised-quick-filters")?.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-da-raised-quick]");
+      if (!btn) return;
+      e.preventDefault();
+      const preset = btn.getAttribute("data-da-raised-quick");
+      if (!preset || !["hour", "today", "week", "month"].includes(preset)) return;
+      daRaisedPreset = preset;
+      syncDashboardRaisedQuickActive();
+      loadDashboardAlertFacets()
+        .then(() => {
+          buildDashboardAlertFilters();
+          updateDashboardFiltersChrome();
+          schedulePersistUiState();
+          return loadDashboardAlerts({ reset: true });
+        })
+        .catch(console.error);
+    });
+
+    initDashboardTenantMultiselect();
 
     document.getElementById("alert-flyout-backdrop").addEventListener("click", closeAlertFlyout);
     document.querySelector("#alert-flyout .flyout__close-btn").addEventListener("click", closeAlertFlyout);
@@ -3174,7 +4085,7 @@
     const tenantDonutDescText = tenantBillingDonutAriaLabel(billingFacets, stats.tenants);
     return `
       <div class="stat-card stat-card--alerts stat-card--dash-compact">
-        <button type="button" class="stat-card__main stat-card--alert stat-card__main--alert-donut${daState.severity === "all" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="all" title="Show all alerts" aria-label="${escapeAttr(`All alerts, ${stats.alerts} total`)}" aria-describedby="dash-alert-donut-desc">
+        <button type="button" class="stat-card__main stat-card--alert stat-card__main--alert-donut${daSeverityLevels.size === 0 ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="all" title="Show all alerts" aria-label="${escapeAttr(`All alerts, ${stats.alerts} total`)}" aria-describedby="dash-alert-donut-desc">
           <div class="stat-card__label">All alerts</div>
           <div class="dash-alert-donut-stack">
             <div class="dash-alert-donut" style="background: ${donutBg};" aria-hidden="true"></div>
@@ -3185,21 +4096,21 @@
         </button>
         <span id="dash-alert-donut-desc" class="visually-hidden">${escapeHtml(donutDescText)}</span>
         <div class="stat-card__alert-row" role="group" aria-label="Filter alerts by severity">
-          <button type="button" class="stat-card__alert-seg${daState.severity === "low" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="low" title="Filter alerts by low / other severity">
+          <button type="button" class="stat-card__alert-seg${daSeverityLevels.size === 1 && daSeverityLevels.has("low") ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="low" title="Filter alerts by low / other severity">
             <span class="stat-card__seg-left">
               <span class="stat-card__seg-swatch stat-card__seg-swatch--low" aria-hidden="true"></span>
               <span class="stat-card__seg-label">Low</span>
             </span>
             <span class="stat-card__seg-value">${escapeHtml(String(al))}</span>
           </button>
-          <button type="button" class="stat-card__alert-seg${daState.severity === "medium" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="medium" title="Filter alerts by medium severity">
+          <button type="button" class="stat-card__alert-seg${daSeverityLevels.size === 1 && daSeverityLevels.has("medium") ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="medium" title="Filter alerts by medium severity">
             <span class="stat-card__seg-left">
               <span class="stat-card__seg-swatch stat-card__seg-swatch--medium" aria-hidden="true"></span>
               <span class="stat-card__seg-label">Medium</span>
             </span>
             <span class="stat-card__seg-value">${escapeHtml(String(am))}</span>
           </button>
-          <button type="button" class="stat-card__alert-seg${daState.severity === "high" ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="high" title="Filter alerts by high severity">
+          <button type="button" class="stat-card__alert-seg${daSeverityLevels.size === 1 && daSeverityLevels.has("high") ? " is-active" : ""}" data-dash-action="alerts-sev" data-alert-severity="high" title="Filter alerts by high severity">
             <span class="stat-card__seg-left">
               <span class="stat-card__seg-swatch stat-card__seg-swatch--high" aria-hidden="true"></span>
               <span class="stat-card__seg-label">High</span>
@@ -4031,6 +4942,111 @@
       }
       if (stateMs !== null && now - stateMs <= updMs) {
         row._statusRecencyTag = "upd";
+      }
+    }
+  }
+
+  /**
+   * Same NEW / UPD / OLD rules and General settings windows as the firewalls grid, for list rows
+   * that expose created, state/updated, last_sync, and client_id fields.
+   */
+  function applyListRecencyTags(rows, fieldMap) {
+    if (!Array.isArray(rows) || rows.length === 0) return;
+    const { createdKey, stateKey, lastSyncKey, clientKey } = fieldMap;
+    const now = Date.now();
+    const newMs = (fwTagUiSettings.fw_new_max_age_hours || FW_TAG_DEFAULT_NEW_HOURS) * 3600000;
+    const updMs = (fwTagUiSettings.fw_updated_max_age_hours || FW_TAG_DEFAULT_UPD_HOURS) * 3600000;
+    const byClient = new Map();
+    for (const row of rows) {
+      const cid = String(row[clientKey] ?? "").trim();
+      if (!cid) continue;
+      if (!byClient.has(cid)) byClient.set(cid, []);
+      byClient.get(cid).push(row);
+    }
+    const maxSyncByClient = new Map();
+    for (const [cid, list] of byClient) {
+      if (list.length < 2) continue;
+      let maxT = null;
+      for (const r of list) {
+        const t = parseFirewallIsoMs(r[lastSyncKey]);
+        if (t != null && (maxT === null || t > maxT)) maxT = t;
+      }
+      if (maxT !== null && cid) maxSyncByClient.set(cid, maxT);
+    }
+    for (const row of rows) {
+      row._recencyTag = null;
+      const createdMs = parseFirewallIsoMs(row[createdKey]);
+      const stateMs = parseFirewallIsoMs(row[stateKey]);
+      const isNew =
+        createdMs !== null &&
+        stateMs !== null &&
+        now - createdMs <= newMs &&
+        now - stateMs <= newMs;
+      if (isNew) {
+        row._recencyTag = "new";
+        continue;
+      }
+      const cid = String(row[clientKey] ?? "").trim();
+      let isOld = false;
+      if (cid && maxSyncByClient.has(cid)) {
+        const maxT = maxSyncByClient.get(cid);
+        const myT = parseFirewallIsoMs(row[lastSyncKey]);
+        if (myT === null || myT < maxT) isOld = true;
+      }
+      if (isOld) {
+        row._recencyTag = "old";
+        continue;
+      }
+      if (stateMs !== null && now - stateMs <= updMs) {
+        row._recencyTag = "upd";
+      }
+    }
+  }
+
+  /** Tenants: NEW from ``first_sync`` only; UPD from ``updated_at``; OLD from ``last_sync`` vs peers. */
+  function applyTenantRecencyTags(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return;
+    const now = Date.now();
+    const newMs = (fwTagUiSettings.fw_new_max_age_hours || FW_TAG_DEFAULT_NEW_HOURS) * 3600000;
+    const updMs = (fwTagUiSettings.fw_updated_max_age_hours || FW_TAG_DEFAULT_UPD_HOURS) * 3600000;
+    const byClient = new Map();
+    for (const row of rows) {
+      const cid = String(row.client_id ?? "").trim();
+      if (!cid) continue;
+      if (!byClient.has(cid)) byClient.set(cid, []);
+      byClient.get(cid).push(row);
+    }
+    const maxSyncByClient = new Map();
+    for (const [cid, list] of byClient) {
+      if (list.length < 2) continue;
+      let maxT = null;
+      for (const r of list) {
+        const t = parseFirewallIsoMs(r.last_sync);
+        if (t != null && (maxT === null || t > maxT)) maxT = t;
+      }
+      if (maxT !== null && cid) maxSyncByClient.set(cid, maxT);
+    }
+    for (const row of rows) {
+      row._recencyTag = null;
+      const firstMs = parseFirewallIsoMs(row.first_sync);
+      const updatedMs = parseFirewallIsoMs(row.updated_at);
+      if (firstMs !== null && now - firstMs <= newMs) {
+        row._recencyTag = "new";
+        continue;
+      }
+      const cid = String(row.client_id ?? "").trim();
+      let isOld = false;
+      if (cid && maxSyncByClient.has(cid)) {
+        const maxT = maxSyncByClient.get(cid);
+        const myT = parseFirewallIsoMs(row.last_sync);
+        if (myT === null || myT < maxT) isOld = true;
+      }
+      if (isOld) {
+        row._recencyTag = "old";
+        continue;
+      }
+      if (updatedMs !== null && now - updatedMs <= updMs) {
+        row._recencyTag = "upd";
       }
     }
   }
@@ -5927,7 +6943,7 @@
     if (next == null) return;
     const trimmed = String(next).trim();
     if (trimmed === "") {
-      window.alert("Label cannot be empty.");
+      notifyAppUser("Label required", "Label cannot be empty.", "error");
       return;
     }
     if (trimmed === cur) return;
@@ -5945,7 +6961,7 @@
       refreshFwMapMarkers({ refit: false });
       refreshFwDetailFlyoutVisuals();
     } catch (err) {
-      window.alert(err.message || "Could not update label.");
+      notifyAppUser("Could not update label", err.message || "Could not update label.", "error");
     }
   }
 
@@ -6009,20 +7025,18 @@
     return Array.from(set).sort((a, b) => a.localeCompare(b)).slice(0, limit);
   }
 
-  const FW_FACET_SEARCH_KEYS = new Set(["tenant_name", "hostname", "serial_number"]);
+  const FW_FACET_SEARCH_KEYS = new Set(["hostname", "serial_number"]);
 
   /** Status facet options (prepareFirewall labels); always listed so Pending approval is available even with zero matching rows. */
   const FW_STATUS_FACET_PRESETS = ["Connected", "Offline", "Suspended", "Pending approval"];
 
   function fwFacetSearchPlaceholder(key) {
-    if (key === "tenant_name") return "Search tenants…";
     if (key === "hostname") return "Search host names…";
     if (key === "serial_number") return "Search serial numbers…";
     return "";
   }
 
   function fwFacetSearchAriaLabel(key) {
-    if (key === "tenant_name") return "Filter tenant list by search text";
     if (key === "hostname") return "Filter host name list by search text";
     if (key === "serial_number") return "Filter serial number list by search text";
     return "Filter list by search text";
@@ -6067,8 +7081,227 @@
     return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })).slice(0, 80);
   }
 
+  /** Toolbar tenant multiselect (same UX as dashboard alerts); `prefix` builds ids `{prefix}-tenant-ms`, etc. */
+  function createToolbarTenantMultiselect({ prefix, getTenantSet, getDataRows, onChange }) {
+    function optionNames() {
+      const rows = getDataRows() || [];
+      const fromData = new Set();
+      for (const r of rows) {
+        const v = r.tenant_name;
+        fromData.add(v == null || v === "" ? "—" : String(v));
+      }
+      const merged = new Set(fromData);
+      getTenantSet().forEach((t) => merged.add(String(t)));
+      return [...merged].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    }
+
+    function updateSummary() {
+      const sumEl = document.getElementById(`${prefix}-tenant-ms-summary`);
+      const clearBtn = document.getElementById(`${prefix}-tenant-ms-clear`);
+      if (!sumEl) return;
+      const set = getTenantSet();
+      const n = set.size;
+      if (n === 0) {
+        sumEl.textContent = "All tenants";
+        if (clearBtn) clearBtn.hidden = true;
+        return;
+      }
+      if (clearBtn) clearBtn.hidden = false;
+      if (n === 1) {
+        const one = [...set][0];
+        sumEl.textContent = one.length > 42 ? `${one.slice(0, 39)}…` : one;
+        return;
+      }
+      sumEl.textContent = `${n} tenants`;
+    }
+
+    function applySearch() {
+      const inp = document.getElementById(`${prefix}-tenant-ms-search`);
+      const list = document.getElementById(`${prefix}-tenant-ms-list`);
+      if (!inp || !list) return;
+      const q = (inp.value || "").trim().toLowerCase();
+      list.querySelectorAll(".da-tenant-ms__opt").forEach((row) => {
+        const t = (row.getAttribute("data-tenant-label") || "").toLowerCase();
+        row.style.display = !q || t.includes(q) ? "" : "none";
+      });
+    }
+
+    function setOpen(open) {
+      const panel = document.getElementById(`${prefix}-tenant-ms-panel`);
+      const trig = document.getElementById(`${prefix}-tenant-ms-trigger`);
+      if (!panel || !trig) return;
+      panel.hidden = !open;
+      trig.setAttribute("aria-expanded", open ? "true" : "false");
+      trig.classList.toggle("is-open", open);
+      if (open) {
+        const s = document.getElementById(`${prefix}-tenant-ms-search`);
+        if (s) {
+          s.value = "";
+          applySearch();
+          queueMicrotask(() => s.focus());
+        }
+      }
+    }
+
+    function refresh() {
+      const list = document.getElementById(`${prefix}-tenant-ms-list`);
+      if (!list) return;
+      const names = optionNames();
+      const maxOpts = 200;
+      const slice = names.slice(0, maxOpts);
+      const set = getTenantSet();
+      list.innerHTML = slice
+        .map(
+          (name) => `
+      <label class="da-tenant-ms__opt" data-tenant-label="${escapeAttr(name)}">
+        <input type="checkbox" class="da-tenant-ms__cb" value="${escapeAttr(name)}" />
+        <span class="da-tenant-ms__opt-text">${escapeHtml(name)}</span>
+      </label>`
+        )
+        .join("");
+      if (names.length > maxOpts) {
+        list.insertAdjacentHTML(
+          "beforeend",
+          `<p class="da-tenant-ms__cap muted">Showing first ${maxOpts} of ${names.length} tenants. Refine filters to narrow the list.</p>`
+        );
+      }
+      list.querySelectorAll(".da-tenant-ms__cb").forEach((cb) => {
+        cb.checked = set.has(cb.value);
+        cb.addEventListener("change", () => {
+          if (cb.checked) set.add(cb.value);
+          else set.delete(cb.value);
+          updateSummary();
+          schedulePersistUiState();
+          onChange();
+        });
+      });
+      updateSummary();
+      applySearch();
+    }
+
+    let inited = false;
+    function init() {
+      if (inited) return;
+      inited = true;
+      const root = document.getElementById(`${prefix}-tenant-ms`);
+      const trig = document.getElementById(`${prefix}-tenant-ms-trigger`);
+      const panel = document.getElementById(`${prefix}-tenant-ms-panel`);
+      const clearBtn = document.getElementById(`${prefix}-tenant-ms-clear`);
+      const searchInp = document.getElementById(`${prefix}-tenant-ms-search`);
+      if (!root || !trig || !panel) return;
+
+      trig.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setOpen(panel.hidden);
+      });
+
+      clearBtn?.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (getTenantSet().size === 0) return;
+        getTenantSet().clear();
+        refresh();
+        setOpen(false);
+        schedulePersistUiState();
+        onChange();
+      });
+
+      searchInp?.addEventListener("input", () => applySearch());
+      searchInp?.addEventListener("search", () => applySearch());
+
+      searchInp?.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          setOpen(false);
+          trig.focus();
+        }
+      });
+
+      const rootId = `${prefix}-tenant-ms`;
+      document.addEventListener(
+        "pointerdown",
+        (e) => {
+          if (panel.hidden) return;
+          if (e.target.closest(`#${rootId}`)) return;
+          setOpen(false);
+        },
+        true
+      );
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        if (panel.hidden) return;
+        setOpen(false);
+        trig.focus();
+      });
+    }
+
+    return { refresh, init, setOpen };
+  }
+
+  const fwToolbarTenantMs = createToolbarTenantMultiselect({
+    prefix: "fw",
+    getTenantSet: () => {
+      if (!(fwFilterState.tenant_name instanceof Set)) fwFilterState.tenant_name = new Set();
+      return fwFilterState.tenant_name;
+    },
+    getDataRows: () => fwPrepared,
+    onChange: () => {
+      fwController.render();
+      updateFirewallFiltersChrome();
+      renderOperationsView();
+    },
+  });
+
+  const opsToolbarTenantMs = createToolbarTenantMultiselect({
+    prefix: "ops",
+    getTenantSet: () => {
+      if (!(fwFilterState.tenant_name instanceof Set)) fwFilterState.tenant_name = new Set();
+      return fwFilterState.tenant_name;
+    },
+    getDataRows: () => fwPrepared,
+    onChange: () => {
+      fwController.render();
+      updateFirewallFiltersChrome();
+      renderOperationsView();
+    },
+  });
+
+  function getFirewallFilterHosts() {
+    return ["firewall-filters", "ops-firewall-filters"]
+      .map((id) => document.getElementById(id))
+      .filter(Boolean);
+  }
+
+  function bindFirewallFilterHostEvents(host) {
+    if (!host) return;
+    host.querySelectorAll(".filter-group__head").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const g = btn.closest(".filter-group");
+        g.classList.toggle("is-open");
+        btn.setAttribute("aria-expanded", g.classList.contains("is-open"));
+      });
+    });
+    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const cat = cb.dataset.cat;
+        const st = fwFilterState[cat];
+        if (!st) return;
+        if (cb.checked) st.add(cb.value);
+        else st.delete(cb.value);
+        fwController.render();
+        renderOperationsView();
+        schedulePersistUiState();
+      });
+    });
+    bindFwFacetSearchInputs(host);
+  }
+
   function buildFirewallFilters() {
-    const host = document.getElementById("firewall-filters");
+    fwFilterState.tenant_name = new Set();
+    const hosts = getFirewallFilterHosts();
+    const primary = document.getElementById("firewall-filters");
+    if (!primary && hosts.length === 0) return;
     const groups = [
       { key: "status", label: "Status" },
       { key: "group_name", label: "Group" },
@@ -6080,7 +7313,6 @@
       { key: "connected_label", label: "Connected" },
       { key: "suspended_label", label: "Suspended" },
       { key: "external_ips", label: "External IPs" },
-      { key: "tenant_name", label: "Tenant" },
     ];
 
     const enriched = fwPrepared.map((r) => ({
@@ -6089,7 +7321,7 @@
       suspended_label: yesNo(r.suspended),
     }));
 
-    host.innerHTML = groups
+    const innerHtml = groups
       .map((g, idx) => {
         const opts = g.useFirmwareCatalog
           ? [...fwFirmwareVersionCatalog]
@@ -6137,26 +7369,14 @@
       })
       .join("");
 
-    host.querySelectorAll(".filter-group__head").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const g = btn.closest(".filter-group");
-        g.classList.toggle("is-open");
-        btn.setAttribute("aria-expanded", g.classList.contains("is-open"));
-      });
-    });
-
-    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
-      cb.addEventListener("change", () => {
-        const cat = cb.dataset.cat;
-        const st = fwFilterState[cat];
-        if (!st) return;
-        if (cb.checked) st.add(cb.value);
-        else st.delete(cb.value);
-        fwController.render();
-      });
-    });
-    bindFwFacetSearchInputs(host);
+    const targetHosts = hosts.length ? hosts : primary ? [primary] : [];
+    for (const h of targetHosts) {
+      h.innerHTML = innerHtml;
+      bindFirewallFilterHostEvents(h);
+    }
     updateFirewallFiltersChrome();
+    fwToolbarTenantMs.refresh();
+    opsToolbarTenantMs.refresh();
   }
 
   function firewallFacetFilterCount() {
@@ -6168,39 +7388,43 @@
   }
 
   function updateFirewallFiltersChrome() {
-    const wrap = document.getElementById("fw-filters-head-actions");
-    const countEl = document.getElementById("fw-facet-count");
-    const resetBtn = document.getElementById("fw-facet-reset");
-    if (!wrap || !countEl || !resetBtn) return;
     const n = firewallFacetFilterCount();
-    resetBtn.hidden = n === 0;
-    if (n === 0) {
-      wrap.hidden = true;
-      countEl.textContent = "";
-      return;
+    for (const ids of [
+      ["fw-filters-head-actions", "fw-facet-count", "fw-facet-reset"],
+      ["ops-filters-head-actions", "ops-facet-count", "ops-facet-reset"],
+    ]) {
+      const wrap = document.getElementById(ids[0]);
+      const countEl = document.getElementById(ids[1]);
+      const resetBtn = document.getElementById(ids[2]);
+      if (!wrap || !countEl || !resetBtn) continue;
+      resetBtn.hidden = n === 0;
+      if (n === 0) {
+        wrap.hidden = true;
+        countEl.textContent = "";
+        continue;
+      }
+      wrap.hidden = false;
+      countEl.innerHTML = `<span class="filters__facet-count-num">${n}</span> applied`;
     }
-    wrap.hidden = false;
-    countEl.innerHTML = `<span class="filters__facet-count-num">${n}</span> applied`;
   }
 
   function syncFirewallFilterCheckboxesFromState() {
-    const host = document.getElementById("firewall-filters");
-    if (!host) return;
-    host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
-      const cat = cb.dataset.cat;
-      const st = fwFilterState[cat];
-      if (!st) return;
-      cb.checked = st.has(cb.value);
-    });
+    for (const host of getFirewallFilterHosts()) {
+      host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
+        const cat = cb.dataset.cat;
+        const st = fwFilterState[cat];
+        if (!st) return;
+        cb.checked = st.has(cb.value);
+      });
+    }
   }
 
   function clearFirewallFilters() {
     fwLinkMode = null;
-    const host = document.getElementById("firewall-filters");
     for (const st of Object.values(fwFilterState)) {
       if (st && typeof st.clear === "function") st.clear();
     }
-    if (host) {
+    for (const host of getFirewallFilterHosts()) {
       host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
         cb.checked = false;
       });
@@ -6209,15 +7433,17 @@
     const search = document.getElementById("fw-search");
     if (search) search.value = "";
     updateFirewallFiltersChrome();
+    fwToolbarTenantMs.refresh();
+    opsToolbarTenantMs.refresh();
+    renderOperationsView();
   }
 
   function resetFirewallFacetFilters() {
     fwLinkMode = null;
-    const host = document.getElementById("firewall-filters");
     for (const st of Object.values(fwFilterState)) {
       if (st && typeof st.clear === "function") st.clear();
     }
-    if (host) {
+    for (const host of getFirewallFilterHosts()) {
       host.querySelectorAll('input[type="checkbox"][data-cat]').forEach((cb) => {
         cb.checked = false;
       });
@@ -6225,7 +7451,10 @@
     }
     fwController.render();
     setFiltersPanelCollapsed(document.querySelector("#panel-firewalls .filters"), true);
+    setFiltersPanelCollapsed(document.querySelector("#panel-operations .filters"), true);
     schedulePersistUiState();
+    fwToolbarTenantMs.refresh();
+    opsToolbarTenantMs.refresh();
   }
 
   function firewallFiltered() {
@@ -6271,6 +7500,360 @@
         if (!selected.has(val)) return false;
       }
       return true;
+    });
+  }
+
+  function getFwRowSearchText(row) {
+    return [
+      row.status,
+      row.hostname,
+      row.group_name,
+      row.serial_number,
+      row.model,
+      row.firmware_version,
+      (row.firmware_available_updates || []).join(" "),
+      yesNo(row.connected),
+      yesNo(row.suspended),
+      row.external_ips,
+      row.tenant_name,
+      row.state_changed_at,
+      row.tagsPlain,
+      row.alert_count > 0 ? String(row.alert_count) : "",
+      row.has_group_sync_status ? "group sync status" : "",
+      row.firmware_upgrade_count > 0 ? "firmware upgrade" : "",
+      row.firewall_name,
+      row.tenant_id,
+      row.managing_status,
+      row.reporting_status,
+      row.firewall_id,
+      row.capabilities_sort,
+      row.has_location ? "location set update coordinates" : "location set",
+      row.geo_lat != null ? String(row.geo_lat) : "",
+      row.geo_lon != null ? String(row.geo_lon) : "",
+    ]
+      .join(" ")
+      .toLowerCase();
+  }
+
+  let opsAutoRefreshTimer = null;
+  let opsLastSuccessfulRefresh = 0;
+  const OPS_AUTO_REFRESH_MS = 45000;
+
+  function stopOperationsAutoRefresh() {
+    if (opsAutoRefreshTimer != null) {
+      clearInterval(opsAutoRefreshTimer);
+      opsAutoRefreshTimer = null;
+    }
+  }
+
+  function setOperationsRefreshStatus() {
+    const el = document.getElementById("ops-refresh-status");
+    if (!el) return;
+    if (!opsLastSuccessfulRefresh) {
+      el.textContent = "";
+      return;
+    }
+    el.textContent = `Updated ${formatSyncLastRelative(new Date(opsLastSuccessfulRefresh).toISOString())}`;
+  }
+
+  function startOperationsAutoRefresh() {
+    stopOperationsAutoRefresh();
+    if (getActiveTabName() !== "operations") return;
+    opsAutoRefreshTimer = window.setInterval(() => {
+      if (getActiveTabName() !== "operations") return;
+      void loadFirewalls({ preserve: true })
+        .then(() => {
+          opsLastSuccessfulRefresh = Date.now();
+          setOperationsRefreshStatus();
+          onSessionUserActivity();
+        })
+        .catch(() => {});
+    }, OPS_AUTO_REFRESH_MS);
+  }
+
+  function operationsRowsFilteredSorted() {
+    const sortSel = document.getElementById("ops-sort");
+    const mode = sortSel?.value || "state_online_first";
+    let rows = firewallFiltered();
+    const q = (document.getElementById("ops-search")?.value || "").trim().toLowerCase();
+    if (q) rows = rows.filter((row) => getFwRowSearchText(row).includes(q));
+    const cmpHost = (a, b) =>
+      String(a.hostname || "").localeCompare(String(b.hostname || ""), undefined, { sensitivity: "base" });
+    rows = [...rows];
+    rows.sort((a, b) => {
+      const ah = firewallStatusHealthy(a);
+      const bh = firewallStatusHealthy(b);
+      if (mode === "state_online_first") {
+        if (ah !== bh) return ah ? -1 : 1;
+        return cmpHost(a, b);
+      }
+      if (mode === "state_offline_first") {
+        if (ah !== bh) return ah ? 1 : -1;
+        return cmpHost(a, b);
+      }
+      if (mode === "hostname") return cmpHost(a, b);
+      if (mode === "tenant") {
+        return String(a.tenant_name || "").localeCompare(String(b.tenant_name || ""), undefined, {
+          sensitivity: "base",
+        });
+      }
+      if (mode === "last_sync") {
+        const ta = parseFirewallIsoMs(a.last_sync) ?? 0;
+        const tb = parseFirewallIsoMs(b.last_sync) ?? 0;
+        return tb - ta;
+      }
+      if (mode === "state_changed") {
+        const ta = parseFirewallIsoMs(a.state_changed_at) ?? 0;
+        const tb = parseFirewallIsoMs(b.state_changed_at) ?? 0;
+        return tb - ta;
+      }
+      return cmpHost(a, b);
+    });
+    return rows;
+  }
+
+  function operationsCardToneClass(row) {
+    const ap =
+      fwRawIsApprovalPending(row.managing_status) || fwRawIsApprovalPending(row.reporting_status);
+    if (ap) return "ops-card--approval";
+    if (!fwRowConnected(row)) return "ops-card--offline";
+    if (fwRowSuspended(row)) return "ops-card--suspended";
+    return "ops-card--healthy";
+  }
+
+  function operationsCardTintClasses(row) {
+    const now = Date.now();
+    const t = parseFirewallIsoMs(row.state_changed_at);
+    if (t == null || now - t > 15 * 60 * 1000) return "";
+    if (firewallStatusHealthy(row)) return "ops-card--tint-pos";
+    return "ops-card--tint-neg";
+  }
+
+  function renderOperationsPills(row) {
+    const ap =
+      fwRawIsApprovalPending(row.managing_status) || fwRawIsApprovalPending(row.reporting_status);
+    const conn = fwRowConnected(row);
+    const susp = fwRowSuspended(row);
+    const bits = [];
+    if (ap) bits.push(`<span class="ops-pill ops-pill--approval">Pending approval</span>`);
+    else if (!conn) bits.push(`<span class="ops-pill ops-pill--offline">Offline</span>`);
+    else bits.push(`<span class="ops-pill ops-pill--online">Online</span>`);
+    if (susp && conn)
+      bits.push(`<span class="ops-pill ops-pill--suspended">Suspended</span>`);
+    const rawFw = row.firmware_version != null && row.firmware_version !== "" ? String(row.firmware_version) : "";
+    const fwDisp = escapeHtml(fwFirmwareDisplay(row.firmware_version));
+    const fwTitle = rawFw ? escapeAttr(rawFw) : "";
+    bits.push(
+      `<span class="ops-pill ops-pill--fw"${fwTitle ? ` title="${fwTitle}"` : ""}>${fwDisp}</span>`
+    );
+    return bits.join("");
+  }
+
+  function renderOperationsChangeStrip(rows) {
+    const strip = document.getElementById("ops-change-strip");
+    const posEl = document.getElementById("ops-change-strip-pos");
+    const negEl = document.getElementById("ops-change-strip-neg");
+    if (!strip || !posEl || !negEl) return;
+    const windowMs = 15 * 60 * 1000;
+    const now = Date.now();
+    const recent = rows
+      .map((r) => ({ r, t: parseFirewallIsoMs(r.state_changed_at) }))
+      .filter((x) => x.t != null && now - x.t <= windowMs && now - x.t >= 0)
+      .sort((a, b) => b.t - a.t);
+    const pos = recent.find((x) => firewallStatusHealthy(x.r));
+    const neg = recent.find((x) => !firewallStatusHealthy(x.r));
+    let any = false;
+    if (pos) {
+      const host = firewallFilterHostnameValue(pos.r.hostname, pos.r.firewall_name);
+      const rel = formatSyncLastRelative(pos.r.state_changed_at);
+      posEl.textContent = `${host} · ${pos.r.status} · ${rel}`;
+      posEl.hidden = false;
+      any = true;
+    } else {
+      posEl.hidden = true;
+      posEl.textContent = "";
+    }
+    if (neg) {
+      const host = firewallFilterHostnameValue(neg.r.hostname, neg.r.firewall_name);
+      const rel = formatSyncLastRelative(neg.r.state_changed_at);
+      negEl.textContent = `${host} · ${neg.r.status} · ${rel}`;
+      negEl.hidden = false;
+      any = true;
+    } else {
+      negEl.hidden = true;
+      negEl.textContent = "";
+    }
+    strip.hidden = !any;
+  }
+
+  function renderOperationsView() {
+    const grid = document.getElementById("ops-card-grid");
+    if (!grid) return;
+    const rows = operationsRowsFilteredSorted();
+    renderOperationsChangeStrip(rows);
+    if (!rows.length) {
+      grid.innerHTML =
+        '<p class="muted" style="padding:1rem 0;">No firewalls match the current filters.</p>';
+      return;
+    }
+    const cards = rows
+      .map((row) => {
+        const tone = operationsCardToneClass(row);
+        const tint = operationsCardTintClasses(row);
+        const titleText = firewallFilterHostnameValue(row.hostname, row.firewall_name);
+        const hostFacet =
+          row.hostname != null && String(row.hostname) !== "" && String(row.hostname) !== "—"
+            ? String(row.hostname)
+            : "";
+        const hostAttr = escapeAttr(hostFacet);
+        const icon = renderFirewallStatusIconHtml(row);
+        const tenantRaw = row.tenant_name != null ? String(row.tenant_name) : "";
+        const tenantDisp = escapeHtml(tenantRaw || "—");
+        const tenantAttr = escapeAttr(tenantRaw);
+        const modelRaw = row.model != null && row.model !== "" ? String(row.model) : "";
+        const modelDisp = escapeHtml(fwModelDisplay(row.model));
+        const modelTitle = modelRaw && modelRaw !== "—" ? escapeAttr(modelRaw) : "";
+        const syncRel = formatSyncLastRelative(row.last_sync);
+        const stateRel = formatSyncLastRelative(row.state_changed_at);
+        const hostBtn = hostFacet
+          ? `<button type="button" class="cell-link ops-card__hostname-btn" data-ops-hostname="${hostAttr}" title="Open Firewalls and search for this host" aria-label="Open Firewalls and search for ${escapeAttr(titleText)}">${escapeHtml(titleText)}</button>`
+          : `<span class="ops-card__title-text">${escapeHtml(titleText)}</span>`;
+        const tenBtn =
+          tenantRaw && tenantRaw !== "—"
+            ? `<button type="button" class="cell-link ops-card__tenant-btn ops-card__v" data-ops-tenant="${tenantAttr}" title="Open Firewalls and search for this tenant" aria-label="Open Firewalls and search for tenant ${escapeAttr(tenantAttr)}">${tenantDisp}</button>`
+            : `<span class="ops-card__v">${tenantDisp}</span>`;
+        return `<div class="ops-card ${tone} ${tint}" data-ops-fw="${escapeAttr(row._id)}" role="button" tabindex="0" aria-label="Open details for ${escapeAttr(titleText)}">
+                <span class="ops-card__accent" aria-hidden="true"></span>
+                <div class="ops-card__body">
+                  <div class="ops-card__title">${icon}${hostBtn}</div>
+                  <div class="ops-card__pills">${renderOperationsPills(row)}</div>
+                  <div class="ops-card__kv">
+                    <span class="ops-card__k">Last sync</span><span class="ops-card__v">${escapeHtml(syncRel)}</span>
+                    <span class="ops-card__k">State change</span><span class="ops-card__v">${escapeHtml(stateRel)}</span>
+                    <span class="ops-card__k">Model</span><span class="ops-card__v"${modelTitle ? ` title="${modelTitle}"` : ""}>${modelDisp}</span>
+                    <span class="ops-card__k">Tenant</span>${tenBtn}
+                  </div>
+                </div>
+              </div>`;
+      })
+      .join("");
+    grid.innerHTML = `<div class="ops-card-flow">${cards}</div>`;
+  }
+
+  function updateOpsQuickFilterToolbarUi() {
+    const wrap = document.getElementById("ops-toolbar-quick");
+    if (!wrap) return;
+    const c = fwFilterState.connected_label;
+    const s = fwFilterState.suspended_label;
+    const onlineMatch =
+      fwLinkMode === null &&
+      c &&
+      s &&
+      c.size === 1 &&
+      s.size === 1 &&
+      c.has("Yes") &&
+      s.has("No");
+    wrap.querySelectorAll("[data-ops-quick]").forEach((btn) => {
+      const q = btn.getAttribute("data-ops-quick");
+      let on = false;
+      if (q === "online") on = onlineMatch;
+      else if (q === "offline") on = fwLinkMode === "offline";
+      else if (q === "suspended") {
+        const st = fwFilterState.status;
+        on = !!(st && st.size === 1 && st.has("Suspended"));
+      } else if (q === "pending") {
+        const st = fwFilterState.status;
+        on = !!(st && st.size === 1 && st.has("Pending approval"));
+      } else if (q === "firmware_updates") on = fwLinkMode === "firmware_updates";
+      btn.classList.toggle("is-active", on);
+    });
+  }
+
+  function applyOperationsQuickFilter(q) {
+    clearFirewallFilters();
+    const c = fwFilterState.connected_label;
+    const s = fwFilterState.suspended_label;
+    const st = fwFilterState.status;
+    if (q === "online") {
+      c.clear();
+      s.clear();
+      c.add("Yes");
+      s.add("No");
+    } else if (q === "offline") {
+      fwLinkMode = "offline";
+    } else if (q === "suspended") {
+      if (st) {
+        st.clear();
+        st.add("Suspended");
+      }
+    } else if (q === "pending") {
+      if (st) {
+        st.clear();
+        st.add("Pending approval");
+      }
+    } else if (q === "firmware_updates") {
+      fwLinkMode = "firmware_updates";
+    }
+    syncFirewallFilterCheckboxesFromState();
+    fwController.render();
+    renderOperationsView();
+    updateFirewallFiltersChrome();
+    updateFwQuickFilterToolbarUi();
+    updateOpsQuickFilterToolbarUi();
+    fwToolbarTenantMs.refresh();
+    opsToolbarTenantMs.refresh();
+    schedulePersistUiState();
+  }
+
+  function initOperationsViewPanel() {
+    document.getElementById("ops-sort")?.addEventListener("change", () => {
+      renderOperationsView();
+      schedulePersistUiState();
+    });
+    document.getElementById("ops-search")?.addEventListener("input", () => {
+      renderOperationsView();
+      schedulePersistUiState();
+    });
+    document.getElementById("ops-toolbar-quick")?.addEventListener("click", (e) => {
+      const t = e.target.closest("[data-ops-quick]");
+      if (!t) return;
+      applyOperationsQuickFilter(t.getAttribute("data-ops-quick"));
+    });
+    const opsGrid = document.getElementById("ops-card-grid");
+    opsGrid?.addEventListener("click", (e) => {
+      const hostBtn = e.target.closest(".ops-card__hostname-btn");
+      if (hostBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const h = hostBtn.getAttribute("data-ops-hostname");
+        if (h && h !== "—") {
+          goToFirewallsWithSearchOnly(h);
+        }
+        return;
+      }
+      const tenBtn = e.target.closest(".ops-card__tenant-btn");
+      if (tenBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const t = tenBtn.getAttribute("data-ops-tenant");
+        if (t != null && t !== "" && t !== "—") {
+          goToFirewallsWithSearchOnly(t);
+        }
+        return;
+      }
+      const card = e.target.closest("[data-ops-fw]");
+      if (!card) return;
+      const id = card.getAttribute("data-ops-fw");
+      if (!id) return;
+      openFwDetailFlyout(id).catch(console.error);
+    });
+    opsGrid?.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const card = e.target.closest(".ops-card[data-ops-fw]");
+      if (!card || e.target.closest(".ops-card__hostname-btn, .ops-card__tenant-btn")) return;
+      e.preventDefault();
+      const id = card.getAttribute("data-ops-fw");
+      if (id) openFwDetailFlyout(id).catch(console.error);
     });
   }
 
@@ -6321,41 +7904,14 @@
     sortDelegateRoot: fwTableEl,
     initialSort: { sortKey: "status", sortDir: 1 },
     getFilteredRows: firewallFiltered,
-    getRowSearchText: (row) =>
-      [
-        row.status,
-        row.hostname,
-        row.group_name,
-        row.serial_number,
-        row.model,
-        row.firmware_version,
-        (row.firmware_available_updates || []).join(" "),
-        yesNo(row.connected),
-        yesNo(row.suspended),
-        row.external_ips,
-        row.tenant_name,
-        row.state_changed_at,
-        row.tagsPlain,
-        row.alert_count > 0 ? String(row.alert_count) : "",
-        row.has_group_sync_status ? "group sync status" : "",
-        row.firmware_upgrade_count > 0 ? "firmware upgrade" : "",
-        row.firewall_name,
-        row.tenant_id,
-        row.managing_status,
-        row.reporting_status,
-        row.firewall_id,
-        row.capabilities_sort,
-        row.has_location ? "location set update coordinates" : "location set",
-        row.geo_lat != null ? String(row.geo_lat) : "",
-        row.geo_lon != null ? String(row.geo_lon) : "",
-      ]
-        .join(" ")
-        .toLowerCase(),
+    getRowSearchText: getFwRowSearchText,
     renderRow: (row, selected) => renderFirewallDataRow(row, selected),
     afterRender: () => {
       updateFirewallFiltersChrome();
       refreshFwMapMarkers({ refit: false });
       updateFwQuickFilterToolbarUi();
+      updateOpsQuickFilterToolbarUi();
+      renderOperationsView();
       updateFwApproveButtonState();
       updateFwFirmwareUpgradeButtonState();
       updateFwDeleteLocalButtonState();
@@ -6671,15 +8227,26 @@
             );
           }
         }
-        window.alert(lines.length ? lines.join("\n") : "Done.");
+        const summaryText = lines.length ? lines.join("\n") : "Done.";
+        const summaryVariant =
+          /(^|\n)Errors?:/i.test(summaryText) || /(^|\n)Failed:/i.test(summaryText) ? "info" : "success";
+        notifyAppUser("Firmware upgrade", summaryText, summaryVariant);
         closeModal();
         fwController.clearSelection();
-        await loadFirewalls({ preserve: false });
-        await loadDashboard({});
-        refreshDashboardStatCards();
-        refreshAppSyncStatusBar();
+        try {
+          await loadFirewalls({ preserve: false });
+          await loadDashboard({});
+          refreshDashboardStatCards();
+          refreshAppSyncStatusBar();
+        } catch (refreshErr) {
+          notifyAppUser(
+            "Dashboard refresh",
+            refreshErr && refreshErr.message ? refreshErr.message : String(refreshErr),
+            "error"
+          );
+        }
       } catch (err) {
-        window.alert(err && err.message ? err.message : String(err));
+        notifyAppUser("Firmware upgrade", err && err.message ? err.message : String(err), "error");
       } finally {
         updateFwFirmwareBatchConfirmEnabled();
       }
@@ -6732,6 +8299,10 @@
     }
     if (delLocal) {
       delLocal.hidden = !admin;
+    }
+    const grCreate = document.getElementById("gr-create-group-btn");
+    if (grCreate) {
+      grCreate.hidden = !admin;
     }
     updateFwApproveButtonState();
     updateFwFirmwareUpgradeButtonState();
@@ -6821,10 +8392,12 @@
         const deleted = Array.isArray(res.deleted) ? res.deleted.length : 0;
         const nf = Array.isArray(res.not_found) ? res.not_found.length : 0;
         if (nf > 0) {
-          window.alert(
+          notifyAppUser(
+            "Remove firewalls",
             deleted > 0
               ? `Removed ${deleted} from the local database. ${nf} selected id(s) were not found.`
-              : `No matching firewalls in the local database (${nf} id(s)).`
+              : `No matching firewalls in the local database (${nf} id(s)).`,
+            "info"
           );
         }
         closeModal();
@@ -6837,7 +8410,7 @@
         if (statusEl) {
           statusEl.textContent = err && err.message ? err.message : String(err);
         } else {
-          window.alert(err && err.message ? err.message : String(err));
+          notifyAppUser("Remove firewalls", err && err.message ? err.message : String(err), "error");
         }
       } finally {
         proceed.disabled = false;
@@ -6887,14 +8460,19 @@
             );
           }
         }
-        window.alert(lines.length ? lines.join("\n") : "Done.");
+        const approveText = lines.length ? lines.join("\n") : "Done.";
+        const approveVariant =
+          /(^|\n)Errors?:/i.test(approveText) || /(^|\n)Credential sync issues:/i.test(approveText)
+            ? "info"
+            : "success";
+        notifyAppUser("Approve firewalls", approveText, approveVariant);
         fwController.clearSelection();
         await loadFirewalls({ preserve: false });
         await loadDashboard({});
         refreshDashboardStatCards();
         refreshAppSyncStatusBar();
       } catch (err) {
-        window.alert(err && err.message ? err.message : String(err));
+        notifyAppUser("Approve firewalls", err && err.message ? err.message : String(err), "error");
       } finally {
         updateFwApproveButtonState();
       }
@@ -6977,14 +8555,7 @@
   }
 
   function openFirewallTenantFilterGroup() {
-    expandFirewallFiltersPanel();
-    const wrap = document.querySelector(
-      '#firewall-filters .filter-group[data-cat-wrap="tenant_name"]'
-    );
-    if (!wrap) return;
-    wrap.classList.add("is-open");
-    const head = wrap.querySelector(".filter-group__head");
-    if (head) head.setAttribute("aria-expanded", "true");
+    fwToolbarTenantMs.setOpen(true);
   }
 
   function goToFirewallsFilteredByTenant(tenantName) {
@@ -6996,6 +8567,7 @@
       tn.add(tenantName);
     }
     syncFirewallFilterCheckboxesFromState();
+    fwToolbarTenantMs.refresh();
     openFirewallTenantFilterGroup();
     fwController.resetSort();
     fwController.resetPage();
@@ -7004,16 +8576,12 @@
 
   function openFirewallTenantAndGroupFilterGroups() {
     expandFirewallFiltersPanel();
-    for (const sel of [
-      '#firewall-filters .filter-group[data-cat-wrap="tenant_name"]',
-      '#firewall-filters .filter-group[data-cat-wrap="group_name"]',
-    ]) {
-      const wrap = document.querySelector(sel);
-      if (!wrap) continue;
-      wrap.classList.add("is-open");
-      const head = wrap.querySelector(".filter-group__head");
-      if (head) head.setAttribute("aria-expanded", "true");
-    }
+    fwToolbarTenantMs.setOpen(true);
+    const wrap = document.querySelector('#firewall-filters .filter-group[data-cat-wrap="group_name"]');
+    if (!wrap) return;
+    wrap.classList.add("is-open");
+    const head = wrap.querySelector(".filter-group__head");
+    if (head) head.setAttribute("aria-expanded", "true");
   }
 
   /** Jump to Firewalls with tenant (+ optional Central group leaf name) facet filters applied. */
@@ -7032,6 +8600,7 @@
       g.add(leaf);
     }
     syncFirewallFilterCheckboxesFromState();
+    fwToolbarTenantMs.refresh();
     openFirewallTenantAndGroupFilterGroups();
     fwController.resetSort();
     fwController.resetPage();
@@ -7040,8 +8609,8 @@
 
   function openGroupsTenantGroupParentFilterGroups() {
     expandGroupFiltersPanel();
+    grToolbarTenantMs.setOpen(true);
     for (const sel of [
-      '#group-filters .filter-group[data-cat-wrap="tenant_name"]',
       '#group-filters .filter-group[data-cat-wrap="group_name"]',
       '#group-filters .filter-group[data-cat-wrap="parent_display"]',
     ]) {
@@ -7070,11 +8639,15 @@
       });
     }
 
-    grFilterState.tenant_name?.add(String(row.tenant_name ?? "—"));
-    grFilterState.group_name?.add(String(row.group_name ?? "—"));
-    grFilterState.parent_display?.add(String(row.parent_display ?? "—"));
+    if (!(grFilterState.tenant_name instanceof Set)) grFilterState.tenant_name = new Set();
+    if (!(grFilterState.group_name instanceof Set)) grFilterState.group_name = new Set();
+    if (!(grFilterState.parent_display instanceof Set)) grFilterState.parent_display = new Set();
+    grFilterState.tenant_name.add(String(row.tenant_name ?? "—"));
+    grFilterState.group_name.add(String(row.group_name ?? "—"));
+    grFilterState.parent_display.add(String(row.parent_display ?? "—"));
 
     syncGroupFilterCheckboxesFromState();
+    grToolbarTenantMs.refresh();
     updateGroupFiltersChrome();
     grController.resetSort();
     grController.resetPage();
@@ -7093,6 +8666,24 @@
     wrap.classList.add("is-open");
     const head = wrap.querySelector(".filter-group__head");
     if (head) head.setAttribute("aria-expanded", "true");
+  }
+
+  /**
+   * Switch to Firewalls and set the toolbar search only (no facet changes).
+   * Used from Operations cards so shared fwFilterState does not reset and the Operations
+   * view keeps the same facet filters when the user returns.
+   */
+  function goToFirewallsWithSearchOnly(query) {
+    const raw = query != null ? String(query).trim() : "";
+    if (!raw || raw === "—") return;
+    const search = document.getElementById("fw-search");
+    if (search) search.value = raw;
+    fwController.resetSort();
+    fwController.resetPage();
+    closeAlertFlyout();
+    activateTab("firewalls");
+    fwController.render();
+    schedulePersistUiState();
   }
 
   function goToFirewallsFilteredByHostname(hostname) {
@@ -7135,6 +8726,20 @@
     fwController.resetPage();
     closeAlertFlyout();
     activateTab("firewalls");
+  }
+
+  /** Firewalls tab search matches ``firewall_id`` (and other row text); facets cleared. */
+  function goToFirewallsFilteredByFirewallId(firewallId) {
+    const id = firewallId != null ? String(firewallId).trim() : "";
+    if (!id) return;
+    clearFirewallFilters();
+    const search = document.getElementById("fw-search");
+    if (search) search.value = id;
+    fwController.resetSort();
+    fwController.resetPage();
+    closeAlertFlyout();
+    activateTab("firewalls");
+    schedulePersistUiState();
   }
 
   function goToFirewallsUnfiltered() {
@@ -7264,6 +8869,13 @@
     if (!preserve) {
       fwController.clearSelection();
       fwController.resetPage();
+    }
+    fwToolbarTenantMs.refresh();
+    opsToolbarTenantMs.refresh();
+    renderOperationsView();
+    if (getActiveTabName() === "operations") {
+      opsLastSuccessfulRefresh = Date.now();
+      setOperationsRefreshStatus();
     }
     refreshFwMapMarkers();
   }
@@ -7501,6 +9113,9 @@
       billing_type: row.billing_type || "—",
       api_host: row.api_host || "—",
       updated_at: row.updated_at || "",
+      first_sync: row.first_sync || "",
+      last_sync: row.last_sync || "",
+      client_id: row.client_id || "",
     };
   }
 
@@ -7705,11 +9320,12 @@
   function renderTnDataCell(colId, row) {
     switch (colId) {
       case "name": {
+        const pill = renderFwRecencyPillHtml(row._recencyTag);
         const nameCell =
           row.name && row.name !== "—"
             ? `<button type="button" class="cell-link tenant-to-firewalls" data-tenant-name="${escapeHtml(row.name)}" title="Show firewalls for this tenant">${escapeHtml(row.name)}</button>`
             : `<span>${escapeHtml(row.name)}</span>`;
-        return `<td>${nameCell}</td>`;
+        return `<td><span class="table-recency-inline">${pill}${nameCell}</span></td>`;
       }
       case "firewall_count": {
         const n = row.firewall_count ?? 0;
@@ -7791,6 +9407,7 @@
     const preserve = opts.preserve === true;
     const rows = await loadJson("/api/tenants");
     tnPrepared = rows.map(prepareTenant);
+    applyTenantRecencyTags(tnPrepared);
     buildTenantFilters();
     if (!preserve) {
       tnController.clearSelection();
@@ -7812,6 +9429,12 @@
     },
     { id: "tenant_name", label: "Tenant", sortKey: "tenant_name", thClass: "th-sortable" },
     {
+      id: "imported_from",
+      label: "Imported from",
+      sortKey: "imported_from",
+      thClass: "th-sortable",
+    },
+    {
       id: "firewall_count",
       label: "Firewalls",
       sortKey: "firewall_count",
@@ -7822,6 +9445,12 @@
       label: "Sync issues",
       sortKey: "sync_issues_count",
       thClass: "th-sortable gr-col-sync-issues",
+    },
+    {
+      id: "updated_at",
+      label: "Updated at",
+      sortKey: "updated_at",
+      thClass: "th-sortable gr-col-updated-at",
     },
     {
       id: "group_name",
@@ -7848,13 +9477,6 @@
       id: "last_sync",
       label: "Last sync",
       sortKey: "last_sync",
-      thClass: "th-sortable",
-      defaultVisible: false,
-    },
-    {
-      id: "updated_at",
-      label: "Updated",
-      sortKey: "updated_at",
       thClass: "th-sortable",
       defaultVisible: false,
     },
@@ -8096,8 +9718,15 @@
       firewall_count: row.firewall_count ?? 0,
       sync_issues_count: row.sync_issues_count ?? 0,
       locked_label: row.locked_label || "No",
+      created_at: row.created_at || "",
       last_sync: row.last_sync || "",
       updated_at: row.updated_at || "",
+      client_id: row.client_id || "",
+      imported_from: (row.imported_from && String(row.imported_from).trim()) || "",
+      imported_from_firewall_id:
+        row.imported_from_firewall_id != null && String(row.imported_from_firewall_id).trim() !== ""
+          ? String(row.imported_from_firewall_id).trim()
+          : "",
     };
   }
 
@@ -8128,11 +9757,24 @@
     });
   }
 
+  const grToolbarTenantMs = createToolbarTenantMultiselect({
+    prefix: "gr",
+    getTenantSet: () => {
+      if (!(grFilterState.tenant_name instanceof Set)) grFilterState.tenant_name = new Set();
+      return grFilterState.tenant_name;
+    },
+    getDataRows: () => grPrepared,
+    onChange: () => {
+      grController.render();
+      updateGroupFiltersChrome();
+    },
+  });
+
   function buildGroupFilters() {
+    grFilterState.tenant_name = new Set();
     const host = document.getElementById("group-filters");
     if (!host) return;
     const groups = [
-      { key: "tenant_name", label: "Tenant" },
       { key: "group_name", label: "Group name" },
       { key: "parent_display", label: "Parent group" },
       { key: "locked_label", label: "Locked" },
@@ -8183,6 +9825,7 @@
       });
     });
     updateGroupFiltersChrome();
+    grToolbarTenantMs.refresh();
   }
 
   function groupFacetFilterCount() {
@@ -8233,6 +9876,17 @@
     grController.render();
     setFiltersPanelCollapsed(document.querySelector("#panel-groups .filters"), true);
     schedulePersistUiState();
+    grToolbarTenantMs.refresh();
+  }
+
+  function grImportFromPillStyleAttr(label) {
+    let h = 5381;
+    const t = String(label);
+    for (let i = 0; i < t.length; i++) {
+      h = ((h << 5) + h) ^ t.charCodeAt(i);
+    }
+    const hue = Math.abs(h) % 360;
+    return `background:hsl(${hue} 42% 90%);color:hsl(${hue} 48% 22%);border:1px solid hsl(${hue} 38% 76%)`;
   }
 
   function renderGrDataCell(colId, row) {
@@ -8245,10 +9899,24 @@
         return `<td>${cell}</td>`;
       }
       case "breadcrumb": {
+        const pill = renderFwRecencyPillHtml(row._recencyTag);
         const tn = escapeAttr(row.tenant_name);
         const gn = escapeAttr(row.group_name);
         const inner = `<button type="button" class="cell-link gr-to-firewalls" data-tenant-name="${tn}" data-group-name="${gn}" title="Show firewalls in this tenant and group">${groupBreadcrumbHtml(row)}</button>`;
-        return `<td class="gr-col-group">${inner}</td>`;
+        return `<td class="gr-col-group"><span class="table-recency-inline">${pill}${inner}</span></td>`;
+      }
+      case "imported_from": {
+        const v = (row.imported_from || "").trim();
+        if (!v) return `<td class="gr-col-imported-from"></td>`;
+        const style = grImportFromPillStyleAttr(v);
+        const styleEsc = escapeAttr(style);
+        const fid = (row.imported_from_firewall_id || "").trim();
+        if (fid) {
+          const pill = `<button type="button" class="tag-pill gr-import-pill gr-import-pill--action" style="${styleEsc}" data-firewall-id="${escapeAttr(fid)}" title="Show this firewall on the Firewalls tab">${escapeHtml(v)}</button>`;
+          return `<td class="gr-col-imported-from">${pill}</td>`;
+        }
+        const pill = `<span class="tag-pill gr-import-pill" style="${styleEsc}">${escapeHtml(v)}</span>`;
+        return `<td class="gr-col-imported-from">${pill}</td>`;
       }
       case "firewall_count": {
         const n = row.firewall_count ?? 0;
@@ -8275,8 +9943,15 @@
         return `<td>${escapeHtml(row.locked_label)}</td>`;
       case "last_sync":
         return `<td class="muted">${fmtDate(row.last_sync)}</td>`;
-      case "updated_at":
-        return `<td class="muted">${fmtDate(row.updated_at)}</td>`;
+      case "updated_at": {
+        const iso = row.updated_at;
+        const raw = iso == null ? "" : String(iso).trim();
+        if (!raw) return `<td class="muted gr-col-updated-at">—</td>`;
+        const rel = formatSyncLastRelative(iso, true);
+        const full = syncPreciseTimeForTitle(iso);
+        const titleAttr = full ? ` title="${escapeAttr(full)}"` : "";
+        return `<td class="muted gr-col-updated-at"${titleAttr}>${escapeHtml(rel)}</td>`;
+      }
       case "tenant_id":
         return `<td class="fw-col-code">${escapeHtml(row.tenant_id)}</td>`;
       case "id":
@@ -8309,6 +9984,8 @@
     getRowSearchText: (row) =>
       [
         row.tenant_name,
+        row.imported_from,
+        row.imported_from_firewall_id,
         row.breadcrumb,
         row.group_name,
         row.parent_display,
@@ -8329,7 +10006,431 @@
 
   initGrColumnPicker();
 
+  let grCreateImportSources = [];
+  let grCreateAvailableAll = [];
+  let grCreateAssignedIds = [];
+  let grCreateSelectedAvailId = "";
+  let grCreateSelectedAssignedId = "";
+  let grCreateSelectedImportId = "";
+  let grCreateModalFocusBefore = null;
+
+  function grCreateFirewallLabel(fw) {
+    const name = (fw && fw.name != null && String(fw.name).trim() !== "" ? String(fw.name).trim() : null) || "—";
+    const host = fw && fw.hostname != null && String(fw.hostname).trim() !== "" ? String(fw.hostname).trim() : "";
+    return { name, host };
+  }
+
+  function grCreateMatchesSearch(fw, q) {
+    const t = (q || "").trim().toLowerCase();
+    if (!t) return true;
+    const { name, host } = grCreateFirewallLabel(fw);
+    return `${name} ${host}`.toLowerCase().includes(t);
+  }
+
+  function grCreateByIdMap() {
+    const m = new Map();
+    for (const f of grCreateImportSources) {
+      const id = String(f.id || "").trim();
+      if (id) m.set(id, f);
+    }
+    for (const f of grCreateAvailableAll) {
+      const id = String(f.id || "").trim();
+      if (id) m.set(id, f);
+    }
+    return m;
+  }
+
+  function grCreateRenderFwRowHtml(fw, selectedId, role) {
+    const id = String(fw.id || "").trim();
+    const { name, host } = grCreateFirewallLabel(fw);
+    const icon = renderFirewallStatusIconHtml(fw);
+    const sel = id === selectedId ? " is-selected" : "";
+    return `<li role="option" tabindex="-1" class="gr-create-group-modal__fw-item${sel}" data-fw-id="${escapeAttr(id)}" data-role="${escapeAttr(role)}">
+      ${icon}
+      <div class="gr-create-group-modal__fw-item-main">
+        <span class="gr-create-group-modal__fw-badge">${escapeHtml(name)}</span>
+        ${host ? `<span class="gr-create-group-modal__fw-host">${escapeHtml(host)}</span>` : ""}
+      </div>
+    </li>`;
+  }
+
+  function grCreateFilteredAvailable() {
+    const q = document.getElementById("gr-create-avail-search")?.value || "";
+    const assigned = new Set(grCreateAssignedIds);
+    return grCreateAvailableAll.filter((f) => {
+      const id = String(f.id || "").trim();
+      return id && !assigned.has(id) && grCreateMatchesSearch(f, q);
+    });
+  }
+
+  function grCreateFilteredAssigned() {
+    const q = document.getElementById("gr-create-assigned-search")?.value || "";
+    const m = grCreateByIdMap();
+    return grCreateAssignedIds.map((id) => m.get(id)).filter((f) => f && grCreateMatchesSearch(f, q));
+  }
+
+  function grCreateRenderDualLists() {
+    const availEl = document.getElementById("gr-create-avail-list");
+    const assEl = document.getElementById("gr-create-assigned-list");
+    if (!availEl || !assEl) return;
+    const fa = grCreateFilteredAvailable();
+    const fb = grCreateFilteredAssigned();
+    if (grCreateSelectedAvailId && !fa.some((x) => String(x.id) === grCreateSelectedAvailId)) {
+      grCreateSelectedAvailId = "";
+    }
+    if (grCreateSelectedAssignedId && !fb.some((x) => String(x.id) === grCreateSelectedAssignedId)) {
+      grCreateSelectedAssignedId = "";
+    }
+    availEl.innerHTML = fa.map((f) => grCreateRenderFwRowHtml(f, grCreateSelectedAvailId, "avail")).join("");
+    assEl.innerHTML = fb.map((f) => grCreateRenderFwRowHtml(f, grCreateSelectedAssignedId, "assigned")).join("");
+    grCreateUpdateXferButtons();
+  }
+
+  function grCreateRenderImportList() {
+    const host = document.getElementById("gr-create-import-list");
+    if (!host) return;
+    if (grCreateSelectedImportId && !grCreateImportSources.some((x) => String(x.id) === grCreateSelectedImportId)) {
+      grCreateSelectedImportId = "";
+    }
+    host.innerHTML = grCreateImportSources
+      .map((f) => grCreateRenderFwRowHtml(f, grCreateSelectedImportId, "import"))
+      .join("");
+  }
+
+  function grCreateUpdateXferButtons() {
+    const b1 = document.getElementById("gr-create-xfer-one-right");
+    const b2 = document.getElementById("gr-create-xfer-all-right");
+    const b3 = document.getElementById("gr-create-xfer-one-left");
+    const b4 = document.getElementById("gr-create-xfer-all-left");
+    const fa = grCreateFilteredAvailable();
+    const nAss = grCreateAssignedIds.length;
+    if (b1) b1.disabled = !grCreateSelectedAvailId || !fa.some((x) => String(x.id) === grCreateSelectedAvailId);
+    if (b2) b2.disabled = fa.length === 0;
+    if (b3) b3.disabled = !grCreateSelectedAssignedId;
+    if (b4) b4.disabled = nAss === 0;
+  }
+
+  function grCreateConfigMode() {
+    const imp = document.getElementById("gr-create-config-import");
+    return imp && imp.checked ? "import" : "default";
+  }
+
+  function grCreateUpdateImportVisibility() {
+    const wrap = document.getElementById("gr-create-import-wrap");
+    const importRadio = document.getElementById("gr-create-config-import");
+    if (!wrap) return;
+    const show = importRadio && importRadio.checked;
+    wrap.hidden = !show;
+    if (!show) {
+      grCreateSelectedImportId = "";
+      grCreateRenderImportList();
+    } else {
+      grCreateRenderImportList();
+    }
+  }
+
+  function grCreateSetTenantReady(ready) {
+    const lock = document.getElementById("gr-create-group-main-lock");
+    const nameIn = document.getElementById("gr-create-group-name");
+    const fs = document.getElementById("gr-create-group-fields");
+    if (lock) {
+      lock.classList.toggle("gr-create-group-modal__main-lock--inactive", !ready);
+    }
+    if (nameIn) {
+      nameIn.disabled = !ready;
+    }
+    if (fs) {
+      fs.disabled = !ready;
+    }
+    grCreateUpdateSubmitEnabled();
+  }
+
+  function grCreateUpdateSubmitEnabled() {
+    const btn = document.getElementById("gr-create-group-submit");
+    const nameIn = document.getElementById("gr-create-group-name");
+    if (!btn || !nameIn || nameIn.disabled) {
+      if (btn) btn.disabled = true;
+      return;
+    }
+    const name = (nameIn.value || "").trim();
+    if (!name) {
+      btn.disabled = true;
+      return;
+    }
+    if (grCreateConfigMode() === "import" && grCreateImportSources.length > 0 && !grCreateSelectedImportId) {
+      btn.disabled = true;
+      return;
+    }
+    btn.disabled = false;
+  }
+
+  function resetGrCreateGroupModal() {
+    grCreateImportSources = [];
+    grCreateAvailableAll = [];
+    grCreateAssignedIds = [];
+    grCreateSelectedAvailId = "";
+    grCreateSelectedAssignedId = "";
+    grCreateSelectedImportId = "";
+    const tenantSel = document.getElementById("gr-create-tenant");
+    if (tenantSel) tenantSel.value = "";
+    const nameIn = document.getElementById("gr-create-group-name");
+    if (nameIn) nameIn.value = "";
+    const defRadio = document.getElementById("gr-create-config-default");
+    if (defRadio) defRadio.checked = true;
+    const st = document.getElementById("gr-create-group-modal-status");
+    if (st) st.textContent = "";
+    const avs = document.getElementById("gr-create-avail-search");
+    const ass = document.getElementById("gr-create-assigned-search");
+    if (avs) avs.value = "";
+    if (ass) ass.value = "";
+    grCreateSetTenantReady(false);
+    grCreateUpdateImportVisibility();
+    grCreateRenderDualLists();
+    grCreateRenderImportList();
+    grCreateUpdateSubmitEnabled();
+  }
+
+  async function openGrCreateGroupModal() {
+    const modal = document.getElementById("gr-create-group-modal");
+    if (!modal) return;
+    resetGrCreateGroupModal();
+    grCreateModalFocusBefore = document.activeElement;
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+    try {
+      const tenants = await loadJson("/api/tenants");
+      const sel = document.getElementById("gr-create-tenant");
+      if (sel) {
+        const cur = sel.value;
+        sel.innerHTML =
+          '<option value="">Select tenant…</option>' +
+          (Array.isArray(tenants)
+            ? tenants
+                .map((t) => {
+                  const id = String(t.id || "").trim();
+                  if (!id) return "";
+                  const lab = String(t.show_as || t.name || id).trim() || id;
+                  return `<option value="${escapeAttr(id)}">${escapeHtml(lab)}</option>`;
+                })
+                .join("")
+            : "");
+        if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+      }
+    } catch {
+      const st = document.getElementById("gr-create-group-modal-status");
+      if (st) st.textContent = "Could not load tenants.";
+    }
+    document.getElementById("gr-create-tenant")?.focus();
+  }
+
+  function closeGrCreateGroupModal() {
+    const modal = document.getElementById("gr-create-group-modal");
+    if (!modal || modal.hidden) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+    if (grCreateModalFocusBefore && typeof grCreateModalFocusBefore.focus === "function") {
+      grCreateModalFocusBefore.focus();
+    }
+    grCreateModalFocusBefore = null;
+  }
+
+  async function grCreateOnTenantSelected() {
+    const sel = document.getElementById("gr-create-tenant");
+    const st = document.getElementById("gr-create-group-modal-status");
+    const tid = (sel?.value || "").trim();
+    grCreateImportSources = [];
+    grCreateAvailableAll = [];
+    grCreateAssignedIds = [];
+    grCreateSelectedAvailId = "";
+    grCreateSelectedAssignedId = "";
+    grCreateSelectedImportId = "";
+    const avs = document.getElementById("gr-create-avail-search");
+    const ass = document.getElementById("gr-create-assigned-search");
+    if (avs) avs.value = "";
+    if (ass) ass.value = "";
+    if (!tid) {
+      grCreateSetTenantReady(false);
+      if (st) st.textContent = "";
+      grCreateUpdateImportVisibility();
+      grCreateRenderDualLists();
+      return;
+    }
+    grCreateSetTenantReady(false);
+    if (st) st.textContent = "Loading firewalls…";
+    try {
+      const data = await loadJson(
+        `/api/tenants/${encodeURIComponent(tid)}/firewall-group-create-data`
+      );
+      grCreateImportSources = Array.isArray(data.import_sources) ? data.import_sources : [];
+      grCreateAvailableAll = Array.isArray(data.available_firewalls) ? data.available_firewalls : [];
+      if (st) st.textContent = "";
+      grCreateSetTenantReady(true);
+    } catch (err) {
+      if (st) {
+        st.textContent =
+          err && err.message ? String(err.message) : "Could not load firewalls for this tenant.";
+      }
+      grCreateSetTenantReady(false);
+      grCreateImportSources = [];
+      grCreateAvailableAll = [];
+    }
+    grCreateUpdateImportVisibility();
+    grCreateRenderDualLists();
+    grCreateUpdateSubmitEnabled();
+  }
+
+  function initGrCreateGroupModal() {
+    document.getElementById("gr-create-group-btn")?.addEventListener("click", () => {
+      if (!isAdmin()) return;
+      openGrCreateGroupModal();
+    });
+    document.getElementById("gr-create-group-modal-close")?.addEventListener("click", () => {
+      closeGrCreateGroupModal();
+    });
+    document.getElementById("gr-create-group-cancel")?.addEventListener("click", () => {
+      closeGrCreateGroupModal();
+    });
+    document.getElementById("gr-create-group-modal")?.querySelector(".gr-create-group-modal__backdrop")
+      ?.addEventListener("click", () => {
+        closeGrCreateGroupModal();
+      });
+    document.getElementById("gr-create-tenant")?.addEventListener("change", () => {
+      grCreateOnTenantSelected();
+    });
+    document.getElementById("gr-create-group-name")?.addEventListener("input", () => {
+      grCreateUpdateSubmitEnabled();
+    });
+    document.getElementById("gr-create-config-default")?.addEventListener("change", () => {
+      grCreateUpdateImportVisibility();
+      grCreateUpdateSubmitEnabled();
+    });
+    document.getElementById("gr-create-config-import")?.addEventListener("change", () => {
+      grCreateUpdateImportVisibility();
+      grCreateUpdateSubmitEnabled();
+    });
+    document.getElementById("gr-create-avail-search")?.addEventListener("input", () => {
+      grCreateRenderDualLists();
+    });
+    document.getElementById("gr-create-assigned-search")?.addEventListener("input", () => {
+      grCreateRenderDualLists();
+    });
+    document.getElementById("gr-create-avail-list")?.addEventListener("click", (e) => {
+      const li = e.target.closest(".gr-create-group-modal__fw-item[data-role='avail']");
+      if (!li) return;
+      grCreateSelectedAvailId = li.getAttribute("data-fw-id") || "";
+      grCreateRenderDualLists();
+    });
+    document.getElementById("gr-create-assigned-list")?.addEventListener("click", (e) => {
+      const li = e.target.closest(".gr-create-group-modal__fw-item[data-role='assigned']");
+      if (!li) return;
+      grCreateSelectedAssignedId = li.getAttribute("data-fw-id") || "";
+      grCreateRenderDualLists();
+    });
+    document.getElementById("gr-create-import-list")?.addEventListener("click", (e) => {
+      const li = e.target.closest(".gr-create-group-modal__fw-item[data-role='import']");
+      if (!li) return;
+      grCreateSelectedImportId = li.getAttribute("data-fw-id") || "";
+      grCreateRenderImportList();
+      grCreateUpdateSubmitEnabled();
+    });
+    document.getElementById("gr-create-xfer-one-right")?.addEventListener("click", () => {
+      if (!grCreateSelectedAvailId) return;
+      if (!grCreateAssignedIds.includes(grCreateSelectedAvailId)) {
+        grCreateAssignedIds.push(grCreateSelectedAvailId);
+      }
+      grCreateSelectedAvailId = "";
+      grCreateRenderDualLists();
+      grCreateUpdateSubmitEnabled();
+    });
+    document.getElementById("gr-create-xfer-all-right")?.addEventListener("click", () => {
+      const add = grCreateFilteredAvailable().map((f) => String(f.id));
+      const seen = new Set(grCreateAssignedIds);
+      for (const id of add) {
+        if (!seen.has(id)) {
+          grCreateAssignedIds.push(id);
+          seen.add(id);
+        }
+      }
+      grCreateSelectedAvailId = "";
+      grCreateRenderDualLists();
+      grCreateUpdateSubmitEnabled();
+    });
+    document.getElementById("gr-create-xfer-one-left")?.addEventListener("click", () => {
+      if (!grCreateSelectedAssignedId) return;
+      grCreateAssignedIds = grCreateAssignedIds.filter((x) => x !== grCreateSelectedAssignedId);
+      grCreateSelectedAssignedId = "";
+      grCreateRenderDualLists();
+      grCreateUpdateSubmitEnabled();
+    });
+    document.getElementById("gr-create-xfer-all-left")?.addEventListener("click", () => {
+      grCreateAssignedIds = [];
+      grCreateSelectedAssignedId = "";
+      grCreateRenderDualLists();
+      grCreateUpdateSubmitEnabled();
+    });
+    document.getElementById("gr-create-group-submit")?.addEventListener("click", async () => {
+      const tid = (document.getElementById("gr-create-tenant")?.value || "").trim();
+      const name = (document.getElementById("gr-create-group-name")?.value || "").trim();
+      if (!tid || !name) return;
+      let importId = null;
+      if (grCreateConfigMode() === "import") {
+        if (grCreateImportSources.length > 0) {
+          importId = grCreateSelectedImportId || null;
+          if (!importId) return;
+        }
+      }
+      const btn = document.getElementById("gr-create-group-submit");
+      if (btn) btn.disabled = true;
+      try {
+        const res = await apiRequestJson("/api/firewall-groups/create", {
+          method: "POST",
+          body: JSON.stringify({
+            tenant_id: tid,
+            name,
+            assign_firewall_ids: [...grCreateAssignedIds],
+            config_import_source_firewall_id: importId,
+          }),
+        });
+        const lines = ["Firewall group created."];
+        if (res && res.group_id) lines.push(`Group id: ${res.group_id}`);
+        if (res && res.credential_syncs && res.credential_syncs.length) {
+          const bad = res.credential_syncs.filter((s) => !s.ok);
+          if (bad.length) {
+            lines.push("Credential sync issues:", ...bad.slice(0, 3).map((s) => `  ${s.error || "failed"}`));
+          }
+        }
+        const groupText = lines.join("\n");
+        const groupVariant = /Credential sync issues/i.test(groupText) ? "info" : "success";
+        notifyAppUser("Firewall group", groupText, groupVariant);
+        closeGrCreateGroupModal();
+        await loadFirewallGroups({ preserve: true });
+      } catch (err) {
+        notifyAppUser("Firewall group", err && err.message ? err.message : String(err), "error");
+      } finally {
+        grCreateUpdateSubmitEnabled();
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      const modal = document.getElementById("gr-create-group-modal");
+      if (!modal || modal.hidden) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeGrCreateGroupModal();
+      }
+    });
+  }
+
+  initGrCreateGroupModal();
+
   document.getElementById("gr-tbody")?.addEventListener("click", (e) => {
+    const imp = e.target.closest("button.gr-import-pill--action");
+    if (imp) {
+      const fid = imp.getAttribute("data-firewall-id");
+      if (fid) goToFirewallsFilteredByFirewallId(fid);
+      return;
+    }
     const t = e.target.closest("button.gr-to-tenant-firewalls");
     if (t) {
       const tenantName = t.getAttribute("data-tenant-name");
@@ -8355,6 +10456,12 @@
     }
     const rows = await loadJson("/api/firewall-groups");
     grPrepared = rows.map(prepareGroup);
+    applyListRecencyTags(grPrepared, {
+      createdKey: "created_at",
+      stateKey: "updated_at",
+      lastSyncKey: "last_sync",
+      clientKey: "client_id",
+    });
     buildGroupFilters();
     if (preserve && snap) {
       for (const [k, arr] of Object.entries(snap)) {
@@ -8370,6 +10477,7 @@
       grController.clearSelection();
       grController.resetPage();
     }
+    grToolbarTenantMs.refresh();
   }
 
   /* ---------- Licenses ---------- */
@@ -9103,7 +11211,23 @@
     });
   }
 
+  const lcToolbarTenantMs = createToolbarTenantMultiselect({
+    prefix: "lc",
+    getTenantSet: () => {
+      if (!(lcFilterState.tenant_name instanceof Set)) lcFilterState.tenant_name = new Set();
+      return lcFilterState.tenant_name;
+    },
+    getDataRows: () => (lcViewMode === "details" ? lcDetailPrepared : lcPrepared),
+    onChange: () => {
+      lcDashState = null;
+      lcController.render();
+      refreshDashboardStatCards();
+      updateLicenseFiltersChrome();
+    },
+  });
+
   function buildLicenseFilters() {
+    lcFilterState.tenant_name = new Set();
     const host = document.getElementById("license-filters");
     if (!host) return;
     clearLcDateFacetSelections();
@@ -9111,7 +11235,6 @@
     const groups =
       lcViewMode === "details"
         ? [
-            { key: "tenant_name", label: "Tenant" },
             { key: "model", label: "Model" },
             { key: "product_name", label: "Product" },
             { key: "product_code", label: "Product code" },
@@ -9123,7 +11246,6 @@
             { key: "license_state", label: "License state" },
           ]
         : [
-            { key: "tenant_name", label: "Tenant" },
             { key: "model", label: "Model" },
             { key: "model_type", label: "Model type" },
             { key: "state", label: "State" },
@@ -9179,6 +11301,7 @@
     });
     wireLcDateFacetFilters(host);
     updateLicenseFiltersChrome();
+    lcToolbarTenantMs.refresh();
   }
 
   function licenseFacetFilterCount() {
@@ -9243,6 +11366,7 @@
     setFiltersPanelCollapsed(document.querySelector("#panel-licenses .filters"), true);
     schedulePersistUiState();
     refreshDashboardStatCards();
+    lcToolbarTenantMs.refresh();
   }
 
   /** Active / Expired (and em dash) as a pill with readable text on a tinted background. */
@@ -9923,6 +12047,7 @@
     updateLicenseFiltersChrome();
     schedulePersistUiState();
     refreshDashboardStatCards();
+    lcToolbarTenantMs.refresh();
   }
 
   async function goToLicensesFilteredBySubscriptionState(state) {
@@ -9951,6 +12076,7 @@
     updateLicenseFiltersChrome();
     schedulePersistUiState();
     refreshDashboardStatCards();
+    lcToolbarTenantMs.refresh();
   }
 
   /** Dashboard expiring count: same window as API (past 30 / next 90 end dates); applies End date Past 30 + Next 90. */
@@ -9977,6 +12103,7 @@
     updateLicenseFiltersChrome();
     schedulePersistUiState();
     refreshDashboardStatCards();
+    lcToolbarTenantMs.refresh();
   }
 
   function initLcViewToggle() {
@@ -10017,8 +12144,10 @@
   function downloadXlsxFile(filename, sheetName, aoa) {
     const XLSX = window.XLSX;
     if (!XLSX?.utils?.aoa_to_sheet) {
-      window.alert(
-        "Excel export is not available (spreadsheet library failed to load). Use CSV or JSON instead."
+      notifyAppUser(
+        "Export unavailable",
+        "Excel export is not available (spreadsheet library failed to load). Use CSV or JSON instead.",
+        "error"
       );
       return;
     }
@@ -10090,6 +12219,13 @@
   function tnExportCell(row, colId) {
     if (colId === "updated_at") return exportPlainDateTime(row.updated_at);
     if (colId === "firewall_count") return String(row.firewall_count ?? 0);
+    if (colId === "name") {
+      const tag = row._recencyTag;
+      const p =
+        tag === "new" ? "NEW " : tag === "old" ? "OLD " : tag === "upd" ? "UPD " : "";
+      const v = row.name;
+      return p + (v == null || v === "" ? "" : String(v));
+    }
     const v = row[colId];
     return v == null || v === "" ? "" : String(v);
   }
@@ -10098,7 +12234,13 @@
     if (colId === "last_sync" || colId === "updated_at") return exportPlainDateTime(row[colId]);
     if (colId === "firewall_count") return String(row.firewall_count ?? 0);
     if (colId === "sync_issues_count") return String(row.sync_issues_count ?? 0);
-    if (colId === "breadcrumb") return row.breadcrumb || "";
+    if (colId === "breadcrumb") {
+      const tag = row._recencyTag;
+      const p =
+        tag === "new" ? "NEW " : tag === "old" ? "OLD " : tag === "upd" ? "UPD " : "";
+      return p + (row.breadcrumb || "");
+    }
+    if (colId === "imported_from") return row.imported_from || "";
     const v = row[colId];
     return v == null || v === "" ? "" : String(v);
   }
@@ -10131,7 +12273,7 @@
   function buildDashboardAlertExportParams() {
     const params = new URLSearchParams();
     params.set("page_size", "200");
-    if (daState.severity && daState.severity !== "all") params.set("severity", daState.severity);
+    appendDashboardAlertApiParams(params);
     daFilterState.tenant_name.forEach((v) => params.append("tenant_name", v));
     daFilterState.firewall_hostname.forEach((v) => params.append("firewall_hostname", v));
     const q = getDashboardAlertsSearchQuery();
@@ -10159,6 +12301,13 @@
 
   function alertRowDisplayCell(r, col) {
     if (col === "raised_at") return exportPlainDateTime(r.raised_at);
+    if (col === "recency_tag") {
+      const t = r.recency_tag;
+      if (t === "new") return "NEW";
+      if (t === "old") return "OLD";
+      if (t === "upd") return "UPD";
+      return "";
+    }
     const v = r[col];
     return v == null || v === "" ? "—" : String(v);
   }
@@ -10167,6 +12316,7 @@
     const all = await fetchAllDashboardAlertsForExport();
     const headers = [
       { id: "severity", label: "Severity" },
+      { id: "recency_tag", label: "NEW/UPD/OLD" },
       { id: "tenant_name", label: "Tenant" },
       { id: "firewall_hostname", label: "Firewall" },
       { id: "description", label: "Description" },
@@ -10312,7 +12462,7 @@
       }
     } catch (err) {
       console.error(err);
-      window.alert("Export failed. See the console for details.");
+      notifyAppUser("Export failed", "Export failed. See the console for details.", "error");
     }
   }
 
@@ -10354,6 +12504,8 @@
     const daPageSizeEl = document.getElementById("da-page-size");
     const daSearchEl = document.getElementById("da-search");
     const fwSearch = document.getElementById("fw-search");
+    const opsSearchEl = document.getElementById("ops-search");
+    const opsSortEl = document.getElementById("ops-sort");
     const fwPageSizeEl = document.getElementById("fw-page-size");
     const tnSearch = document.getElementById("tn-search");
     const tnPageSizeEl = document.getElementById("tn-page-size");
@@ -10363,6 +12515,7 @@
     const lcPageSizeEl = document.getElementById("lc-page-size");
     const dashFiltersAside = document.querySelector("#panel-dashboard .filters");
     const fwFiltersAside = document.querySelector("#panel-firewalls .filters");
+    const opsFiltersAside = document.querySelector("#panel-operations .filters");
     const grFiltersAside = document.querySelector("#panel-groups .filters");
     const tnFiltersAside = document.querySelector("#panel-tenants .filters");
     const lcFiltersAside = document.querySelector("#panel-licenses .filters");
@@ -10384,10 +12537,18 @@
       if (st instanceof Set) lcFilters[k] = [...st];
     }
 
+    const daRaisedFromEl = document.getElementById("da-raised-custom-from");
+    const daRaisedToEl = document.getElementById("da-raised-custom-to");
+    if (daRaisedFromEl) daRaisedCustomStored.from = daRaisedFromEl.value;
+    if (daRaisedToEl) daRaisedCustomStored.to = daRaisedToEl.value;
+
     return {
       tab: getActiveTabName(),
       dashboard: {
-        severity: daState.severity,
+        severity_levels: [...daSeverityLevels],
+        raised_preset: daRaisedPreset,
+        raised_custom_from: daRaisedCustomStored.from,
+        raised_custom_to: daRaisedCustomStored.to,
         search: daSearchEl ? daSearchEl.value : "",
         pageSize: daPageSizeEl
           ? Math.max(1, parseInt(daPageSizeEl.value, 10) || daState.pageSize)
@@ -10406,6 +12567,13 @@
         table: fwController.getTableState(),
         filtersExpanded: fwFiltersAside
           ? !fwFiltersAside.classList.contains("filters--collapsed")
+          : undefined,
+      },
+      operations: {
+        search: opsSearchEl ? opsSearchEl.value : "",
+        sort: opsSortEl ? opsSortEl.value : "state_online_first",
+        filtersExpanded: opsFiltersAside
+          ? !opsFiltersAside.classList.contains("filters--collapsed")
           : undefined,
       },
       groups: {
@@ -10477,9 +12645,26 @@
       statusSt.add("Pending approval");
     }
     syncFirewallFilterCheckboxesFromState();
+    fwToolbarTenantMs.refresh();
+    opsToolbarTenantMs.refresh();
+    renderOperationsView();
     if (s.table && typeof s.table === "object") fwController.setTableState(s.table);
     if (typeof s.filtersExpanded === "boolean") {
       const aside = document.querySelector("#panel-firewalls .filters");
+      if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
+    }
+  }
+
+  function applyOperationsSaved(s) {
+    if (!s || typeof s !== "object") return;
+    const search = document.getElementById("ops-search");
+    if (search && typeof s.search === "string") search.value = s.search;
+    const sortEl = document.getElementById("ops-sort");
+    if (sortEl && typeof s.sort === "string" && [...sortEl.options].some((o) => o.value === s.sort)) {
+      sortEl.value = s.sort;
+    }
+    if (typeof s.filtersExpanded === "boolean") {
+      const aside = document.querySelector("#panel-operations .filters");
       if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
     }
   }
@@ -10525,6 +12710,7 @@
       arr.forEach((x) => st.add(String(x)));
     }
     syncGroupFilterCheckboxesFromState();
+    grToolbarTenantMs.refresh();
     if (s.table && typeof s.table === "object") grController.setTableState(s.table);
     if (typeof s.filtersExpanded === "boolean") {
       const aside = document.querySelector("#panel-groups .filters");
@@ -10578,6 +12764,7 @@
     }
     syncLicenseFilterCheckboxesFromState();
     syncLcDateFacetUi();
+    lcToolbarTenantMs.refresh();
     if (s.table && typeof s.table === "object") lcController.setTableState(s.table);
     if (typeof s.filtersExpanded === "boolean") {
       const aside = document.querySelector("#panel-licenses .filters");
@@ -10677,15 +12864,21 @@
   initAuthForms();
   initUserMenu();
   initAppSyncStatusBar();
+  initNotificationsFlyout();
   initProfileModal();
   initCollapsibleFilterPanels();
   initFacetFilterResetControls();
   initSettingsModal();
   initDashboardAlertsUi();
+  fwToolbarTenantMs.init();
+  opsToolbarTenantMs.init();
+  grToolbarTenantMs.init();
+  lcToolbarTenantMs.init();
   initFwMapHeightsAndResizeHandles();
   initFwMapSectionToggles();
   initFwLocationModal();
   initFwDetailFlyout();
+  initOperationsViewPanel();
 
   async function init() {
     const saved = readUiState();
@@ -10703,6 +12896,7 @@
       ]);
 
       if (saved?.firewalls) applyFirewallSaved(saved.firewalls);
+      if (saved?.operations) applyOperationsSaved(saved.operations);
       if (saved?.groups) applyGroupSaved(saved.groups);
       if (saved?.tenants) applyTenantSaved(saved.tenants);
       if (saved?.licenses) applyLicenseSaved(saved.licenses);

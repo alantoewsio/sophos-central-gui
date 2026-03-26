@@ -1,4 +1,4 @@
-"""Command-line utilities for sophos-central-gui."""
+"""Command-line utilities for SFOS Central Firewall Management (sfos-central-firewall-management)."""
 
 from __future__ import annotations
 

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Firewall tile for responsive grids (matches dashboard-grid minmax ~320px).
+  Reference for Pencil or implementation; colors align with static/css/app.css tokens.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="188" viewBox="0 0 320 188" role="img" aria-labelledby="title desc">
+  <title id="title">Firewall grid card</title>
+  <desc id="desc">Card layout: hostname, status, model, firmware, tenant.</desc>
+  <defs>
+    <filter id="shadow" x="-8" y="-4" width="336" height="204" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+  <!-- Card -->
+  <rect x="0.5" y="0.5" width="319" height="187" rx="8" ry="8" fill="#ffffff" stroke="#d9d9d9" filter="url(#shadow)"/>
+  <!-- Accent (Sophos-style) -->
+  <rect x="1" y="1" width="4" height="186" rx="2" fill="#0066cc"/>
+  <rect x="5" y="1" width="314" height="186" rx="7" fill="#ffffff"/>
+  <!-- Header row -->
+  <g transform="translate(16, 14)">
+    <rect x="0" y="2" width="22" height="22" rx="4" fill="#eef3f8" stroke="#e8e8e8"/>
+    <path fill="#001b44" d="M11 6L6 8v5c0 3.5 2.2 6.7 5 8 2.8-1.3 5-4.5 5-8V8l-5-2z"/>
+    <text x="30" y="18" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="600" fill="#4a4a4a">fw-core-dc01.corp.example</text>
+  </g>
+  <!-- Status pill -->
+  <rect x="16" y="44" width="56" height="20" rx="10" fill="#e8f5e9" stroke="#c8e6c9"/>
+  <text x="44" y="58" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="11" font-weight="500" fill="#1a1a1a">Online</text>
+  <!-- Divider -->
+  <line x1="16" y1="72" x2="304" y2="72" stroke="#e8e8e8"/>
+  <!-- Rows -->
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="12" fill="#1a1a1a">
+    <text x="16" y="92" fill="#5c5c5c" font-size="12">Model</text>
+    <text x="104" y="92">XG 230</text>
+    <text x="16" y="116" fill="#5c5c5c">Firmware</text>
+    <text x="104" y="116">20.0.1 MR-1</text>
+    <text x="16" y="140" fill="#5c5c5c">Tenant</text>
+    <text x="104" y="140">Acme Corp · EU-West</text>
+    <text x="16" y="164" fill="#5c5c5c">Last sync</text>
+    <text x="104" y="164">2 min ago</text>
+  </g>
+  <!-- Optional: grid hint (dashed)  remove for production asset -->
+  <rect x="0" y="0" width="320" height="188" fill="none" stroke="#0066cc" stroke-width="1" stroke-dasharray="6 4" opacity="0.25" rx="8"/>
+</svg>

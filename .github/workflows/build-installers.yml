@@ -69,7 +69,7 @@ jobs:
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: sophos-central-gui-${{ matrix.artifact }}
+          name: sfos-central-firewall-management-${{ matrix.artifact }}
           path: dist/installers/*
           if-no-files-found: error
 
@@ -88,7 +88,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: installers
-          pattern: sophos-central-gui-*
+          pattern: sfos-central-firewall-management-*
           merge-multiple: true
 
       - name: List files

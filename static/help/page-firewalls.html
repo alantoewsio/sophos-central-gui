@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Firewalls — Help — SFOS Central Firewall Management</title>
+  <link rel="stylesheet" href="help-doc.css" />
+</head>
+
+<body class="help-doc">
+  <header class="help-doc__masthead">
+    <div class="help-doc__masthead-inner">
+      <span class="help-doc__product">SFOS Central Firewall Management</span>
+      <span class="help-doc__sep">/</span>
+      <span class="help-doc__breadcrumb">Firewalls</span>
+    </div>
+  </header>
+  <div class="help-doc__layout">
+    <aside class="help-doc__toc" aria-label="On this page">
+      <p class="help-doc__toc-title">On this page</p>
+      <ul>
+        <li><a href="#introduction">Introduction</a></li>
+        <li><a href="#toolbar">Toolbar and filters</a></li>
+        <li><a href="#row-actions">Row actions</a></li>
+        <li><a href="#admin">Administrator actions</a></li>
+      </ul>
+    </aside>
+    <main class="help-doc__main">
+      <p class="help-doc__back"><a href="index.html">← All help topics</a></p>
+      <h1 class="help-doc__h1">Firewalls</h1>
+      <p class="help-doc__meta">Managed appliances synchronized from Sophos Central for the selected credentials.</p>
+
+      <h2 class="help-doc__h2" id="introduction">Introduction</h2>
+      <p>This table lists firewalls discovered through the Central API. Status, firmware availability, and badges (such
+        as NEW or UPD) are derived from timestamps stored locally. The map above the grid shows the same population when
+        coordinates exist.</p>
+
+      <h2 class="help-doc__h2" id="toolbar">Toolbar and filters</h2>
+      <p><strong>Filters</strong> opens facet controls for tenants, state, and other dimensions. Quick links under
+        <strong>View</strong> apply common presets (for example online only or pending approval). Use the search field for
+        free-text matching. The gear control opens <a href="modal-table-columns.html#firewalls">Table columns</a> so you
+        can show or hide fields.</p>
+      <p><strong>Export</strong> saves the visible columns and current filter context to a spreadsheet or CSV.</p>
+
+      <h2 class="help-doc__h2" id="row-actions">Row actions</h2>
+      <p>Select a hostname or status cell to open the <a href="flyout-firewall-detail.html">Firewall details panel</a> with
+        alerts, subscriptions, firmware options, and location editing.</p>
+
+      <h2 class="help-doc__h2" id="admin">Administrator actions</h2>
+      <p>Administrators may see batch buttons when rows are selected: approve pending management, schedule firmware
+        upgrades, or remove records from the <em>local</em> database only. Removing locally does not delete the appliance
+        in Central; it can reappear on the next sync.</p>
+
+      <div class="help-doc__resources">
+        <h2>Related topics</h2>
+        <ul>
+          <li><a href="modal-firmware.html">Firmware upgrades</a></li>
+          <li><a href="modal-firewall-location.html">Firewall location</a></li>
+          <li><a href="modal-delete-local.html">Remove from local database</a></li>
+          <li><a href="settings-general.html">NEW / UPD badge timing</a></li>
+        </ul>
+      </div>
+    </main>
+  </div>
+</body>
+
+</html>

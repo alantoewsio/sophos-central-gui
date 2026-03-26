@@ -380,8 +380,12 @@ def delete_app_user(conn: sqlite3.Connection, user_id: str) -> bool:
 
 
 DEFAULT_SYNC_INTERVAL = "12h"
+DEFAULT_INCREMENTAL_SYNC_INTERVAL = "15m"
 
 CREDENTIAL_SYNC_INTERVAL_SECONDS: dict[str, int | None] = {
+    "10m": 600,
+    "15m": 900,
+    "30m": 1800,
     "hourly": 3600,
     "3h": 10800,
     "6h": 21600,
@@ -390,12 +394,35 @@ CREDENTIAL_SYNC_INTERVAL_SECONDS: dict[str, int | None] = {
     "none": None,
 }
 
+CREDENTIAL_INCREMENTAL_SYNC_INTERVAL_SECONDS: dict[str, int | None] = {
+    "1m": 60,
+    "5m": 300,
+    "10m": 600,
+    "15m": 900,
+    "30m": 1800,
+    "60m": 3600,
+    "none": None,
+}
+
 SYNC_INTERVAL_DISPLAY: dict[str, str] = {
+    "10m": "Every 10 minutes",
+    "15m": "Every 15 minutes",
+    "30m": "Every 30 minutes",
     "hourly": "Hourly",
     "3h": "Every 3 hours",
     "6h": "Every 6 hours",
     "12h": "Every 12 hours",
     "daily": "Daily",
+    "none": "Not scheduled",
+}
+
+INCREMENTAL_SYNC_INTERVAL_DISPLAY: dict[str, str] = {
+    "1m": "Every 1 minute",
+    "5m": "Every 5 minutes",
+    "10m": "Every 10 minutes",
+    "15m": "Every 15 minutes",
+    "30m": "Every 30 minutes",
+    "60m": "Every 60 minutes",
     "none": "Not scheduled",
 }
 
@@ -407,21 +434,45 @@ def sync_interval_display_label(interval_key: str) -> str:
     return SYNC_INTERVAL_DISPLAY.get(k, k)
 
 
+def incremental_sync_interval_display_label(interval_key: str) -> str:
+    k = (interval_key or "").strip()
+    if not k:
+        k = DEFAULT_INCREMENTAL_SYNC_INTERVAL
+    return INCREMENTAL_SYNC_INTERVAL_DISPLAY.get(k, k)
+
+
 def credentials_interval_summary(creds: list[dict]) -> str:
-    """Human-readable sync schedule(s) for the status bar (unique order preserved)."""
-    ordered: list[str] = []
+    """Human-readable full + incremental schedules for the status bar (unique order preserved)."""
+    ordered_full: list[str] = []
+    ordered_incr: list[str] = []
     for c in creds:
         iv = str(c.get("sync_interval") or "").strip() or DEFAULT_SYNC_INTERVAL
-        if iv == "none":
-            continue
-        if iv not in ordered:
-            ordered.append(iv)
-    if not ordered:
+        if iv != "none" and iv not in ordered_full:
+            ordered_full.append(iv)
+        ij = (
+            str(c.get("incremental_sync_interval") or "").strip()
+            or DEFAULT_INCREMENTAL_SYNC_INTERVAL
+        )
+        if ij != "none" and ij not in ordered_incr:
+            ordered_incr.append(ij)
+    chunks: list[str] = []
+    if ordered_full:
+        parts = [sync_interval_display_label(k) for k in ordered_full]
+        if len(parts) > 3:
+            fstr = f"{', '.join(parts[:3])}, …"
+        else:
+            fstr = ", ".join(parts)
+        chunks.append(f"Full: {fstr}")
+    if ordered_incr:
+        parts = [incremental_sync_interval_display_label(k) for k in ordered_incr]
+        if len(parts) > 3:
+            istr = f"{', '.join(parts[:3])}, …"
+        else:
+            istr = ", ".join(parts)
+        chunks.append(f"Incr: {istr}")
+    if not chunks:
         return "—"
-    parts = [sync_interval_display_label(k) for k in ordered]
-    if len(parts) > 3:
-        return f"{', '.join(parts[:3])}, …"
-    return ", ".join(parts)
+    return " · ".join(chunks)
 
 
 def next_scheduled_sync_at_iso(last_sync_iso: str | None, sync_interval: str) -> str | None:
@@ -445,6 +496,29 @@ def next_scheduled_sync_at_iso(last_sync_iso: str | None, sync_interval: str) ->
     return nxt.isoformat()
 
 
+def next_scheduled_incremental_sync_at_iso(
+    last_incremental_iso: str | None, incremental_interval: str
+) -> str | None:
+    """UTC ISO timestamp of last successful incremental sync plus interval, or None if not scheduled."""
+    iv = (incremental_interval or "").strip()
+    sec = CREDENTIAL_INCREMENTAL_SYNC_INTERVAL_SECONDS.get(iv)
+    if sec is None:
+        return None
+    if not last_incremental_iso or not str(last_incremental_iso).strip():
+        return None
+    try:
+        t = str(last_incremental_iso).strip().replace("Z", "+00:00")
+        last = datetime.fromisoformat(t)
+    except ValueError:
+        return None
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    else:
+        last = last.astimezone(timezone.utc)
+    nxt = (last + timedelta(seconds=sec)).replace(microsecond=0)
+    return nxt.isoformat()
+
+
 def init_secrets_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -457,7 +531,9 @@ def init_secrets_schema(conn: sqlite3.Connection) -> None:
           whoami_json TEXT NOT NULL,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
-          sync_interval TEXT NOT NULL DEFAULT '12h'
+          sync_interval TEXT NOT NULL DEFAULT '12h',
+          incremental_sync_interval TEXT NOT NULL DEFAULT '15m',
+          last_successful_incremental_sync_at TEXT
         )
         """
     )
@@ -469,6 +545,28 @@ def init_secrets_schema(conn: sqlite3.Connection) -> None:
     )
     _migrate_central_credentials_sync_interval(conn)
     _migrate_central_credentials_last_successful_sync_at(conn)
+    _migrate_central_credentials_incremental_sync(conn)
+
+
+def _migrate_central_credentials_incremental_sync(conn: sqlite3.Connection) -> None:
+    cols = {
+        str(r[1])
+        for r in conn.execute("PRAGMA table_info(central_credentials)").fetchall()
+    }
+    if "incremental_sync_interval" not in cols:
+        conn.execute(
+            """
+            ALTER TABLE central_credentials
+            ADD COLUMN incremental_sync_interval TEXT NOT NULL DEFAULT '15m'
+            """
+        )
+    if "last_successful_incremental_sync_at" not in cols:
+        conn.execute(
+            """
+            ALTER TABLE central_credentials
+            ADD COLUMN last_successful_incremental_sync_at TEXT
+            """
+        )
 
 
 def _migrate_central_credentials_sync_interval(conn: sqlite3.Connection) -> None:
@@ -511,12 +609,26 @@ def row_public(row: sqlite3.Row) -> dict:
         if raw_interval is not None and str(raw_interval).strip() != ""
         else DEFAULT_SYNC_INTERVAL
     )
+    raw_incr_iv = row["incremental_sync_interval"] if "incremental_sync_interval" in row.keys() else None
+    incremental_sync_interval = (
+        str(raw_incr_iv).strip()
+        if raw_incr_iv is not None and str(raw_incr_iv).strip() != ""
+        else DEFAULT_INCREMENTAL_SYNC_INTERVAL
+    )
     last_sync = None
     if "last_successful_sync_at" in row.keys():
         raw_ls = row["last_successful_sync_at"]
         if raw_ls is not None and str(raw_ls).strip() != "":
             last_sync = str(raw_ls).strip()
+    last_incremental_sync = None
+    if "last_successful_incremental_sync_at" in row.keys():
+        raw_li = row["last_successful_incremental_sync_at"]
+        if raw_li is not None and str(raw_li).strip() != "":
+            last_incremental_sync = str(raw_li).strip()
     nxt = next_scheduled_sync_at_iso(last_sync, sync_interval)
+    nxt_incr = next_scheduled_incremental_sync_at_iso(
+        last_incremental_sync, incremental_sync_interval
+    )
     return {
         "id": row["id"],
         "name": row["name"],
@@ -526,8 +638,11 @@ def row_public(row: sqlite3.Row) -> dict:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "sync_interval": sync_interval,
+        "incremental_sync_interval": incremental_sync_interval,
         "last_sync": last_sync,
         "next_scheduled_sync_at": nxt,
+        "last_incremental_sync": last_incremental_sync,
+        "next_scheduled_incremental_sync_at": nxt_incr,
     }
 
 
@@ -536,7 +651,7 @@ def list_credentials(conn: sqlite3.Connection) -> list[dict]:
     cur = conn.execute(
         """
         SELECT id, name, client_id, id_type, whoami_json, created_at, updated_at, sync_interval,
-               last_successful_sync_at
+               incremental_sync_interval, last_successful_sync_at, last_successful_incremental_sync_at
         FROM central_credentials
         ORDER BY name COLLATE NOCASE
         """
@@ -549,7 +664,7 @@ def get_credential_by_id(conn: sqlite3.Connection, cred_id: str) -> dict | None:
     row = conn.execute(
         """
         SELECT id, name, client_id, id_type, whoami_json, created_at, updated_at, sync_interval,
-               last_successful_sync_at
+               incremental_sync_interval, last_successful_sync_at, last_successful_incremental_sync_at
         FROM central_credentials WHERE id = ?
         """,
         (cred_id,),
@@ -602,15 +717,26 @@ def insert_credential(
         """
         INSERT INTO central_credentials
           (id, name, client_id, client_secret_enc, id_type, whoami_json, created_at, updated_at, sync_interval,
-           last_successful_sync_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+           incremental_sync_interval, last_successful_sync_at, last_successful_incremental_sync_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
         """,
-        (cid, name.strip(), client_id.strip(), enc, id_type, whoami_json, now, now, DEFAULT_SYNC_INTERVAL),
+        (
+            cid,
+            name.strip(),
+            client_id.strip(),
+            enc,
+            id_type,
+            whoami_json,
+            now,
+            now,
+            DEFAULT_SYNC_INTERVAL,
+            DEFAULT_INCREMENTAL_SYNC_INTERVAL,
+        ),
     )
     row = conn.execute(
         """
         SELECT id, name, client_id, id_type, whoami_json, created_at, updated_at, sync_interval,
-               last_successful_sync_at
+               incremental_sync_interval, last_successful_sync_at, last_successful_incremental_sync_at
         FROM central_credentials WHERE id = ?
         """,
         (cid,),
@@ -632,7 +758,7 @@ def update_credential_name(conn: sqlite3.Connection, cred_id: str, name: str) ->
     row = conn.execute(
         """
         SELECT id, name, client_id, id_type, whoami_json, created_at, updated_at, sync_interval,
-               last_successful_sync_at
+               incremental_sync_interval, last_successful_sync_at, last_successful_incremental_sync_at
         FROM central_credentials WHERE id = ?
         """,
         (cred_id,),
@@ -656,7 +782,31 @@ def update_credential_sync_interval(
     row = conn.execute(
         """
         SELECT id, name, client_id, id_type, whoami_json, created_at, updated_at, sync_interval,
-               last_successful_sync_at
+               incremental_sync_interval, last_successful_sync_at, last_successful_incremental_sync_at
+        FROM central_credentials WHERE id = ?
+        """,
+        (cred_id,),
+    ).fetchone()
+    return row_public(row) if row else None
+
+
+def update_credential_incremental_sync_interval(
+    conn: sqlite3.Connection, cred_id: str, incremental_sync_interval: str
+) -> dict | None:
+    init_secrets_schema(conn)
+    now = _utc_now_iso()
+    cur = conn.execute(
+        """
+        UPDATE central_credentials SET incremental_sync_interval = ?, updated_at = ? WHERE id = ?
+        """,
+        (incremental_sync_interval.strip(), now, cred_id),
+    )
+    if cur.rowcount == 0:
+        return None
+    row = conn.execute(
+        """
+        SELECT id, name, client_id, id_type, whoami_json, created_at, updated_at, sync_interval,
+               incremental_sync_interval, last_successful_sync_at, last_successful_incremental_sync_at
         FROM central_credentials WHERE id = ?
         """,
         (cred_id,),
@@ -697,6 +847,34 @@ def get_credential_id_by_client_id(conn: sqlite3.Connection, oauth_client_id: st
         LIMIT 1
         """,
         (oid,),
+    ).fetchone()
+    return str(row["id"]) if row else None
+
+
+def get_credential_id_tenant_scoped_for_central_tenant(
+    conn: sqlite3.Connection, central_tenant_id: str
+) -> str | None:
+    """
+    Return ``central_credentials.id`` for a stored API client whose whoami is tenant-scoped
+    (``idType`` / ``id_type`` tenant) and whose whoami ``id`` equals the Sophos Central tenant UUID.
+
+    Used to prefer a tenant service principal for Common API alert actions when the alert row
+    still carries a partner (or other) OAuth ``client_id`` from sync.
+    """
+    init_secrets_schema(conn)
+    tid = str(central_tenant_id or "").strip()
+    if not tid:
+        return None
+    row = conn.execute(
+        """
+        SELECT id FROM central_credentials
+        WHERE LOWER(TRIM(COALESCE(id_type, ''))) = 'tenant'
+          AND json_valid(whoami_json)
+          AND LOWER(TRIM(COALESCE(json_extract(whoami_json, '$.id'), ''))) = LOWER(TRIM(?))
+        ORDER BY name COLLATE NOCASE
+        LIMIT 1
+        """,
+        (tid,),
     ).fetchone()
     return str(row["id"]) if row else None
 
@@ -748,7 +926,7 @@ def update_credential_whoami(conn: sqlite3.Connection, cred_id: str, whoami: dic
     row = conn.execute(
         """
         SELECT id, name, client_id, id_type, whoami_json, created_at, updated_at, sync_interval,
-               last_successful_sync_at
+               incremental_sync_interval, last_successful_sync_at, last_successful_incremental_sync_at
         FROM central_credentials WHERE id = ?
         """,
         (cred_id,),
@@ -757,13 +935,32 @@ def update_credential_whoami(conn: sqlite3.Connection, cred_id: str, whoami: dic
 
 
 def touch_credential_last_successful_sync(conn: sqlite3.Connection, cred_id: str) -> bool:
-    """Set last_successful_sync_at to now for this credential. Returns True if a row was updated."""
+    """Set full and incremental last-sync times to now after a successful full sync."""
     init_secrets_schema(conn)
     now = _utc_now_iso()
     cur = conn.execute(
         """
         UPDATE central_credentials
-        SET last_successful_sync_at = ?, updated_at = ?
+        SET last_successful_sync_at = ?,
+            last_successful_incremental_sync_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (now, now, now, cred_id),
+    )
+    return cur.rowcount > 0
+
+
+def touch_credential_last_successful_incremental_sync(
+    conn: sqlite3.Connection, cred_id: str
+) -> bool:
+    """Set last_successful_incremental_sync_at to now after a successful incremental sync."""
+    init_secrets_schema(conn)
+    now = _utc_now_iso()
+    cur = conn.execute(
+        """
+        UPDATE central_credentials
+        SET last_successful_incremental_sync_at = ?, updated_at = ?
         WHERE id = ?
         """,
         (now, now, cred_id),
@@ -771,8 +968,29 @@ def touch_credential_last_successful_sync(conn: sqlite3.Connection, cred_id: str
     return cur.rowcount > 0
 
 
+def _parse_iso_utc_naive_max(a: str, b: str) -> str:
+    if not a:
+        return b
+    if not b:
+        return a
+    try:
+        da = datetime.fromisoformat(str(a).strip().replace("Z", "+00:00"))
+        db = datetime.fromisoformat(str(b).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return a if a > b else b
+    if da.tzinfo is None:
+        da = da.replace(tzinfo=timezone.utc)
+    else:
+        da = da.astimezone(timezone.utc)
+    if db.tzinfo is None:
+        db = db.replace(tzinfo=timezone.utc)
+    else:
+        db = db.astimezone(timezone.utc)
+    return a if da >= db else b
+
+
 def max_last_successful_sync_at(conn: sqlite3.Connection) -> str | None:
-    """Latest successful Central data sync time across all credentials (ISO UTC), or None."""
+    """Latest successful full Central data sync time across all credentials (ISO UTC), or None."""
     init_secrets_schema(conn)
     row = conn.execute(
         """
@@ -785,6 +1003,33 @@ def max_last_successful_sync_at(conn: sqlite3.Connection) -> str | None:
         return None
     s = str(row["m"]).strip()
     return s or None
+
+
+def max_last_successful_data_sync_at(conn: sqlite3.Connection) -> str | None:
+    """Latest successful full or incremental sync time across credentials (ISO UTC), or None."""
+    init_secrets_schema(conn)
+    rows = conn.execute(
+        """
+        SELECT last_successful_sync_at, last_successful_incremental_sync_at
+        FROM central_credentials
+        """
+    ).fetchall()
+    best: str | None = None
+    for r in rows:
+        fs = r["last_successful_sync_at"]
+        ins = r["last_successful_incremental_sync_at"]
+        fs_s = str(fs).strip() if fs is not None and str(fs).strip() else ""
+        ins_s = str(ins).strip() if ins is not None and str(ins).strip() else ""
+        if not fs_s and not ins_s:
+            continue
+        row_best = fs_s
+        if ins_s:
+            row_best = _parse_iso_utc_naive_max(fs_s, ins_s) if fs_s else ins_s
+        if not best:
+            best = row_best
+        else:
+            best = _parse_iso_utc_naive_max(best, row_best)
+    return best
 
 
 def count_credentials_by_id_type(conn: sqlite3.Connection) -> dict[str, int]:

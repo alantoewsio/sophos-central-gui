@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Firmware upgrades — Help — SFOS Central Firewall Management</title>
+  <link rel="stylesheet" href="help-doc.css" />
+</head>
+
+<body class="help-doc">
+  <header class="help-doc__masthead">
+    <div class="help-doc__masthead-inner">
+      <span class="help-doc__product">SFOS Central Firewall Management</span>
+      <span class="help-doc__sep">/</span>
+      <span class="help-doc__breadcrumb">Firmware upgrades</span>
+    </div>
+  </header>
+  <div class="help-doc__layout">
+    <aside class="help-doc__toc" aria-label="On this page">
+      <p class="help-doc__toc-title">On this page</p>
+      <ul>
+        <li><a href="#introduction">Introduction</a></li>
+        <li><a href="#single">Single firewall</a></li>
+        <li><a href="#batch">Batch upgrade</a></li>
+        <li><a href="#notes">Release notes</a></li>
+      </ul>
+    </aside>
+    <main class="help-doc__main">
+      <p class="help-doc__back"><a href="index.html">← All help topics</a></p>
+      <h1 class="help-doc__h1">Firmware upgrades</h1>
+      <p class="help-doc__meta">Schedule or review Sophos Firewall firmware updates via Central.</p>
+
+      <h2 class="help-doc__h2" id="introduction">Introduction</h2>
+      <p>Upgrade dialogs call Sophos Central on your behalf. Available builds, eligibility, and scheduling rules come from
+        Central—not from this app. Always confirm maintenance windows with your organization before applying production
+        upgrades.</p>
+
+      <h2 class="help-doc__h2" id="single">Single firewall</h2>
+      <p>Open the upgrade action from the <a href="flyout-firewall-detail.html">Firewall details panel</a> or the
+        firewalls grid. The modal lists target versions returned by the API. Pick a version, review prerequisites shown in
+        the UI, and confirm. Some appliances may require approval or maintenance mode in Central.</p>
+
+      <h2 class="help-doc__h2" id="batch">Batch upgrade</h2>
+      <p>When multiple rows are selected on the Firewalls tab, administrators can open the batch dialog. Each appliance
+        can receive its own target version where the API allows. Optional scheduling fields let you defer execution to a
+        planned time; clear the schedule to request immediate action where permitted.</p>
+
+      <h2 class="help-doc__h2" id="notes">Release notes</h2>
+      <p>Expand <strong>Release notes &amp; details</strong> to read Central-provided descriptions per version. Use this
+        content to validate compatibility before you commit.</p>
+
+      <div class="help-doc__resources">
+        <h2>Related topics</h2>
+        <ul>
+          <li><a href="page-firewalls.html">Firewalls</a></li>
+          <li><a href="settings-credentials.html">Credentials and API access</a></li>
+        </ul>
+      </div>
+    </main>
+  </div>
+</body>
+
+</html>

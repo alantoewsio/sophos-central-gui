@@ -11,6 +11,8 @@ _root = Path(SPECPATH)
 datas = [
     (str(_root / "templates"), "templates"),
     (str(_root / "static"), "static"),
+    (str(_root / "pyproject.toml"), "."),
+    (str(_root / "LICENSE"), "."),
 ]
 binaries = []
 hiddenimports = [

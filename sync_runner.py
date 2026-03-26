@@ -11,12 +11,17 @@ from logging.handlers import RotatingFileHandler
 from app_paths import runtime_root
 from central.db import init_schema
 from central.session import CentralSession
-from central.sync_to_db import CentralSyncAuthError, sync_client_credentials_to_database
+from central.sync_to_db import (
+    CentralSyncAuthError,
+    sync_client_credentials_to_database,
+    sync_client_credentials_to_database_incremental,
+)
 
 from credential_store import (
     get_credential_by_id,
     get_secrets_db,
     get_stored_credential_secrets,
+    touch_credential_last_successful_incremental_sync,
     touch_credential_last_successful_sync,
     update_credential_whoami,
     whoami_dict_from_session,
@@ -33,16 +38,21 @@ _sync_activity: dict[str, str | None] = {
     "credential_id": None,
     "credential_name": None,
     "trigger": None,
+    "sync_kind": None,
 }
 
 
 def _set_sync_activity(
-    cred_id: str | None, credential_name: str | None, trigger: str | None
+    cred_id: str | None,
+    credential_name: str | None,
+    trigger: str | None,
+    sync_kind: str | None = None,
 ) -> None:
     with _sync_activity_lock:
         _sync_activity["credential_id"] = cred_id
         _sync_activity["credential_name"] = credential_name
         _sync_activity["trigger"] = trigger
+        _sync_activity["sync_kind"] = sync_kind
 
 
 def get_public_sync_activity() -> dict[str, str | bool | None]:
@@ -53,6 +63,7 @@ def get_public_sync_activity() -> dict[str, str | bool | None]:
             "credential_id": cid,
             "credential_name": _sync_activity["credential_name"],
             "trigger": _sync_activity["trigger"],
+            "sync_kind": _sync_activity["sync_kind"],
         }
 
 
@@ -114,10 +125,13 @@ def run_credential_sync(
     *,
     central_conn,
     trigger: str = "manual",
+    incremental: bool = False,
 ) -> CredentialSyncResult:
     """
     Sync one credential into ``central_conn`` (sophos_central.db), refresh whoami, record last sync.
     Callers must pass an open sqlite connection to the Central database.
+    When ``incremental`` is True, runs the SDK incremental sync (alerts / firewalls delta) instead
+    of a full sync.
     """
     log = configure_sync_file_logging()
     client_id_for_log = ""
@@ -151,15 +165,21 @@ def run_credential_sync(
             cred_row = get_credential_by_id(sconn, cred_id)
             display_name = str((cred_row or {}).get("name") or "").strip() or cred_id
 
-        _set_sync_activity(cred_id, display_name, trigger)
+        kind = "incremental" if incremental else "full"
+        _set_sync_activity(cred_id, display_name, trigger, kind)
         try:
             init_schema(central_conn)
             sync_id: str | None = None
             sync_summary: object | None = None
             try:
-                sync_result = sync_client_credentials_to_database(
-                    central_conn, client_id, client_secret, quiet=True
-                )
+                if incremental:
+                    sync_result = sync_client_credentials_to_database_incremental(
+                        central_conn, client_id, client_secret, quiet=True
+                    )
+                else:
+                    sync_result = sync_client_credentials_to_database(
+                        central_conn, client_id, client_secret, quiet=True
+                    )
                 sync_id = getattr(sync_result, "sync_id", None)
                 if sync_id is not None:
                     sync_id = str(sync_id)
@@ -193,9 +213,10 @@ def run_credential_sync(
             if not ok:
                 err = msg or "Could not refresh profile after sync"
                 log.info(
-                    "sync cred_id=%s client_id=%s success=false trigger=%s error=%s",
+                    "sync cred_id=%s client_id=%s kind=%s success=false trigger=%s error=%s",
                     cred_id,
                     client_id_for_log,
+                    kind,
                     trigger,
                     err.replace("\n", " "),
                 )
@@ -205,9 +226,10 @@ def run_credential_sync(
             if not whoami or not whoami.get("idType"):
                 err = "Whoami did not return idType"
                 log.info(
-                    "sync cred_id=%s client_id=%s success=false trigger=%s error=%s",
+                    "sync cred_id=%s client_id=%s kind=%s success=false trigger=%s error=%s",
                     cred_id,
                     client_id_for_log,
+                    kind,
                     trigger,
                     err,
                 )
@@ -220,22 +242,27 @@ def run_credential_sync(
                 if row is None:
                     err = "Credential not found after sync"
                     log.info(
-                        "sync cred_id=%s client_id=%s success=false trigger=%s error=%s",
+                        "sync cred_id=%s client_id=%s kind=%s success=false trigger=%s error=%s",
                         cred_id,
                         client_id_for_log,
+                        kind,
                         trigger,
                         err,
                     )
                     return CredentialSyncResult(
                         False, cred_id, client_id_for_log, err, sync_id, trigger, None
                     )
-                touch_credential_last_successful_sync(sconn, cred_id)
+                if incremental:
+                    touch_credential_last_successful_incremental_sync(sconn, cred_id)
+                else:
+                    touch_credential_last_successful_sync(sconn, cred_id)
                 cred_out = get_credential_by_id(sconn, cred_id)
 
             log.info(
-                "sync cred_id=%s client_id=%s success=true trigger=%s sync_id=%s",
+                "sync cred_id=%s client_id=%s kind=%s success=true trigger=%s sync_id=%s",
                 cred_id,
                 client_id_for_log,
+                kind,
                 trigger,
                 sync_id or "",
             )
@@ -250,4 +277,4 @@ def run_credential_sync(
                 sync_summary,
             )
         finally:
-            _set_sync_activity(None, None, None)
+            _set_sync_activity(None, None, None, None)

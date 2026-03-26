@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Firewall location — Help — SFOS Central Firewall Management</title>
+  <link rel="stylesheet" href="help-doc.css" />
+</head>
+
+<body class="help-doc">
+  <header class="help-doc__masthead">
+    <div class="help-doc__masthead-inner">
+      <span class="help-doc__product">SFOS Central Firewall Management</span>
+      <span class="help-doc__sep">/</span>
+      <span class="help-doc__breadcrumb">Firewall location</span>
+    </div>
+  </header>
+  <div class="help-doc__layout">
+    <aside class="help-doc__toc" aria-label="On this page">
+      <p class="help-doc__toc-title">On this page</p>
+      <ul>
+        <li><a href="#introduction">Introduction</a></li>
+        <li><a href="#search">Address search</a></li>
+        <li><a href="#coordinates">Coordinates</a></li>
+      </ul>
+    </aside>
+    <main class="help-doc__main">
+      <p class="help-doc__back"><a href="index.html">← All help topics</a></p>
+      <h1 class="help-doc__h1">Firewall location</h1>
+      <p class="help-doc__meta">Set latitude and longitude used on dashboard and firewall maps.</p>
+
+      <h2 class="help-doc__h2" id="introduction">Introduction</h2>
+      <p>Locations are stored in the local database and drive map markers. Geocoding uses the public Nominatim service
+        (OpenStreetMap data). Results depend on address quality and third-party availability.</p>
+
+      <h2 class="help-doc__h2" id="search">Address search</h2>
+      <p>Type a street address or place name, run the search, then choose a result to populate the map preview and
+        coordinate fields. Refine the query if multiple regions share the same name.</p>
+
+      <h2 class="help-doc__h2" id="coordinates">Coordinates</h2>
+      <p>You may edit decimal latitude and longitude directly when you already have precise values. Save applies the point
+        to the selected firewall and updates markers on the next refresh.</p>
+
+      <div class="help-doc__note">
+        <strong>Privacy note:</strong> Address queries leave this application to reach the geocoding provider. Do not submit
+        sensitive location details you are not permitted to share externally.
+      </div>
+
+      <div class="help-doc__resources">
+        <h2>Related topics</h2>
+        <ul>
+          <li><a href="flyout-firewall-detail.html">Firewall details panel</a></li>
+          <li><a href="page-dashboard.html">Dashboard map</a></li>
+        </ul>
+      </div>
+    </main>
+  </div>
+</body>
+
+</html>

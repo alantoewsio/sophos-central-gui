@@ -20,36 +20,48 @@
         - [x] resizable
         - [x] touch support
         - [x] remember zoom level
-        - [ ] Clcikable pins
+        - [x] Clickable pins
+        - [x] group bubble for overlapping dots
+        - [x] magnifier view for group bubble
+        - [x] show multiple cards at once when pins overlap on magnifier
         - [x] hover cards
-    - [ ] Documentation and make use of help icon 
-    - [ ] Translation
-    - [ ] make use of notification bell icon
+    - [x] Documentation and make use of help icon     
+    - [x] make use of notification bell icon
+    - [x] Notifications panel
+    - [ ] Translation - support additional languages
 - [x] Dashboard tab 
     - [x] alerts table
         - [x] clickable firewall hostname
         - [x] details flyout
-        - [ ] ack alerts
+        - [x] ack alerts
+        - [x] bulk ack alerts
     - [x] clickable cards with summary counts
         - [x] Alerts
         - [x] Firewalls
         - [x] Tenants
         - [x] Licenses
-- [ ] Firewalls tab 
+- [x] Firewalls tab 
     - [x] status icon
     - [x] Alert count
     - [x] view firmware updates
-    - [ ] schedule updates
+    - [x] schedule updates
     - [x] Set location
     - [x] Set label
     - [x] flyout view
     - [x] Approve management
-    - [ ] group/ungroup
+- [ ] Groups tab
+    - [x] Show firewall groups
+    - [x] Add groups
+    - [ ] Remove groups
+    - [ ] group/ungroup firewalls
+    - [ ] Remove firewalls from Central *MAYBE*
+- [ ] Config page *FUTURE*
     - [ ] Import / Export config management *FUTURE*
+    - [ ] List of xml configs and descriptions
+    - [ ] config viewer and editor
 - [x] Tenants tab
     - [x] Firewall count
     - [x] clickable names - filter firewall view
-    - [ ] Hide tab if tenants list is empty
 - [x] Licenses tab
     - [x] clickable flyout
         - [x] gantt chart licens expiry view
@@ -62,7 +74,7 @@
         - [x] user role - can trigger central callbacks : schedule firmware, ack alerts
         - [ ] viewer role - can change their password and view all tabs
     - [x] self-service password change
-    - [ ] session timeout
+    - [x] session timeout
     - [ ] forgot password flow
         - [ ] email challenge loop
         - [ ] text challenge loop
@@ -76,9 +88,10 @@
     - [x] Add / Remove creds
     - [x] Test creds
     - [x] Lookup cred type and save with creds
-- [ ] Sync management
+- [x] Sync management
     - [x] set sync interval UI
+    - [x] set incremental sync interval
     - [x] Implement sync action
     - [x] Add visual indicator to show last sync
     - [x] Event logging
-    - [ ] Notifications panel
+- [x] SUM-Style Firewall card view

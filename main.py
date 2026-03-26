@@ -1,4 +1,4 @@
-"""Sophos Central–style web UI backed by sophos_central.db."""
+"""SFOS Central Firewall Management: web UI backed by sophos_central.db."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import copy
 import json
 import re
 import sqlite3
+import tomllib
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Literal
@@ -38,6 +39,7 @@ from auth import (
     verify_password,
 )
 from central.classes import CentralResponse
+from central.firewalls.groups.methods import create_firewall_group
 from central.session import CentralSession
 from credential_store import (
     DEFAULT_ADMIN_USERNAME,
@@ -52,6 +54,7 @@ from credential_store import (
     get_app_user_by_username,
     get_secrets_db,
     get_credential_id_by_client_id,
+    get_credential_id_tenant_scoped_for_central_tenant,
     get_stored_credential_secrets,
     get_stored_credential_secrets_by_client_id,
     insert_app_user,
@@ -60,13 +63,14 @@ from credential_store import (
     count_credentials_by_id_type,
     credentials_interval_summary,
     list_credentials,
-    max_last_successful_sync_at,
+    max_last_successful_data_sync_at,
     needs_initial_admin_password,
     update_app_user_password_hash,
     update_app_user_profile_cols,
     update_app_user_role,
     user_row_public,
     update_credential_name,
+    update_credential_incremental_sync_interval,
     update_credential_sync_interval,
     update_credential_whoami,
     whoami_dict_from_session,
@@ -76,6 +80,57 @@ from sync_runner import configure_sync_file_logging, get_public_sync_activity, r
 from sync_scheduler import start_scheduler_thread
 
 DB_PATH = runtime_root() / "sophos_central.db"
+
+# Shown in /api/firewall-groups when config import references a firewall not present locally.
+IMPORTED_FROM_FIREWALL_REMOVED_LABEL = "<Removed>"
+
+# Display name and defaults for Settings → About (version/license from pyproject.toml when present).
+_APP_DISPLAY_NAME = "SFOS Central Firewall Management"
+_APP_VERSION_FALLBACK = "0.1.0"
+_APP_LICENSE_FALLBACK = "See the project repository for licensing information."
+
+
+def load_app_about() -> dict[str, str]:
+    """Name, version, license, and pyproject metadata for the About panel."""
+    version = _APP_VERSION_FALLBACK
+    license_line = _APP_LICENSE_FALLBACK
+    project_name = ""
+    description = ""
+    path = bundle_root() / "pyproject.toml"
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+        proj = data.get("project") or {}
+        pn = proj.get("name")
+        if pn:
+            project_name = str(pn).strip()
+        desc = proj.get("description")
+        if desc:
+            description = str(desc).strip()
+        v = proj.get("version")
+        if v:
+            version = str(v).strip()
+        lic = proj.get("license")
+        if isinstance(lic, dict):
+            text = lic.get("text")
+            if text:
+                license_line = str(text).strip()
+            elif lic.get("file"):
+                license_line = f"License file: {lic['file']}"
+        elif isinstance(lic, str) and lic.strip():
+            license_line = lic.strip()
+    except OSError:
+        pass
+    return {
+        "app_name": _APP_DISPLAY_NAME,
+        "project_name": project_name,
+        "description": description,
+        "app_version": version,
+        "license": license_line,
+    }
+
+
+APP_ABOUT = load_app_about()
 
 
 def _actor_for_audit(user_id: str | None) -> tuple[str | None, str | None]:
@@ -107,8 +162,16 @@ jinja = Environment(
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
     try:
         yield conn
     finally:
@@ -238,6 +301,31 @@ def row_to_dict(row: sqlite3.Row) -> dict:
     return {k: row[k] for k in row.keys()}
 
 
+def _parse_alert_allowed_actions_json(raw: object) -> list[str]:
+    """Parse ``alerts.allowed_actions_json`` (Sophos ``allowedActions`` array) to strings."""
+    if raw is None:
+        return []
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[str] = []
+    for x in data:
+        if isinstance(x, str) and x.strip():
+            out.append(x.strip())
+    return out
+
+
+def _alert_allowed_actions_include_acknowledge(actions: list[str]) -> bool:
+    return any(a.casefold() == "acknowledge" for a in actions)
+
+
 def _parse_firewall_group_items_json(raw: str | None) -> list[str]:
     """Return firewall ids listed in a group's ``firewalls_items_json`` array."""
     if raw is None or str(raw).strip() == "":
@@ -254,6 +342,154 @@ def _parse_firewall_group_items_json(raw: str | None) -> list[str]:
             fid = item.get("id")
             if fid is not None and str(fid).strip():
                 out.append(str(fid).strip())
+    return out
+
+
+def _firewall_ids_assigned_in_any_group_for_tenant(
+    conn: sqlite3.Connection, tenant_id: str
+) -> set[str]:
+    tid = str(tenant_id or "").strip()
+    if not tid:
+        return set()
+    cur = conn.execute(
+        "SELECT firewalls_items_json FROM firewall_groups WHERE tenant_id = ?",
+        (tid,),
+    )
+    out: set[str] = set()
+    for r in cur.fetchall():
+        for fid in _parse_firewall_group_items_json(r["firewalls_items_json"]):
+            out.add(fid)
+    return out
+
+
+def _capabilities_include_config_import(raw: str | None) -> bool:
+    if raw is None or str(raw).strip() == "":
+        return False
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(data, list):
+        return False
+    return any(x == "configImport" for x in data if isinstance(x, str))
+
+
+def _oauth_client_for_tenant_firewall_api(
+    conn: sqlite3.Connection, tenant_id: str
+) -> tuple[str, str, str | None]:
+    tid = str(tenant_id or "").strip()
+    if not tid:
+        raise HTTPException(status_code=400, detail="tenant_id is required.")
+    row = conn.execute(
+        """
+        SELECT client_id FROM firewalls
+        WHERE tenant_id = ? AND TRIM(COALESCE(client_id, '')) != ''
+        LIMIT 1
+        """,
+        (tid,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(
+            status_code=503,
+            detail="No synced firewall OAuth client for this tenant; run a Central sync first.",
+        )
+    cid = str(row["client_id"]).strip()
+    with get_secrets_db() as sconn:
+        pair = get_stored_credential_secrets_by_client_id(sconn, cid)
+        cred_row_id = get_credential_id_by_client_id(sconn, cid)
+    if not pair:
+        raise HTTPException(
+            status_code=503,
+            detail="No stored Central credential matches this tenant's API client id.",
+        )
+    return pair[0], pair[1], cred_row_id
+
+
+def _firewall_row_for_group_create_ui(d: dict) -> dict:
+    connected = d.get("connected")
+    suspended = d.get("suspended")
+    return {
+        "id": d.get("id"),
+        "hostname": (d.get("hostname") or "").strip() or None,
+        "name": (d.get("name") or "").strip() or None,
+        "managing_status": d.get("managing_status") or "",
+        "reporting_status": d.get("reporting_status") or "",
+        "connected": 1 if connected in (1, True, "1") else 0,
+        "suspended": 1 if suspended in (1, True, "1") else 0,
+    }
+
+
+def _json_object_maybe(raw: str | None) -> dict | None:
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _firewall_id_from_config_import_value(v: object) -> str | None:
+    """Central may return a UUID string or a dict (e.g. ``sourceFirewall`` with ``id``)."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        s = v.strip()
+        return s or None
+    if isinstance(v, dict):
+        for inner in ("id", "firewallId", "firewall_id"):
+            x = v.get(inner)
+            if x is None:
+                continue
+            s = str(x).strip()
+            if s:
+                return s
+        return None
+    s = str(v).strip()
+    return s or None
+
+
+def _source_firewall_id_from_config_import(obj: dict | None) -> str | None:
+    if not obj:
+        return None
+    for key in (
+        "sourcefirewall",
+        "sourceFirewall",
+        "source_firewall",
+        "sourceFirewallId",
+        "firewallId",
+        "firewall_id",
+    ):
+        v = obj.get(key)
+        fid = _firewall_id_from_config_import_value(v)
+        if fid:
+            return fid
+    return None
+
+
+def _firewall_id_display_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """Firewall id → best display label (hostname, name, or serial)."""
+    cur = conn.execute(
+        """
+        SELECT id,
+               CASE
+                 WHEN TRIM(COALESCE(hostname, '')) != '' THEN TRIM(hostname)
+                 WHEN TRIM(COALESCE(name, '')) != '' THEN TRIM(name)
+                 WHEN TRIM(COALESCE(serial_number, '')) != '' THEN TRIM(serial_number)
+                 ELSE ''
+               END AS label
+        FROM firewalls
+        """
+    )
+    out: dict[str, str] = {}
+    for r in cur.fetchall():
+        d = row_to_dict(r)
+        fid = str(d.get("id") or "").strip()
+        if not fid:
+            continue
+        lab = str(d.get("label") or "").strip()
+        if lab:
+            out[fid] = lab
     return out
 
 
@@ -450,7 +686,11 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Sophos Central GUI", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title=APP_ABOUT["app_name"],
+    version=APP_ABOUT["app_version"],
+    lifespan=lifespan,
+)
 
 _cached_session_idle_minutes: int | None = None
 
@@ -537,7 +777,7 @@ def admin_user_id_dep(request: Request) -> str:
 @app.get("/", response_class=HTMLResponse)
 def index():
     tpl = jinja.get_template("index.html")
-    return HTMLResponse(tpl.render())
+    return HTMLResponse(tpl.render(app_about=APP_ABOUT))
 
 
 @app.get("/api/health")
@@ -944,6 +1184,63 @@ def _alerts_severity_where(severity: str | None) -> tuple[str, tuple]:
     return "", ()
 
 
+def _alerts_severity_where_multi(severities: list[str] | None) -> tuple[str, tuple]:
+    """OR of high / medium / low fragments; empty if none or all three selected."""
+    if not severities:
+        return "", ()
+    levels: list[str] = []
+    for raw in severities:
+        s = str(raw).lower().strip()
+        if s in ("high", "medium", "low") and s not in levels:
+            levels.append(s)
+    if not levels or len(levels) >= 3:
+        return "", ()
+    parts: list[str] = []
+    args: list = []
+    for s in levels:
+        frag, extra = _alerts_severity_where(s)
+        if frag:
+            parts.append("(" + frag + ")")
+        args.extend(extra)
+    if not parts:
+        return "", ()
+    return "(" + " OR ".join(parts) + ")", tuple(args)
+
+
+def _parse_alert_raised_iso_to_sqlite(s: str) -> str | None:
+    """Parse ISO-8601 (with Z or offset) to naive UTC ``YYYY-MM-DD HH:MM:SS`` for SQLite."""
+    t = str(s).strip()
+    if not t:
+        return None
+    if t.endswith("Z"):
+        t = t[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(t)
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _alerts_raised_where(raised_from: str | None, raised_to: str | None) -> tuple[str, tuple]:
+    """Filter ``a.raised_at`` to an inclusive UTC range; empty if both params omitted."""
+    rf_raw = str(raised_from).strip() if raised_from else ""
+    rt_raw = str(raised_to).strip() if raised_to else ""
+    if not rf_raw and not rt_raw:
+        return "", ()
+    default_from = "2000-01-01T00:00:00Z"
+    default_to = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rf_parsed = _parse_alert_raised_iso_to_sqlite(rf_raw) if rf_raw else _parse_alert_raised_iso_to_sqlite(default_from)
+    rt_parsed = _parse_alert_raised_iso_to_sqlite(rt_raw) if rt_raw else _parse_alert_raised_iso_to_sqlite(default_to)
+    if rf_parsed is None or rt_parsed is None:
+        return "", ()
+    if rf_parsed > rt_parsed:
+        rf_parsed, rt_parsed = rt_parsed, rf_parsed
+    frag = "(datetime(a.raised_at) >= datetime(?) AND datetime(a.raised_at) <= datetime(?))"
+    return frag, (rf_parsed, rt_parsed)
+
+
 def _alerts_search_like_pattern(raw: str) -> str:
     """Lowercased LIKE pattern with %wildcards%; escape % _ \\ for use with ESCAPE '\\'."""
     s = str(raw).strip().lower()
@@ -952,20 +1249,27 @@ def _alerts_search_like_pattern(raw: str) -> str:
 
 
 def _alerts_where_sql(
-    severity: str | None,
+    severities: list[str] | None,
     tenant_names: list[str] | None,
     firewall_hostnames: list[str] | None,
     search: str | None = None,
     firewall_id: str | None = None,
+    raised_from: str | None = None,
+    raised_to: str | None = None,
 ) -> tuple[str, tuple]:
     """Full WHERE clause (including WHERE keyword) and bind values for alert list/count."""
     conditions: list[str] = []
     bind: list = []
 
-    frag, extra = _alerts_severity_where(severity)
+    frag, extra = _alerts_severity_where_multi(severities)
     if frag:
         conditions.append("(" + frag + ")")
     bind.extend(extra)
+
+    rf_frag, rf_bind = _alerts_raised_where(raised_from, raised_to)
+    if rf_frag:
+        conditions.append(rf_frag)
+    bind.extend(rf_bind)
 
     tn = [str(x) for x in (tenant_names or []) if x is not None and str(x).strip() != ""]
     fh = [str(x) for x in (firewall_hostnames or []) if x is not None and str(x).strip() != ""]
@@ -1008,6 +1312,100 @@ def _alerts_where_sql(
     if not conditions:
         return "", tuple(bind)
     return " WHERE " + " AND ".join(conditions), tuple(bind)
+
+
+def _parse_sync_timestamp_ms(val: object) -> float | None:
+    """Parse API/SQLite timestamp strings to epoch milliseconds (naive → UTC)."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp() * 1000.0
+    except ValueError:
+        return None
+
+
+def _fw_recency_hours_from_db(conn: sqlite3.Connection) -> tuple[int, int]:
+    ensure_app_ui_schema(conn)
+    row = conn.execute(
+        "SELECT fw_new_max_age_hours, fw_updated_max_age_hours FROM app_ui_settings WHERE id = 1"
+    ).fetchone()
+    if not row:
+        return 168, 48
+    return int(row["fw_new_max_age_hours"]), int(row["fw_updated_max_age_hours"])
+
+
+def _attach_alert_recency_tags(
+    items: list[dict],
+    conn: sqlite3.Connection,
+    sql_from: str,
+    where_sql: str,
+    bind: tuple,
+) -> None:
+    """Set ``recency_tag`` on each alert (``new`` / ``old`` / ``upd`` / omitted).
+
+    NEW uses ``raised_at`` within the configured new row window. OLD / UPD still use ``last_sync``
+    (peer comparison on ``client_id`` vs max ``last_sync``, then recent ``last_sync``).
+    """
+    if not items:
+        return
+    new_h, upd_h = _fw_recency_hours_from_db(conn)
+    new_ms = new_h * 3600000.0
+    upd_ms = upd_h * 3600000.0
+    now_ms = datetime.now(timezone.utc).timestamp() * 1000.0
+
+    agg_sel = (
+        "SELECT TRIM(COALESCE(a.client_id, '')) AS cid, COUNT(*) AS cnt, MAX(a.last_sync) AS mx_ls "
+        + sql_from
+        + " "
+    )
+    if where_sql:
+        agg_sel += where_sql + " AND a.client_id IS NOT NULL AND TRIM(a.client_id) != '' "
+    else:
+        agg_sel += "WHERE a.client_id IS NOT NULL AND TRIM(a.client_id) != '' "
+    agg_sel += "GROUP BY cid"
+
+    max_sync_by_client: dict[str, float] = {}
+    for r in conn.execute(agg_sel, bind):
+        d = row_to_dict(r)
+        cid = str(d.get("cid") or "").strip()
+        if not cid:
+            continue
+        try:
+            cnt = int(d.get("cnt") or 0)
+        except (TypeError, ValueError):
+            cnt = 0
+        mx_ms = _parse_sync_timestamp_ms(d.get("mx_ls"))
+        if cnt >= 2 and mx_ms is not None:
+            max_sync_by_client[cid] = mx_ms
+
+    for it in items:
+        it["recency_tag"] = None
+        raised_ms = _parse_sync_timestamp_ms(it.get("raised_at"))
+        last_ms = _parse_sync_timestamp_ms(it.get("last_sync"))
+        is_new = raised_ms is not None and now_ms - raised_ms <= new_ms
+        if is_new:
+            it["recency_tag"] = "new"
+            continue
+        cid = str(it.get("client_id") or "").strip()
+        is_old = False
+        if cid and cid in max_sync_by_client:
+            max_t = max_sync_by_client[cid]
+            my_t = last_ms
+            if my_t is None or my_t < max_t:
+                is_old = True
+        if is_old:
+            it["recency_tag"] = "old"
+            continue
+        if last_ms is not None and now_ms - last_ms <= upd_ms:
+            it["recency_tag"] = "upd"
 
 
 @app.get("/api/dashboard")
@@ -1363,7 +1761,7 @@ def api_firewalls_firmware_upgrade_batch(
 ):
     """Schedule or run firmware upgrades on Central for selected firewalls (grouped by OAuth client + tenant)."""
     scheduled_utc = _parse_scheduled_at_iso_to_utc(body.scheduled_at)
-    upgrade_at_str = _sophos_upgrade_at_string(scheduled_utc) if scheduled_utc else None
+    upgrade_at_str = _upgrade_at_string_for_central_api(scheduled_utc)
 
     au_adm, an_adm = _actor_for_audit(admin_uid)
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -1544,6 +1942,29 @@ class FirewallLabelBody(BaseModel):
     name: str = Field(max_length=256)
 
 
+def _normalize_sophos_api_base(url: str | None) -> str:
+    """Strip whitespace and trailing slashes from Central API base URLs (tenant ``apiHost`` / whoami)."""
+    s = str(url or "").strip()
+    return s.rstrip("/") if s else s
+
+
+def _effective_ack_tenant_id(tenant_id_col: str | None, tenant_ref_json: str | None) -> str:
+    """
+    Tenant UUID for Common API calls: prefer ``tenant.id`` from the synced alert payload when present,
+    else the ``alerts.tenant_id`` column.
+    """
+    if tenant_ref_json:
+        try:
+            ref = json.loads(tenant_ref_json)
+            if isinstance(ref, dict):
+                rid = str(ref.get("id") or "").strip()
+                if rid:
+                    return rid
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return str(tenant_id_col or "").strip()
+
+
 def _build_central_full_url(
     session: CentralSession,
     url_path: str,
@@ -1558,9 +1979,9 @@ def _build_central_full_url(
     if session.whoami is None:
         raise HTTPException(status_code=502, detail="Central whoami is missing after authentication.")
     if session.whoami.idType == "tenant":
-        base = url_base or session.whoami.data_region_url()
+        base = _normalize_sophos_api_base(url_base or session.whoami.data_region_url())
     else:
-        base = url_base or session.whoami.global_url()
+        base = _normalize_sophos_api_base(url_base or session.whoami.global_url())
     if not base:
         raise HTTPException(
             status_code=502,
@@ -1580,6 +2001,25 @@ def _central_api_error_message(cresp: CentralResponse) -> str:
             v = data.get(key)
             if isinstance(v, str) and v.strip():
                 return v.strip()
+        errs = data.get("errors")
+        if isinstance(errs, list) and errs:
+            parts: list[str] = []
+            for e in errs[:8]:
+                if isinstance(e, dict):
+                    code = e.get("code") or e.get("errorCode") or e.get("type")
+                    msg = e.get("message") or e.get("detail") or e.get("reason")
+                    cs = str(code).strip() if code is not None else ""
+                    ms = str(msg).strip() if msg is not None else ""
+                    if cs and ms:
+                        parts.append(f"{cs}: {ms}")
+                    elif ms:
+                        parts.append(ms)
+                    elif cs:
+                        parts.append(cs)
+                elif isinstance(e, str) and e.strip():
+                    parts.append(e.strip())
+            if parts:
+                return "; ".join(parts)
     if cresp.error_message and str(cresp.error_message).strip():
         return str(cresp.error_message).strip()
     return f"Sophos Central API error (HTTP {cresp.status_code})"
@@ -1593,14 +2033,58 @@ def _fw_status_pending_approval(managing: str | None, reporting: str | None) -> 
     return one(managing) or one(reporting)
 
 
+def _post_common_alert_action_on_central(
+    *,
+    session: CentralSession,
+    url_base: str,
+    tenant_hdr: str | None,
+    org_hdr: str | None,
+    alert_id: str,
+    action: str,
+) -> None:
+    """
+    POST ``/common/v1/alerts/{id}/actions``.
+
+    Per Common API docs this route requires ``X-Tenant-ID``; ``get_alerts`` / ``take_alert_action``
+    in the SDK do not send ``X-Partner-ID``. Match that behavior here (partner/org context is
+    implied by the regional base URL + tenant / org headers).
+    """
+    aid = str(alert_id or "").strip()
+    if not aid:
+        raise HTTPException(status_code=400, detail="Alert id is empty.")
+    rs = session.post(
+        f"/common/v1/alerts/{aid}/actions",
+        payload={"action": action},
+        url_base=url_base,
+        tenant_id=tenant_hdr,
+        organization_id=org_hdr,
+    )
+    if rs.success:
+        return
+    cr = rs.value
+    if isinstance(cr, CentralResponse):
+        msg = _central_api_error_message(cr)
+        if cr.status_code == 404:
+            msg = (
+                f"{msg} If the alert was already cleared in Sophos Central, run a sync to refresh "
+                "local data."
+            )
+        raise HTTPException(status_code=502, detail=msg)
+    msg = getattr(cr, "error_message", None) if cr is not None else None
+    raise HTTPException(
+        status_code=502,
+        detail=msg if msg and str(msg).strip() else "Sophos Central alert action failed.",
+    )
+
+
 def _central_firewall_api_context(
     *,
     oauth_client_id: str,
     oauth_client_secret: str,
     tenant_id: str,
     unsupported_phrase: str = "this action",
-) -> tuple[CentralSession, str, str | None, str | None]:
-    """Authenticate and resolve data-region URL + tenant/org headers for firewall APIs."""
+) -> tuple[CentralSession, str, str | None, str | None, str | None]:
+    """Authenticate and resolve data-region URL + tenant/org/partner headers for firewall APIs."""
     session = CentralSession(oauth_client_id.strip(), oauth_client_secret)
     auth = session.authenticate()
     if not auth.success:
@@ -1613,6 +2097,7 @@ def _central_firewall_api_context(
     url_base: str | None = None
     tenant_hdr: str | None = None
     org_hdr: str | None = None
+    partner_hdr: str | None = None
 
     if id_type == "tenant":
         if tenant_id != w.id:
@@ -1620,9 +2105,10 @@ def _central_firewall_api_context(
                 status_code=400,
                 detail="This firewall belongs to a different tenant than the stored API credential.",
             )
-        url_base = w.data_region_url()
+        url_base = _normalize_sophos_api_base(w.data_region_url())
         tenant_hdr = w.id
     elif id_type == "partner":
+        partner_hdr = w.id
         tenant_hdr = tenant_id
         with get_db() as conn:
             trow = conn.execute(
@@ -1634,7 +2120,7 @@ def _central_firewall_api_context(
                 status_code=503,
                 detail="Tenant API host is missing from the local database; sync this tenant from a partner credential first.",
             )
-        url_base = str(trow["api_host"]).strip()
+        url_base = _normalize_sophos_api_base(str(trow["api_host"]).strip())
     elif id_type == "organization":
         tenant_hdr = tenant_id
         org_hdr = w.id
@@ -1648,14 +2134,14 @@ def _central_firewall_api_context(
                 status_code=503,
                 detail="Tenant API host is missing from the local database; sync this tenant from an organization credential first.",
             )
-        url_base = str(trow["api_host"]).strip()
+        url_base = _normalize_sophos_api_base(str(trow["api_host"]).strip())
     else:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported Sophos Central credential type for {unsupported_phrase}: {id_type!r}.",
         )
 
-    return session, url_base, tenant_hdr, org_hdr
+    return session, url_base, tenant_hdr, org_hdr, partner_hdr
 
 
 def _approve_firewall_management_on_central(
@@ -1666,7 +2152,7 @@ def _approve_firewall_management_on_central(
     oauth_client_secret: str,
 ) -> None:
     """POST approveManagement on Sophos Central (same tenancy / region rules as geo PATCH)."""
-    session, url_base, tenant_hdr, org_hdr = _central_firewall_api_context(
+    session, url_base, tenant_hdr, org_hdr, partner_hdr = _central_firewall_api_context(
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         tenant_id=tenant_id,
@@ -1684,6 +2170,8 @@ def _approve_firewall_management_on_central(
         headers["X-Tenant-ID"] = tenant_hdr
     if org_hdr:
         headers["X-Organization-ID"] = org_hdr
+    if partner_hdr:
+        headers["X-Partner-ID"] = partner_hdr
     payload = {"action": "approveManagement"}
     try:
         r = requests.post(full_url, headers=headers, json=payload, timeout=30)
@@ -1717,6 +2205,22 @@ def _sophos_upgrade_at_string(dt: datetime) -> str:
     return u.strftime("%Y-%m-%dT%H:%M:%S") + f".{ms:03d}Z"
 
 
+def _upgrade_at_string_for_central_api(scheduled_utc: datetime | None) -> str | None:
+    """Return Sophos ``upgradeAt`` string, or None for an immediate upgrade.
+
+    If the UI sends a time that is already in the past (common with ``datetime-local``
+    when the user picks the current minute), omit ``upgradeAt`` so Central treats the
+    request as upgrade-now; otherwise Central may respond with errors such as
+    ``BadServerResponse``.
+    """
+    if scheduled_utc is None:
+        return None
+    now = datetime.now(timezone.utc)
+    if scheduled_utc <= now:
+        return None
+    return _sophos_upgrade_at_string(scheduled_utc)
+
+
 def _post_firmware_upgrade_actions_on_central(
     *,
     oauth_client_id: str,
@@ -1725,7 +2229,7 @@ def _post_firmware_upgrade_actions_on_central(
     upgrade_dicts: list[dict],
 ) -> CentralResponse:
     """POST /firewall/v1/firewalls/actions/firmware-upgrade (single object or batch)."""
-    session, url_base, tenant_hdr, org_hdr = _central_firewall_api_context(
+    session, url_base, tenant_hdr, org_hdr, partner_hdr = _central_firewall_api_context(
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         tenant_id=tenant_id,
@@ -1744,6 +2248,8 @@ def _post_firmware_upgrade_actions_on_central(
         headers["X-Tenant-ID"] = tenant_hdr
     if org_hdr:
         headers["X-Organization-ID"] = org_hdr
+    if partner_hdr:
+        headers["X-Partner-ID"] = partner_hdr
     try:
         r = requests.post(full_url, headers=headers, json=json_body, timeout=60)
     except requests.RequestException as e:
@@ -1761,7 +2267,7 @@ def _patch_firewall_json_on_central(
     unsupported_phrase: str,
 ) -> None:
     """PATCH ``/firewall/v1/firewalls/{id}`` on Sophos Central (geo, name, etc.)."""
-    session, url_base, tenant_hdr, org_hdr = _central_firewall_api_context(
+    session, url_base, tenant_hdr, org_hdr, partner_hdr = _central_firewall_api_context(
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         tenant_id=tenant_id,
@@ -1778,6 +2284,8 @@ def _patch_firewall_json_on_central(
         headers["X-Tenant-ID"] = tenant_hdr
     if org_hdr:
         headers["X-Organization-ID"] = org_hdr
+    if partner_hdr:
+        headers["X-Partner-ID"] = partner_hdr
     try:
         r = requests.patch(full_url, headers=headers, json=json_body, timeout=30)
     except requests.RequestException as e:
@@ -2114,6 +2622,9 @@ def api_tenants():
               status,
               api_host,
               updated_at,
+              first_sync,
+              last_sync,
+              client_id,
               (
                 SELECT COUNT(*) FROM firewalls f
                 WHERE f.tenant_id = tenants.id
@@ -2177,6 +2688,9 @@ def api_tenants():
                     "status": "—",
                     "api_host": "—",
                     "updated_at": "",
+                    "first_sync": "",
+                    "last_sync": "",
+                    "client_id": "",
                     "firewall_count": orphan_fw_counts.get(sid, 0),
                 }
             )
@@ -2189,6 +2703,7 @@ def api_firewall_groups():
     """Rows from ``firewall_groups`` with tenant label, up to 3-segment breadcrumb, firewall count, and sync-status row count."""
     tdisp = _sql_tenant_display_coalesced("t", "g.tenant_id")
     with get_db_with_sec() as conn:
+        fw_display = _firewall_id_display_map(conn)
         sql_fg = (
             """
             SELECT
@@ -2198,8 +2713,11 @@ def api_firewall_groups():
               p.name AS parent_name,
               pp.name AS grandparent_name,
               g.locked_by_managing_account,
+              g.created_at,
               g.last_sync,
               g.updated_at,
+              g.client_id,
+              g.config_import_json,
               COALESCE(g.firewalls_total, g.firewalls_items_count, 0) AS firewall_count,
               COALESCE(
                 (SELECT COUNT(*) FROM firewall_group_sync_status s WHERE s.group_id = g.id),
@@ -2250,6 +2768,18 @@ def api_firewall_groups():
             sic = int(d.get("sync_issues_count") or 0)
         except (TypeError, ValueError):
             sic = 0
+        cfg_imp = _json_object_maybe(d.get("config_import_json"))
+        sfw_id = _source_firewall_id_from_config_import(cfg_imp)
+        imported_from_firewall_id: str | None = None
+        if sfw_id:
+            lab = str(fw_display.get(sfw_id, "") or "").strip()
+            if lab:
+                imported_from = lab
+                imported_from_firewall_id = sfw_id
+            else:
+                imported_from = IMPORTED_FROM_FIREWALL_REMOVED_LABEL
+        else:
+            imported_from = ""
         out.append(
             {
                 "id": d.get("id"),
@@ -2262,11 +2792,196 @@ def api_firewall_groups():
                 "firewall_count": fc_i,
                 "sync_issues_count": sic,
                 "locked_label": locked_label,
+                "created_at": d.get("created_at") or "",
                 "last_sync": d.get("last_sync") or "",
                 "updated_at": d.get("updated_at") or "",
+                "client_id": d.get("client_id") or "",
+                "imported_from": imported_from,
+                "imported_from_firewall_id": imported_from_firewall_id,
             }
         )
     return out
+
+
+class CreateFirewallGroupBody(BaseModel):
+    tenant_id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=256)
+    assign_firewall_ids: list[str] = Field(default_factory=list)
+    config_import_source_firewall_id: str | None = None
+
+
+@app.get("/api/tenants/{tenant_id}/firewall-group-create-data")
+def api_tenant_firewall_group_create_data(
+    tenant_id: str,
+    _: str = Depends(current_user_id_dep),
+):
+    """Firewalls eligible for config-import source vs. assignment when creating a group (local DB rules)."""
+    tid = str(tenant_id or "").strip()
+    if not tid:
+        raise HTTPException(status_code=400, detail="Invalid tenant id.")
+    with get_db() as conn:
+        in_tenants = conn.execute(
+            "SELECT 1 FROM tenants WHERE id = ? LIMIT 1", (tid,)
+        ).fetchone()
+        if not in_tenants:
+            has_fw = conn.execute(
+                "SELECT 1 FROM firewalls WHERE tenant_id = ? LIMIT 1", (tid,)
+            ).fetchone()
+            if not has_fw:
+                raise HTTPException(status_code=404, detail="Tenant not found.")
+        assigned = _firewall_ids_assigned_in_any_group_for_tenant(conn, tid)
+        cur = conn.execute(
+            """
+            SELECT id, hostname, name, managing_status, reporting_status, connected, suspended,
+                   capabilities_json
+            FROM firewalls
+            WHERE tenant_id = ?
+            ORDER BY
+              LOWER(COALESCE(NULLIF(TRIM(hostname), ''), NULLIF(TRIM(name), ''), id))
+            """,
+            (tid,),
+        )
+        import_sources: list[dict] = []
+        available_firewalls: list[dict] = []
+        for r in cur.fetchall():
+            d = row_to_dict(r)
+            fid = str(d.get("id") or "").strip()
+            if not fid:
+                continue
+            ui = _firewall_row_for_group_create_ui(d)
+            if _capabilities_include_config_import(d.get("capabilities_json")):
+                import_sources.append(ui)
+            ms = str(d.get("managing_status") or "").strip()
+            if ms.startswith("approvedBy") and fid not in assigned:
+                available_firewalls.append(ui)
+    return {
+        "tenant_id": tid,
+        "import_sources": import_sources,
+        "available_firewalls": available_firewalls,
+    }
+
+
+@app.post("/api/firewall-groups/create")
+def api_firewall_groups_create(
+    request: Request,
+    body: CreateFirewallGroupBody,
+    admin_uid: str = Depends(admin_user_id_dep),
+):
+    """Create a firewall group on Sophos Central (``central.firewalls.groups.methods.create_firewall_group``)."""
+    tid = str(body.tenant_id or "").strip()
+    name = str(body.name or "").strip()
+    if not tid or not name:
+        raise HTTPException(status_code=400, detail="tenant_id and name are required.")
+    assign_ids = [str(x).strip() for x in (body.assign_firewall_ids or []) if str(x).strip()]
+    assign_ids = list(dict.fromkeys(assign_ids))
+    import_src = str(body.config_import_source_firewall_id or "").strip() or None
+
+    with get_db() as conn:
+        assigned = _firewall_ids_assigned_in_any_group_for_tenant(conn, tid)
+        cur = conn.execute(
+            """
+            SELECT id, hostname, name, managing_status, reporting_status, connected, suspended,
+                   capabilities_json
+            FROM firewalls
+            WHERE tenant_id = ?
+            """,
+            (tid,),
+        )
+        allowed_import: set[str] = set()
+        allowed_assign: set[str] = set()
+        for r in cur.fetchall():
+            d = row_to_dict(r)
+            fid = str(d.get("id") or "").strip()
+            if not fid:
+                continue
+            if _capabilities_include_config_import(d.get("capabilities_json")):
+                allowed_import.add(fid)
+            ms = str(d.get("managing_status") or "").strip()
+            if ms.startswith("approvedBy") and fid not in assigned:
+                allowed_assign.add(fid)
+
+    for aid in assign_ids:
+        if aid not in allowed_assign:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Firewall {aid!r} is not eligible for this new group (tenant rules).",
+            )
+    if import_src is not None and import_src not in allowed_import:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected firewall is not eligible as a configuration import source for this tenant.",
+        )
+
+    au_adm, an_adm = _actor_for_audit(admin_uid)
+    with get_db() as conn:
+        oauth_cid, oauth_secret, cred_row_id = _oauth_client_for_tenant_firewall_api(conn, tid)
+
+    session, url_base, _, _, _ = _central_firewall_api_context(
+        oauth_client_id=oauth_cid,
+        oauth_client_secret=oauth_secret,
+        tenant_id=tid,
+        unsupported_phrase="creating a firewall group",
+    )
+    rs = create_firewall_group(
+        session,
+        name=name,
+        assign_firewalls=assign_ids,
+        config_import_source_firewall_id=import_src,
+        url_base=url_base,
+        tenant_id=tid,
+    )
+    if not rs.success:
+        detail = rs.message or "Create firewall group failed."
+        if rs.value is not None and isinstance(rs.value, CentralResponse):
+            detail = _central_api_error_message(rs.value)
+        raise HTTPException(status_code=502, detail=detail)
+
+    grp = rs.value
+    group_id = getattr(grp, "id", None) if grp is not None else None
+    audit_event(
+        action="central.firewall_group_create",
+        actor_user_id=au_adm,
+        actor_username=an_adm,
+        request=request,
+        detail={
+            "tenant_id": tid,
+            "group_name": name,
+            "group_id": group_id,
+            "assign_count": len(assign_ids),
+            "config_import_source_firewall_id": import_src,
+            "oauth_client_id_mask": mask_oauth_client_id(oauth_cid),
+        },
+    )
+
+    sync_results: list[dict] = []
+    if cred_row_id:
+        try:
+            with get_db() as central_conn:
+                result = run_credential_sync(
+                    cred_row_id, central_conn=central_conn, trigger="post-create-firewall-group"
+                )
+            sync_results.append(
+                {
+                    "credential_id": cred_row_id,
+                    "ok": result.success,
+                    "error": result.error,
+                }
+            )
+        except Exception as e:
+            sync_results.append(
+                {
+                    "credential_id": cred_row_id,
+                    "ok": False,
+                    "error": str(e) or type(e).__name__,
+                }
+            )
+
+    return {
+        "ok": True,
+        "group_id": group_id,
+        "name": getattr(grp, "name", name) if grp is not None else name,
+        "credential_syncs": sync_results,
+    }
 
 
 @app.get("/api/licenses")
@@ -2425,13 +3140,23 @@ def api_licenses_detailed():
 
 @app.get("/api/alerts/facets")
 def api_alerts_facets(
-    severity: str | None = Query(
+    severity: list[str] | None = Query(
         default=None,
-        description="Match dashboard severity filter: high, medium, low, or omit for all",
+        description="Repeat: match dashboard severity filter (OR): high, medium, low",
+    ),
+    raised_from: str | None = Query(
+        default=None,
+        max_length=80,
+        description="ISO raised_at range start (UTC); default 2000-01-01 if raised_to set",
+    ),
+    raised_to: str | None = Query(
+        default=None,
+        max_length=80,
+        description="ISO raised_at range end (UTC); default now if raised_from set",
     ),
 ):
     """Distinct tenant names and firewall host labels for facet filters."""
-    where_sql, bind = _alerts_where_sql(severity, None, None)
+    where_sql, bind = _alerts_where_sql(severity, None, None, None, None, raised_from, raised_to)
     base_from = """
         FROM alerts a
         LEFT JOIN tenants t ON t.id = a.tenant_id
@@ -2469,9 +3194,9 @@ def api_alerts_facets(
 def api_alerts(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=200),
-    severity: str | None = Query(
+    severity: list[str] | None = Query(
         default=None,
-        description="Filter: all (default), high, medium, low",
+        description="Repeat: filter by severity (OR): high, medium, low; omit for all",
     ),
     tenant_name: list[str] | None = Query(
         default=None,
@@ -2484,6 +3209,16 @@ def api_alerts(
     firewall_id: str | None = Query(
         default=None,
         description="Filter alerts whose managed agent is this firewall id",
+    ),
+    raised_from: str | None = Query(
+        default=None,
+        max_length=80,
+        description="ISO raised_at range start (UTC); default 2000-01-01 if raised_to set",
+    ),
+    raised_to: str | None = Query(
+        default=None,
+        max_length=80,
+        description="ISO raised_at range end (UTC); default now if raised_from set",
     ),
     q: str | None = Query(
         default=None,
@@ -2499,7 +3234,13 @@ def api_alerts(
     if fw_id_f == "":
         fw_id_f = None
     where_sql, bind = _alerts_where_sql(
-        severity, tenant_name, firewall_hostname, search, fw_id_f
+        severity,
+        tenant_name,
+        firewall_hostname,
+        search,
+        fw_id_f,
+        raised_from,
+        raised_to,
     )
     sql_from = """
         FROM alerts a
@@ -2520,6 +3261,10 @@ def api_alerts(
               a.description,
               a.raised_at,
               a.category,
+              a.first_sync,
+              a.last_sync,
+              a.client_id,
+              a.allowed_actions_json,
               """
             + alerts_tenant_disp
             + """ AS tenant_name,
@@ -2534,12 +3279,190 @@ def api_alerts(
             """
         )
         cur = conn.execute(sql_alerts_page, (*bind, page_size, offset))
-        items = [row_to_dict(r) for r in cur.fetchall()]
+        items = []
+        for r in cur.fetchall():
+            d = row_to_dict(r)
+            raw_aa = d.pop("allowed_actions_json", None)
+            d["allowed_actions"] = _parse_alert_allowed_actions_json(raw_aa)
+            items.append(d)
+        _attach_alert_recency_tags(items, conn, sql_from, where_sql, bind)
     return {
         "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
+    }
+
+
+class AlertsAcknowledgeBody(BaseModel):
+    """Acknowledge alerts in Sophos Central (Common API) using stored sync credentials."""
+
+    ids: list[str] = Field(..., min_length=1, max_length=200)
+
+
+@app.post("/api/alerts/acknowledge")
+def api_alerts_acknowledge(
+    request: Request,
+    body: AlertsAcknowledgeBody,
+    uid: str = Depends(current_user_id_dep),
+):
+    """POST ``acknowledge`` for each id. Skips ids that are missing or not acknowledgeable locally."""
+    raw_ids = [str(x).strip() for x in body.ids if x is not None and str(x).strip()]
+    if not raw_ids:
+        raise HTTPException(status_code=400, detail="ids must not be empty.")
+    uniq = list(dict.fromkeys(raw_ids))
+
+    au, an = _actor_for_audit(uid)
+    acknowledged: list[dict] = []
+    errors: list[dict] = []
+    sync_cred_ids: set[str] = set()
+
+    ph = ",".join("?" * len(uniq))
+    with get_db() as conn:
+        cur = conn.execute(
+            f"SELECT id, tenant_id, client_id, allowed_actions_json, tenant_ref_json "
+            f"FROM alerts WHERE id IN ({ph})",
+            uniq,
+        )
+        rows = {str(r["id"]): r for r in cur.fetchall()}
+
+    valid_entries: list[tuple[str, str, str, str | None]] = []
+    for aid in uniq:
+        row = rows.get(aid)
+        if row is None:
+            errors.append({"id": aid, "detail": "Alert not found"})
+            continue
+        acts = _parse_alert_allowed_actions_json(row["allowed_actions_json"])
+        if not _alert_allowed_actions_include_acknowledge(acts):
+            errors.append(
+                {
+                    "id": aid,
+                    "detail": "Alert does not allow acknowledge in local data.",
+                }
+            )
+            continue
+        tid = _effective_ack_tenant_id(row["tenant_id"], row["tenant_ref_json"])
+        cid = str(row["client_id"] or "").strip()
+        if not tid:
+            errors.append({"id": aid, "detail": "Alert has no tenant id."})
+            continue
+        if not cid:
+            errors.append(
+                {
+                    "id": aid,
+                    "detail": "Alert has no synced API client id; run a Central sync first.",
+                }
+            )
+            continue
+        with get_secrets_db() as sconn:
+            tenant_scoped_cred_id = get_credential_id_tenant_scoped_for_central_tenant(
+                sconn, tid
+            )
+            cred_pair = None
+            cred_row_id: str | None = None
+            if tenant_scoped_cred_id:
+                cred_pair = get_stored_credential_secrets(sconn, tenant_scoped_cred_id)
+                if cred_pair:
+                    cred_row_id = tenant_scoped_cred_id
+            if not cred_pair:
+                cred_pair = get_stored_credential_secrets_by_client_id(sconn, cid)
+                cred_row_id = get_credential_id_by_client_id(sconn, cid)
+        if not cred_pair:
+            errors.append(
+                {
+                    "id": aid,
+                    "detail": "No stored Central credential matches this alert's API client id.",
+                }
+            )
+            continue
+        oauth_cid, _oauth_secret = cred_pair
+        valid_entries.append((aid, oauth_cid, tid, cred_row_id))
+
+    groups: dict[tuple[str, str], list[tuple[str, str | None]]] = defaultdict(list)
+    for aid, oauth_cid, tid, cred_row_id in valid_entries:
+        groups[(oauth_cid, tid)].append((aid, cred_row_id))
+
+    for (oauth_cid, tid), entries in groups.items():
+        with get_secrets_db() as sconn:
+            p = get_stored_credential_secrets_by_client_id(sconn, oauth_cid)
+        if not p:
+            msg = "No stored Central credential for this OAuth client id."
+            for aid, _ in entries:
+                errors.append({"id": aid, "detail": msg})
+            continue
+        oauth_secret = p[1]
+        try:
+            session, url_base, tenant_hdr, org_hdr, _partner_hdr = _central_firewall_api_context(
+                oauth_client_id=oauth_cid,
+                oauth_client_secret=oauth_secret,
+                tenant_id=tid,
+                unsupported_phrase="alert acknowledgement",
+            )
+        except HTTPException as he:
+            detail = he.detail
+            msg = detail if isinstance(detail, str) else str(detail)
+            for aid, _ in entries:
+                errors.append({"id": aid, "detail": msg})
+            continue
+
+        for aid, cred_row_id in entries:
+            try:
+                _post_common_alert_action_on_central(
+                    session=session,
+                    url_base=url_base,
+                    tenant_hdr=tenant_hdr,
+                    org_hdr=org_hdr,
+                    alert_id=aid,
+                    action="acknowledge",
+                )
+            except HTTPException as he:
+                d = he.detail
+                msg = d if isinstance(d, str) else str(d)
+                errors.append({"id": aid, "detail": msg})
+                continue
+            acknowledged.append({"id": aid})
+            if cred_row_id:
+                sync_cred_ids.add(str(cred_row_id))
+
+    if acknowledged:
+        audit_event(
+            action="central.alerts_acknowledge",
+            actor_user_id=au,
+            actor_username=an,
+            request=request,
+            detail={
+                "acknowledged_count": len(acknowledged),
+                "error_count": len(errors),
+            },
+        )
+
+    sync_results: list[dict] = []
+    for cred_id in sorted(sync_cred_ids):
+        try:
+            with get_db() as central_conn:
+                result = run_credential_sync(
+                    cred_id, central_conn=central_conn, trigger="post-alert-acknowledge"
+                )
+            sync_results.append(
+                {
+                    "credential_id": cred_id,
+                    "ok": result.success,
+                    "error": result.error,
+                }
+            )
+        except Exception as e:
+            sync_results.append(
+                {
+                    "credential_id": cred_id,
+                    "ok": False,
+                    "error": str(e) or type(e).__name__,
+                }
+            )
+
+    return {
+        "acknowledged": acknowledged,
+        "errors": errors,
+        "credential_syncs": sync_results,
     }
 
 
@@ -2631,7 +3554,11 @@ class CentralCredentialRenameBody(BaseModel):
 
 
 class CentralCredentialSyncIntervalBody(BaseModel):
-    sync_interval: Literal["hourly", "3h", "6h", "12h", "daily", "none"]
+    sync_interval: Literal["10m", "15m", "30m", "hourly", "3h", "6h", "12h", "daily", "none"]
+
+
+class CentralCredentialIncrementalSyncIntervalBody(BaseModel):
+    incremental_sync_interval: Literal["1m", "5m", "10m", "15m", "30m", "60m", "none"]
 
 
 class AppUiSettingsBody(BaseModel):
@@ -2931,7 +3858,7 @@ def api_settings_credentials_rename(
 def api_sync_status(_: str = Depends(current_user_id_dep)):
     activity = get_public_sync_activity()
     with get_secrets_db() as conn:
-        ts = max_last_successful_sync_at(conn)
+        ts = max_last_successful_data_sync_at(conn)
         by_type = count_credentials_by_id_type(conn)
         creds = list_credentials(conn)
     return {
@@ -2942,6 +3869,7 @@ def api_sync_status(_: str = Depends(current_user_id_dep)):
         "sync_credential_name": activity["credential_name"],
         "sync_credential_id": activity["credential_id"],
         "sync_trigger": activity["trigger"],
+        "sync_kind": activity["sync_kind"],
     }
 
 
@@ -2963,6 +3891,33 @@ def api_settings_credentials_sync_interval(
         actor_username=an,
         request=request,
         detail={"credential_id": cred_id, "sync_interval": body.sync_interval},
+    )
+    return row
+
+
+@app.patch("/api/settings/credentials/{cred_id}/incremental-sync-interval")
+def api_settings_credentials_incremental_sync_interval(
+    request: Request,
+    cred_id: str,
+    body: CentralCredentialIncrementalSyncIntervalBody,
+    admin_uid: str = Depends(admin_user_id_dep),
+):
+    with get_secrets_db() as conn:
+        row = update_credential_incremental_sync_interval(
+            conn, cred_id, body.incremental_sync_interval
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+    au, an = _actor_for_audit(admin_uid)
+    audit_event(
+        action="credential.incremental_sync_interval_change",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={
+            "credential_id": cred_id,
+            "incremental_sync_interval": body.incremental_sync_interval,
+        },
     )
     return row
 
