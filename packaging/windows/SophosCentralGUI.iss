@@ -2,7 +2,7 @@
 ; Install tree is fully self-contained (embedded Python); no dependency on system Python.
 
 #define MyAppName "SFOS Central Firewall Management"
-#define MyAppVersion "0.1.4"
+#define MyAppVersion "0.1.5"
 #define MyAppPublisher "SFOS Central Firewall Management"
 #define MyAppExeName "SophosCentralGUI.exe"
 #define BundledDist "..\..\dist\SophosCentralGUI"
