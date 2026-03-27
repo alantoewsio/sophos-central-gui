@@ -737,6 +737,40 @@ def credential_name_for_tenant_client_id(
     return label or None
 
 
+def credential_name_for_synced_tenant(
+    conn: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    tenant_row_client_id: str | None = None,
+) -> str | None:
+    """
+    Stored Central credential display name for tenant rows: match Sophos tenant UUID to
+    credential ``client_id`` / whoami id, else the OAuth application id on the synced tenant row.
+    """
+    tid = str(tenant_id or "").strip()
+    if tid:
+        by_uuid = credential_name_for_tenant_client_id(conn, tid)
+        if by_uuid:
+            return by_uuid
+    oc = str(tenant_row_client_id or "").strip()
+    if not oc:
+        return None
+    init_secrets_schema(conn)
+    row = conn.execute(
+        """
+        SELECT name FROM central_credentials
+        WHERE TRIM(client_id) = TRIM(?)
+        ORDER BY name COLLATE NOCASE
+        LIMIT 1
+        """,
+        (oc,),
+    ).fetchone()
+    if not row or row["name"] is None:
+        return None
+    label = str(row["name"]).strip()
+    return label or None
+
+
 def insert_credential(
     conn: sqlite3.Connection,
     *,

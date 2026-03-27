@@ -1,0 +1,92 @@
+#!/bin/bash
+set -e
+
+BUNDLE_NAME="SFOS Central Firewall Management.app"
+BUNDLE_PATH="/Applications/$BUNDLE_NAME"
+BINARY="/opt/SophosCentralGUI/SophosCentralGUI"
+AGENT_PLIST_NAME="com.sophos.central.gui.plist"
+LABEL="com.sophos.central.gui"
+
+console_user() {
+  local u
+  u="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+  if [ -n "$u" ] && [ "$u" != root ] && [ "$u" != LoginWindow ]; then
+    echo "$u"
+    return 0
+  fi
+  if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != root ]; then
+    echo "${SUDO_USER}"
+    return 0
+  fi
+  echo ""
+}
+
+osascript_yesno() {
+  local msg="$1"
+  local def="${2:-Yes}"
+  local script
+  # Escape double quotes in messages for AppleScript string literal
+  msg="${msg//\"/\\\"}"
+  if [ "$def" = "Yes" ]; then
+    script="button returned of (display dialog \"${msg}\" with title \"Installation complete\" buttons {\"No\", \"Yes\"} default button \"Yes\")"
+  else
+    script="button returned of (display dialog \"${msg}\" with title \"Installation complete\" buttons {\"Yes\", \"No\"} default button \"No\")"
+  fi
+  /usr/bin/osascript -e "$script" 2>/dev/null || echo "No"
+}
+
+start_agent() {
+  local home="$1" uid="$2" user="$3"
+  local plist="$home/Library/LaunchAgents/$AGENT_PLIST_NAME"
+  sudo -u "$user" launchctl print "gui/${uid}/${LABEL}" &>/dev/null && return 0
+  sudo -u "$user" launchctl bootstrap "gui/${uid}" "$plist" 2>/dev/null || \
+    sudo -u "$user" launchctl load -w "$plist" 2>/dev/null || true
+}
+
+CU="$(console_user)"
+if [ -z "$CU" ]; then
+  exit 0
+fi
+
+CU_UID="$(id -u "$CU")"
+CU_HOME="$(dscl . -read "/Users/$CU" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')"
+if [ -z "$CU_HOME" ] || [ ! -d "$CU_HOME" ]; then
+  exit 0
+fi
+
+STARTUP_ANS="$(osascript_yesno "Launch SFOS Central Firewall Management automatically when you log in?" "No")"
+LAUNCH_ANS="$(osascript_yesno "Open SFOS Central Firewall Management now?" "Yes")"
+
+if [ "$STARTUP_ANS" = "Yes" ]; then
+  mkdir -p "$CU_HOME/Library/LaunchAgents"
+  TMPPLIST="$(mktemp -t sfcgui)"
+  cat >"$TMPPLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BINARY}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+EOF
+  install -o "$CU" -g staff -m 0644 "$TMPPLIST" "$CU_HOME/Library/LaunchAgents/$AGENT_PLIST_NAME"
+  rm -f "$TMPPLIST"
+  start_agent "$CU_HOME" "$CU_UID" "$CU"
+fi
+
+if [ "$LAUNCH_ANS" = "Yes" ]; then
+  if [ -d "$BUNDLE_PATH" ]; then
+    sudo -u "$CU" /usr/bin/open "$BUNDLE_PATH" || true
+  else
+    sudo -u "$CU" /usr/bin/open "$BINARY" || true
+  fi
+fi
+
+exit 0

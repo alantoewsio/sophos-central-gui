@@ -1,6 +1,6 @@
 [project]
 name = "sfos-central-firewall-management"
-version = "0.1.5"
+version = "0.1.6"
 description = "Showcase application that uses the Sophos Central APIs (https://developer.sophos.com) to interact with firewalls managed in Sophos Central."
 readme = "README.md"
 license = { text = "Apache License, Version 2.0" }

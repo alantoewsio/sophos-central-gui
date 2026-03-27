@@ -13,11 +13,15 @@ uv run pyinstaller --noconfirm SophosCentralGUI.spec
 VERSION="$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
 DEB_ROOT="$ROOT/packaging/stage/deb"
 rm -rf "$DEB_ROOT"
-mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/opt/SophosCentralGUI" "$DEB_ROOT/usr/bin"
+mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/opt/SophosCentralGUI" "$DEB_ROOT/usr/bin" \
+  "$DEB_ROOT/usr/share/applications"
 
 cp -R "$ROOT/dist/SophosCentralGUI/." "$DEB_ROOT/opt/SophosCentralGUI/"
-
 ln -sf /opt/SophosCentralGUI/SophosCentralGUI "$DEB_ROOT/usr/bin/sophos-central-gui"
+cp "$ROOT/packaging/linux/sophos-central-gui.desktop" "$DEB_ROOT/usr/share/applications/sophos-central-gui.desktop"
+cp "$ROOT/packaging/linux/postinst" "$DEB_ROOT/DEBIAN/postinst"
+cp "$ROOT/packaging/linux/postrm" "$DEB_ROOT/DEBIAN/postrm"
+chmod 0755 "$DEB_ROOT/DEBIAN/postinst" "$DEB_ROOT/DEBIAN/postrm"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -43,4 +47,4 @@ dpkg-deb --root-owner-group -Zxz -z9 --build "$DEB_ROOT" "$DEB_OUT"
 
 echo "==> Package: $DEB_OUT"
 echo "Install: sudo apt install ./$(basename "$DEB_OUT")"
-echo "Run: sophos-central-gui  (or /opt/SophosCentralGUI/SophosCentralGUI)"
+echo "Menu: SFOS Central Firewall Management (also: sophos-central-gui or /opt/SophosCentralGUI/SophosCentralGUI)"

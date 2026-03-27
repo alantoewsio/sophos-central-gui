@@ -1,0 +1,76 @@
+#!/bin/sh
+set -e
+
+APP_TITLE="SFOS Central Firewall Management"
+STATE_DIR=/var/lib/sophos-central-gui
+STATE_USER_FILE="$STATE_DIR/autostart-user"
+
+get_install_user() {
+  u="${SUDO_USER:-}"
+  if [ -z "$u" ] || [ "$u" = "root" ]; then
+    u=$(logname 2>/dev/null || true)
+  fi
+  if [ -z "$u" ] || [ "$u" = "root" ]; then
+    u=$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)
+  fi
+  printf '%s' "$u"
+}
+
+is_interactive() {
+  [ "${DEBIAN_FRONTEND:-}" != "noninteractive" ] && [ -t 0 ]
+}
+
+case "$1" in
+configure)
+  mkdir -p "$STATE_DIR"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+  fi
+
+  STARTUP=n
+  LAUNCH_NOW=n
+  IU=
+  # Skip prompts on version upgrade ($2 = prior configured version); fresh install has empty $2.
+  if is_interactive && [ -z "${2:-}" ]; then
+    IU=$(get_install_user)
+    if [ -n "$IU" ] && [ "$IU" != "root" ]; then
+      printf 'Add %s to autostart (run at login)? [y/N] ' "$APP_TITLE"
+      read -r ans || true
+      case "$ans" in y|Y|yes|YES) STARTUP=y ;; esac
+      printf 'Launch %s now? [Y/n] ' "$APP_TITLE"
+      read -r ans2 || true
+      case "$ans2" in n|N|no|NO) LAUNCH_NOW=n ;; *) LAUNCH_NOW=y ;; esac
+    fi
+  fi
+
+  if [ "$STARTUP" = y ]; then
+    IU=${IU:-$(get_install_user)}
+    if [ -n "$IU" ] && [ "$IU" != root ]; then
+      IH=$(getent passwd "$IU" | cut -d: -f6)
+      if [ -n "$IH" ] && [ -d "$IH" ]; then
+        AD="$IH/.config/autostart"
+        mkdir -p "$AD"
+        install -o "$IU" -g "$(id -gn "$IU")" -m 0644 \
+          /usr/share/applications/sophos-central-gui.desktop \
+          "$AD/sophos-central-gui.desktop"
+        printf '%s\n' "$IU" >"$STATE_USER_FILE"
+      fi
+    fi
+  fi
+
+  if [ "$LAUNCH_NOW" = y ]; then
+    IU=${IU:-$(get_install_user)}
+    if [ -n "$IU" ] && [ "$IU" != root ] && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
+      runuser -u "$IU" -- env \
+        "DISPLAY=${DISPLAY:-:0}" \
+        "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" \
+        "XAUTHORITY=${XAUTHORITY:-}" \
+        sh -c 'nohup sophos-central-gui >/dev/null 2>&1 &' || true
+    fi
+  fi
+  ;;
+abort-upgrade | abort-remove | abort-deconfigure) ;;
+*) ;;
+esac
+
+exit 0

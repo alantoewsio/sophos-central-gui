@@ -898,7 +898,57 @@ body {
   border-top: 1px solid var(--border-light);
 }
 
-#panel-firewalls .firewalls-panel > .split {
+.fw-panel-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 2px;
+  margin: 0 0 12px;
+  padding: 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.fw-panel-tabs__tab {
+  position: relative;
+  margin: 0 2px -1px 0;
+  padding: 8px 14px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: pointer;
+}
+
+.fw-panel-tabs__tab:hover {
+  color: var(--text);
+  background: var(--surface-raise);
+}
+
+.fw-panel-tabs__tab.is-active {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border-light);
+  border-bottom-color: var(--surface);
+  box-shadow: 0 1px 0 var(--surface);
+}
+
+.fw-subpanel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Ensure sub-tab panels actually hide; author `display: flex` can win over [hidden] in some cascades. */
+#panel-firewalls .fw-subpanel[hidden] {
+  display: none !important;
+}
+
+#panel-firewalls .fw-subpanel--firewalls > .split,
+#panel-firewalls .fw-subpanel--groups > .split {
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -1566,7 +1616,7 @@ body {
 /* Tenants / licenses / groups / dashboard alerts: keep search (and column picker) flush to the content right edge */
 #panel-tenants .toolbar__line--main .toolbar__search-cluster,
 #panel-licenses .toolbar__line--main .toolbar__search-cluster,
-#panel-groups .toolbar__line--main .toolbar__search-cluster,
+#fw-subpanel-groups .toolbar__line--main .toolbar__search-cluster,
 .toolbar--alerts-toolbar .toolbar__line--main .toolbar__search-cluster {
   margin-left: auto;
   flex-shrink: 0;
@@ -1585,7 +1635,7 @@ body {
   margin-left: 0;
 }
 
-#panel-groups .toolbar__line--main .toolbar__gr-toolbar-end {
+#fw-subpanel-groups .toolbar__line--main .toolbar__gr-toolbar-end {
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -1594,7 +1644,7 @@ body {
   flex-wrap: wrap;
 }
 
-#panel-groups .toolbar__line--main .toolbar__gr-toolbar-end .toolbar__search-cluster {
+#fw-subpanel-groups .toolbar__line--main .toolbar__gr-toolbar-end .toolbar__search-cluster {
   margin-left: 0;
 }
 
@@ -2142,6 +2192,11 @@ td.fw-status-col {
 #tn-table td.tn-col-firewalls .tn-col-firewalls-pill {
   margin: 0;
   vertical-align: middle;
+}
+
+#tn-table th.tn-col-credentials,
+#tn-table td.tn-col-credentials {
+  max-width: 14rem;
 }
 
 #tn-table th.tn-col-region,

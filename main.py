@@ -47,6 +47,7 @@ from credential_store import (
     SECRETS_DB_PATH,
     bootstrap_setup_target_user_id,
     count_admins,
+    credential_name_for_synced_tenant,
     credential_name_for_tenant_client_id,
     delete_app_user,
     delete_credential,
@@ -3003,6 +3004,17 @@ def api_tenants():
             if label:
                 d["name"] = label
                 d["show_as"] = label
+        for d in rows:
+            tid = d.get("id")
+            if tid is None:
+                d["credential_name"] = ""
+                continue
+            cn = credential_name_for_synced_tenant(
+                sconn,
+                tenant_id=str(tid),
+                tenant_row_client_id=d.get("client_id"),
+            )
+            d["credential_name"] = cn or ""
         for otid in orphan_ids:
             sid = str(otid)
             if sid in seen:
@@ -3024,6 +3036,7 @@ def api_tenants():
                     "last_sync": "",
                     "client_id": "",
                     "firewall_count": orphan_fw_counts.get(sid, 0),
+                    "credential_name": label or "",
                 }
             )
     rows.sort(key=lambda r: str(r.get("name") or "").casefold())

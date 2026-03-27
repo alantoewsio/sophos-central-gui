@@ -1,0 +1,8 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=SFOS Central Firewall Management
+Comment=Sophos Central firewall management UI (bundled runtime)
+Exec=/opt/SophosCentralGUI/SophosCentralGUI
+Terminal=true
+Categories=Network;Utility;

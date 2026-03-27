@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+STATE_DIR=/var/lib/sophos-central-gui
+STATE_USER_FILE="$STATE_DIR/autostart-user"
+
+case "$1" in
+remove | purge)
+  if [ -f "$STATE_USER_FILE" ]; then
+    IU=$(cat "$STATE_USER_FILE" 2>/dev/null || true)
+    rm -f "$STATE_USER_FILE"
+    if [ -n "$IU" ]; then
+      IH=$(getent passwd "$IU" | cut -d: -f6)
+      rm -f "${IH:+$IH/.config/autostart/sophos-central-gui.desktop}"
+    fi
+  fi
+  rmdir "$STATE_DIR" 2>/dev/null || true
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+  fi
+  ;;
+upgrade | failed-upgrade | deconfigure-in-favour) ;;
+*) ;;
+esac
+
+exit 0

@@ -2,11 +2,13 @@
   const TITLES = {
     dashboard: "Dashboard",
     operations: "Operations View",
-    firewalls: "Central Firewalls",
-    groups: "Central Groups",
-    tenants: "Central Tenants",
-    licenses: "Central Licenses",
+    firewalls: "Firewalls",
+    groups: "Firewall Groups",
+    tenants: "Tenants",
+    licenses: "Licenses",
   };
+
+  let activeFirewallsSubtab = "firewalls";
 
   const UI_STATE_KEY = "sophos-central-ui-v1";
   const THEME_STORAGE_KEY = "sophos-central-theme";
@@ -99,7 +101,7 @@
   }
 
   function getActiveTabName() {
-    const btn = document.querySelector(".tabs__tab.is-active");
+    const btn = document.querySelector(".app-nav .tabs__tab.is-active[data-tab]");
     const id = btn?.dataset?.tab;
     return id && TITLES[id] ? id : "dashboard";
   }
@@ -1223,18 +1225,51 @@
     }
   }
 
+  const SETTINGS_SECTION_EXTRA_SEARCH_ROOTS = {
+    users: ["#user-form-dialog", "#user-edit-profile-dialog"],
+    credentials: ["#credential-form-dialog"],
+  };
+
+  function settingsSectionSearchBlob(section) {
+    if (!section) return "";
+    const parts = [];
+    const panel = document.querySelector(`#settings-modal .settings-panel[data-settings-panel="${section}"]`);
+    if (panel) {
+      const heading = panel.querySelector(".settings-panel__heading");
+      if (heading) parts.push(heading.textContent);
+      panel.querySelectorAll(".settings-form__label").forEach((el) => parts.push(el.textContent));
+      panel.querySelectorAll(".settings-about__term").forEach((el) => parts.push(el.textContent));
+      panel.querySelectorAll("thead th").forEach((el) => parts.push(el.textContent));
+    }
+    const extras = SETTINGS_SECTION_EXTRA_SEARCH_ROOTS[section];
+    if (extras) {
+      for (const sel of extras) {
+        const root = document.querySelector(sel);
+        if (!root) continue;
+        root.querySelectorAll(".settings-subdialog__title, .settings-form__label").forEach((el) =>
+          parts.push(el.textContent),
+        );
+      }
+    }
+    return parts.join(" ").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
   function filterSettingsNav() {
     const q = (document.getElementById("settings-nav-filter")?.value || "").trim().toLowerCase();
     document.querySelectorAll("#settings-nav .settings-nav__item").forEach((btn) => {
-      const t = (btn.querySelector("span")?.textContent || "").toLowerCase();
-      const match = q === "" || t.includes(q);
+      const section = btn.dataset.settingsSection;
+      const navText = (btn.querySelector("span")?.textContent || "").toLowerCase();
+      const blob = settingsSectionSearchBlob(section);
+      const match = q === "" || navText.includes(q) || blob.includes(q);
       const needsAdmin = btn.dataset.requiresAdmin === "true";
       btn.hidden = !match || (needsAdmin && !isAdmin());
     });
     const aboutBtn = document.getElementById("settings-nav-about");
     if (aboutBtn) {
-      const t = (aboutBtn.querySelector("span")?.textContent || "").toLowerCase();
-      const match = q === "" || t.includes(q);
+      const section = aboutBtn.dataset.settingsSection;
+      const navText = (aboutBtn.querySelector("span")?.textContent || "").toLowerCase();
+      const blob = settingsSectionSearchBlob(section);
+      const match = q === "" || navText.includes(q) || blob.includes(q);
       aboutBtn.hidden = !match;
     }
   }
@@ -2240,8 +2275,45 @@
 
   /* ---------- Tabs ---------- */
   const pageTitle = document.getElementById("page-title");
-  const tabButtons = document.querySelectorAll(".tabs__tab");
+  const mainTabButtons = document.querySelectorAll(".app-nav .tabs__tab[data-tab]");
   const panels = document.querySelectorAll(".panel");
+
+  function setFirewallsSubtab(sub, persist = true) {
+    const raw = sub != null ? String(sub).trim() : "";
+    const next = raw === "groups" ? "groups" : "firewalls";
+    activeFirewallsSubtab = next;
+    document.querySelectorAll(".fw-panel-tabs__tab").forEach((btn) => {
+      const id = btn.getAttribute("data-fw-subtab");
+      const on = id === next;
+      btn.classList.toggle("is-active", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    const subFw = document.getElementById("fw-subpanel-firewalls");
+    const subGr = document.getElementById("fw-subpanel-groups");
+    if (subFw) subFw.hidden = next !== "firewalls";
+    if (subGr) subGr.hidden = next !== "groups";
+    const fwPanel = document.getElementById("panel-firewalls");
+    if (fwPanel && !fwPanel.hidden) {
+      pageTitle.textContent = next === "groups" ? TITLES.groups : TITLES.firewalls;
+    }
+    if (persist) schedulePersistUiState();
+    if (next === "firewalls") {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          refreshFwMapMarkers();
+        });
+      });
+    } else {
+      invalidateFwMapSizes();
+      requestAnimationFrame(() => {
+        try {
+          grController.render();
+        } catch {
+          /* grController not ready */
+        }
+      });
+    }
+  }
 
   function invalidateFwMapSizes() {
     requestAnimationFrame(() => {
@@ -2256,7 +2328,7 @@
   }
 
   function activateTab(name, persist = true) {
-    tabButtons.forEach((btn) => {
+    mainTabButtons.forEach((btn) => {
       const on = btn.dataset.tab === name;
       btn.classList.toggle("is-active", on);
       btn.setAttribute("aria-selected", on ? "true" : "false");
@@ -2266,7 +2338,9 @@
       p.classList.toggle("is-active", on);
       p.hidden = !on;
     });
-    pageTitle.textContent = TITLES[name] || name;
+    if (name !== "firewalls") {
+      pageTitle.textContent = TITLES[name] || name;
+    }
     const opsTitleCount = document.getElementById("page-title-ops-count");
     if (opsTitleCount) {
       opsTitleCount.hidden = name !== "operations";
@@ -2278,6 +2352,9 @@
       startOperationsAutoRefresh();
       renderOperationsView();
     } else stopOperationsAutoRefresh();
+    if (name === "firewalls") {
+      setFirewallsSubtab(activeFirewallsSubtab, false);
+    }
     const lazyFwMapInit =
       (name === "dashboard" && !dashFwMap) || (name === "firewalls" && !panelFwMap);
     if (lazyFwMapInit) {
@@ -2286,13 +2363,22 @@
           refreshFwMapMarkers();
         });
       });
-    } else {
+    } else if (name !== "firewalls") {
       invalidateFwMapSizes();
     }
   }
 
-  tabButtons.forEach((btn) => {
+  mainTabButtons.forEach((btn) => {
     btn.addEventListener("click", () => activateTab(btn.dataset.tab, true));
+  });
+
+  document.querySelector(".fw-panel-tabs")?.addEventListener("click", (e) => {
+    const btn = e.target.closest(".fw-panel-tabs__tab");
+    if (!btn) return;
+    const sub = btn.getAttribute("data-fw-subtab");
+    if (sub !== "firewalls" && sub !== "groups") return;
+    e.preventDefault();
+    setFirewallsSubtab(sub, true);
   });
 
   /** Context-sensitive help: static pages under /static/help/ */
@@ -2348,12 +2434,14 @@
     if (visibleEl("license-flyout")) return "flyout-license.html";
     const authOverlay = visibleEl("auth-overlay");
     if (authOverlay) return "sign-in.html";
-    const activeTabBtn = document.querySelector('.app-nav__item.tabs__tab.is-active[data-tab]');
+    const activeTabBtn = document.querySelector(".app-nav .tabs__tab.is-active[data-tab]");
     const tab = activeTabBtn?.getAttribute("data-tab") || "dashboard";
+    if (tab === "firewalls") {
+      return activeFirewallsSubtab === "groups" ? "page-groups.html" : "page-firewalls.html";
+    }
     const pages = {
       dashboard: "page-dashboard.html",
       firewalls: "page-firewalls.html",
-      groups: "page-groups.html",
       tenants: "page-tenants.html",
       licenses: "page-licenses.html",
     };
@@ -2492,14 +2580,14 @@
 
   /** Expands the firewalls facet drawer unless the user has it collapsed (filter links respect that). */
   function expandFirewallFiltersPanel() {
-    const aside = document.querySelector("#panel-firewalls .filters");
+    const aside = document.querySelector("#fw-subpanel-firewalls .filters");
     if (!aside || aside.classList.contains("filters--collapsed")) return;
     setFiltersPanelCollapsed(aside, false);
   }
 
   /** Expands the groups facet drawer unless the user has it collapsed. */
   function expandGroupFiltersPanel() {
-    const aside = document.querySelector("#panel-groups .filters");
+    const aside = document.querySelector("#fw-subpanel-groups .filters");
     if (!aside || aside.classList.contains("filters--collapsed")) return;
     setFiltersPanelCollapsed(aside, false);
   }
@@ -5683,6 +5771,8 @@
     if (typeof L === "undefined" || panelFwMap) return;
     const host = document.getElementById("panel-firewalls");
     if (!host || host.hidden) return;
+    const subFw = document.getElementById("fw-subpanel-firewalls");
+    if (subFw && subFw.hidden) return;
     const el = document.getElementById("panel-fw-map");
     if (!el) return;
     panelFwMap = L.map(el, fwMapBaseOptions());
@@ -7777,7 +7867,7 @@
     const fwSearch = document.getElementById("fw-search");
     if (fwSearch) fwSearch.value = "";
     fwController.render();
-    setFiltersPanelCollapsed(document.querySelector("#panel-firewalls .filters"), true);
+    setFiltersPanelCollapsed(document.querySelector("#fw-subpanel-firewalls .filters"), true);
     setFiltersPanelCollapsed(document.querySelector("#panel-operations .filters"), true);
     schedulePersistUiState();
     fwToolbarTenantMs.refresh();
@@ -9015,7 +9105,8 @@
     updateGroupFiltersChrome();
     grController.resetSort();
     grController.resetPage();
-    activateTab("groups");
+    activeFirewallsSubtab = "groups";
+    activateTab("firewalls");
     expandGroupFiltersPanel();
     openGroupsTenantGroupParentFilterGroups();
     schedulePersistUiState();
@@ -9248,6 +9339,12 @@
   const TN_COL_VISIBILITY_KEY = "sophos-central-tn-columns-v1";
   const TN_COLUMNS = [
     { id: "name", label: "Name", sortKey: "name", thClass: "th-sortable" },
+    {
+      id: "credential_name",
+      label: "Credentials",
+      sortKey: "credential_name",
+      thClass: "th-sortable tn-col-credentials",
+    },
     { id: "firewall_count", label: "Firewalls", sortKey: "firewall_count", thClass: "th-sortable tn-col-firewalls" },
     { id: "show_as", label: "Show as", sortKey: "show_as", thClass: "th-sortable" },
     { id: "status", label: "Status", sortKey: "status", thClass: "th-sortable" },
@@ -9477,6 +9574,7 @@
       first_sync: row.first_sync || "",
       last_sync: row.last_sync || "",
       client_id: row.client_id || "",
+      credential_name: row.credential_name && String(row.credential_name).trim() !== "" ? row.credential_name : "—",
     };
   }
 
@@ -9501,6 +9599,7 @@
     if (!host) return;
     const groups = [
       { key: "name", label: "Name" },
+      { key: "credential_name", label: "Credentials" },
       { key: "show_as", label: "Show as" },
       { key: "status", label: "Status" },
       { key: "data_region", label: "Region" },
@@ -9688,6 +9787,8 @@
             : `<span>${escapeHtml(row.name)}</span>`;
         return `<td><span class="table-recency-inline">${pill}${nameCell}</span></td>`;
       }
+      case "credential_name":
+        return `<td class="tn-col-credentials muted">${escapeHtml(row.credential_name)}</td>`;
       case "firewall_count": {
         const n = row.firewall_count ?? 0;
         const countStr = escapeHtml(String(n));
@@ -9740,6 +9841,7 @@
     getRowSearchText: (row) =>
       [
         row.name,
+        row.credential_name,
         String(row.firewall_count),
         row.show_as,
         row.status,
@@ -10246,7 +10348,7 @@
       });
     }
     grController.render();
-    setFiltersPanelCollapsed(document.querySelector("#panel-groups .filters"), true);
+    setFiltersPanelCollapsed(document.querySelector("#fw-subpanel-groups .filters"), true);
     schedulePersistUiState();
     grToolbarTenantMs.refresh();
   }
@@ -12724,6 +12826,10 @@
       const v = row.name;
       return p + (v == null || v === "" ? "" : String(v));
     }
+    if (colId === "credential_name") {
+      const v = row.credential_name;
+      return v == null || v === "" || v === "—" ? "" : String(v);
+    }
     const v = row[colId];
     return v == null || v === "" ? "" : String(v);
   }
@@ -13012,9 +13118,9 @@
     const lcSearch = document.getElementById("lc-search");
     const lcPageSizeEl = document.getElementById("lc-page-size");
     const dashFiltersAside = document.querySelector("#panel-dashboard .filters");
-    const fwFiltersAside = document.querySelector("#panel-firewalls .filters");
+    const fwFiltersAside = document.querySelector("#fw-subpanel-firewalls .filters");
     const opsFiltersAside = document.querySelector("#panel-operations .filters");
-    const grFiltersAside = document.querySelector("#panel-groups .filters");
+    const grFiltersAside = document.querySelector("#fw-subpanel-groups .filters");
     const tnFiltersAside = document.querySelector("#panel-tenants .filters");
     const lcFiltersAside = document.querySelector("#panel-licenses .filters");
 
@@ -13062,6 +13168,7 @@
           : undefined,
       },
       firewalls: {
+        subtab: activeFirewallsSubtab,
         linkMode: fwLinkMode,
         search: fwSearch ? fwSearch.value : "",
         pageSize: fwPageSizeEl ? Math.max(1, parseInt(fwPageSizeEl.value, 10) || 50) : 50,
@@ -13156,8 +13263,12 @@
     renderOperationsView();
     if (s.table && typeof s.table === "object") fwController.setTableState(s.table);
     if (typeof s.filtersExpanded === "boolean") {
-      const aside = document.querySelector("#panel-firewalls .filters");
+      const aside = document.querySelector("#fw-subpanel-firewalls .filters");
       if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
+    }
+    if (s.subtab === "groups" || s.subtab === "firewalls") {
+      activeFirewallsSubtab = s.subtab;
+      if (getActiveTabName() === "firewalls") setFirewallsSubtab(activeFirewallsSubtab, false);
     }
   }
 
@@ -13272,7 +13383,7 @@
     grToolbarTenantMs.refresh();
     if (s.table && typeof s.table === "object") grController.setTableState(s.table);
     if (typeof s.filtersExpanded === "boolean") {
-      const aside = document.querySelector("#panel-groups .filters");
+      const aside = document.querySelector("#fw-subpanel-groups .filters");
       if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
     }
   }
@@ -13443,7 +13554,12 @@
   async function init() {
     const saved = readUiState();
     if (saved?.dashboard) hydrateDashboardFromSaved(saved.dashboard);
-    if (saved?.tab && TITLES[saved.tab]) activateTab(saved.tab, false);
+    if (saved?.firewalls?.subtab === "groups" || saved?.firewalls?.subtab === "firewalls") {
+      activeFirewallsSubtab = saved.firewalls.subtab;
+    }
+    if (saved?.tab === "groups") activeFirewallsSubtab = "groups";
+    const initialMainTab = saved?.tab === "groups" ? "firewalls" : saved?.tab;
+    if (initialMainTab && TITLES[initialMainTab]) activateTab(initialMainTab, false);
 
     try {
       await loadUiSettings();
