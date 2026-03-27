@@ -4,6 +4,23 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      try {
+        var k = "sophos-central-theme";
+        var t = localStorage.getItem(k);
+        if (t !== "dark" && t !== "light") {
+          t =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+        }
+        if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+        else document.documentElement.removeAttribute("data-theme");
+      } catch (e) { /* ignore */ }
+    })();
+  </script>
   <title>SFOS Central Firewall Management</title>
   <link rel="icon" href="/static/img/favicon.ico" type="image/x-icon" sizes="any" />
   <link rel="stylesheet" href="/static/css/app.css" />
@@ -108,8 +125,8 @@
               <span id="notifications-badge" class="notifications-badge" hidden aria-hidden="true"></span>
             </button>
           </span>
-          <button type="button" class="icon-btn" id="btn-top-help" title="Help (opens in new tab)"
-            aria-label="Help opens documentation in a new tab">
+          <button type="button" class="icon-btn help-menu-trigger" id="btn-top-help" title="Help"
+            aria-label="Help" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
               <path fill="currentColor"
                 d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
@@ -171,17 +188,18 @@
               </div>
               <div class="user-menu__rule" role="separator"></div>
               <div class="user-menu__footer">
-                <button type="button" class="user-menu__theme-btn" id="user-menu-theme-placeholder"
-                  aria-label="Theme (not available yet)" title="Theme">
+                <button type="button" class="user-menu__theme-btn" id="user-menu-theme"
+                  aria-label="Switch to dark mode" title="Color theme">
                   <svg class="user-menu__theme-icon user-menu__theme-icon--moon" viewBox="0 0 24 24" width="20"
                     height="20" aria-hidden="true">
                     <path fill="currentColor"
-                      d="M12.34 2.02C6.59 1.82 2 6.57 2 12c0 5.52 4.48 10 10 10 3.71 0 6.93-2.02 8.66-5.02-8.2.75-15.02-6.43-15.02-14.66 0-.21 0-.41.01-.61.98-.34 2.03-.51 3.09-.49zM4.34 12.02c.24 4.28 3.71 7.75 7.99 7.99-.52 2.18-2.47 3.81-4.83 3.81-2.76 0-5-2.24-5-5 0-2.36 1.63-4.31 3.84-4.8z" />
+                      d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
                   </svg>
                   <svg class="user-menu__theme-icon user-menu__theme-icon--sun" viewBox="0 0 24 24" width="20"
                     height="20" aria-hidden="true" hidden>
+                    <path fill="currentColor" d="M12 7a5 5 0 1 1 0 10 5 5 0 0 1 0-10z" />
                     <path fill="currentColor"
-                      d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zm10.48 0l1.79-1.79 1.41 1.41-1.79 1.8-1.41-1.42zM12 4V1h-1v3h1zm0 19v-3h-1v3h1zM4 12H1v-1h3v1zm19 0h-3v-1h3v1zM6.76 19.16l-1.42 1.41-1.79-1.8 1.41-1.41 1.8 1.8zm10.48 0l1.41 1.41 1.8-1.8-1.41-1.41-1.8 1.8zM12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6zm0-11c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5z" />
+                      d="M11 1h2v4h-2V1zm0 18h2v4h-2v-4zM23 11v2h-4v-2h4zM5 11v2H1v-2h4zm15.5-6.5L18.1 7.9l-1.4-1.4 2.4-2.4 1.4 1.4zM5.9 7.9L3.5 5.5l1.4-1.4 2.4 2.4-1.4 1.4zm0 8.2l-2.4 2.4 1.4 1.4 2.4-2.4-1.4-1.4zm12.2 0l-1.4 1.4 2.4 2.4 1.4-1.4-2.4-2.4z" />
                   </svg>
                 </button>
                 <button type="button" class="user-menu__signout" role="menuitem" id="user-menu-logout">
@@ -197,6 +215,29 @@
         </div>
       </div>
     </header>
+    <script>
+      (function () {
+        try {
+          var dark = document.documentElement.getAttribute("data-theme") === "dark";
+          var btn = document.getElementById("user-menu-theme");
+          if (!btn) return;
+          var moon = btn.querySelector(".user-menu__theme-icon--moon");
+          var sun = btn.querySelector(".user-menu__theme-icon--sun");
+          if (!moon || !sun) return;
+          if (dark) {
+            moon.setAttribute("hidden", "");
+            sun.removeAttribute("hidden");
+            btn.setAttribute("aria-label", "Switch to light mode");
+            btn.setAttribute("title", "Light mode");
+          } else {
+            sun.setAttribute("hidden", "");
+            moon.removeAttribute("hidden");
+            btn.setAttribute("aria-label", "Switch to dark mode");
+            btn.setAttribute("title", "Dark mode");
+          }
+        } catch (e) { /* ignore */ }
+      })();
+    </script>
 
     <div class="app-body">
     <aside class="app-sidebar" aria-label="Primary navigation">
@@ -285,6 +326,7 @@
     <div class="app-chrome-sticky">
     <div class="page-head">
       <h1 id="page-title" class="page-title">Dashboard</h1>
+      <p id="page-title-ops-count" class="page-title__ops-count muted" hidden></p>
     </div>
   </div>
 
@@ -298,7 +340,17 @@
             aria-controls="dash-fw-map-body">Firewall map</button>
         </div>
         <div id="dash-fw-map-body" class="fw-map-section__body">
-          <div id="dash-fw-map" class="fw-map-leaflet fw-map-leaflet--dashboard" role="img" aria-label="Firewalls on world map"></div>
+          <div class="fw-map-leaflet-wrap">
+            <button type="button" class="fw-map-back-btn" id="dash-fw-map-back" disabled
+              aria-label="Back to previous firewall on map" title="Previous firewall">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
+              </svg>
+            </button>
+            <div id="dash-fw-map" class="fw-map-leaflet fw-map-leaflet--dashboard" role="img"
+              aria-label="Firewalls on world map"></div>
+          </div>
         </div>
       </div>
       <div class="dashboard-grid" id="dashboard-stats"></div>
@@ -494,6 +546,18 @@
                         <button type="button" class="link-btn toolbar__fw-quick-btn" data-ops-quick="firmware_updates"
                           title="Firewalls with at least one available firmware upgrade">Firmware Updates</button>
                       </div>
+                      <div class="toolbar__ops-sort toolbar__ops-sort--inline">
+                        <span class="ops-sort-bar__label muted" id="ops-sort-label">Sort by</span>
+                        <label class="visually-hidden" for="ops-sort">Sort firewalls</label>
+                        <select id="ops-sort" class="ops-sort-bar__select" aria-labelledby="ops-sort-label">
+                          <option value="state_online_first">State · Online first</option>
+                          <option value="state_offline_first">State · Offline first</option>
+                          <option value="hostname">Host name</option>
+                          <option value="tenant">Tenant</option>
+                          <option value="last_sync">Last sync</option>
+                          <option value="state_changed">Last state change</option>
+                        </select>
+                      </div>
                     </div>
                     <div class="toolbar__fw-toolbar-end">
                       <div class="toolbar__search-cluster">
@@ -510,19 +574,6 @@
                   </div>
                 </div>
               </div>
-              <div class="ops-sort-bar">
-                <span class="ops-sort-bar__label muted">Sort by</span>
-                <label class="visually-hidden" for="ops-sort">Sort firewalls</label>
-                <select id="ops-sort" class="ops-sort-bar__select" aria-label="Sort firewalls">
-                  <option value="state_online_first">State · Online first</option>
-                  <option value="state_offline_first">State · Offline first</option>
-                  <option value="hostname">Host name</option>
-                  <option value="tenant">Tenant</option>
-                  <option value="last_sync">Last sync</option>
-                  <option value="state_changed">Last state change</option>
-                </select>
-              </div>
-              <p class="operations-refresh muted" id="ops-refresh-status" aria-live="polite"></p>
               <div id="ops-card-grid" class="ops-card-grid" aria-live="polite"></div>
               <div class="ops-change-strip" id="ops-change-strip" aria-live="polite" hidden>
                 <div class="ops-change-strip__cell ops-change-strip__cell--pos" id="ops-change-strip-pos" hidden></div>
@@ -544,7 +595,17 @@
               aria-controls="panel-fw-map-body">Firewall map</button>
           </div>
           <div id="panel-fw-map-body" class="fw-map-section__body">
-            <div id="panel-fw-map" class="fw-map-leaflet fw-map-leaflet--firewalls" role="img" aria-label="Firewalls on world map"></div>
+            <div class="fw-map-leaflet-wrap">
+              <button type="button" class="fw-map-back-btn" id="panel-fw-map-back" disabled
+                aria-label="Back to previous firewall on map" title="Previous firewall">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                  <path fill="currentColor"
+                    d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
+                </svg>
+              </button>
+              <div id="panel-fw-map" class="fw-map-leaflet fw-map-leaflet--firewalls" role="img"
+                aria-label="Firewalls on world map"></div>
+            </div>
             <p class="fw-map-section__footer" id="panel-fw-map-count" aria-live="polite"></p>
           </div>
         </div>
@@ -741,6 +802,8 @@
                   </div>
                 </div>
                 <div class="toolbar__gr-toolbar-end">
+                  <button type="button" class="btn btn--secondary" id="gr-delete-groups-btn" disabled hidden
+                    title="Delete selected groups on Sophos Central">Delete groups</button>
                   <button type="button" class="btn btn--primary" id="gr-create-group-btn" hidden>Create New Group</button>
                   <div class="toolbar__search-cluster">
                   <div class="search-field">
@@ -766,7 +829,10 @@
           <div class="table-scroll">
             <table class="data-table data-table--dense" id="gr-table">
               <thead>
-                <tr id="gr-thead-row"></tr>
+                <tr id="gr-thead-row">
+                  <th class="th-check" scope="col"><input type="checkbox" id="gr-select-all" title="Select all loaded rows"
+                      aria-label="Select all loaded rows" /></th>
+                </tr>
               </thead>
               <tbody id="gr-tbody"></tbody>
             </table>
@@ -1012,10 +1078,6 @@
           <span id="app-sync-status-value" class="app-sync-status-bar__value">—</span>
         </span>
         <span class="app-sync-status-bar__sep muted" aria-hidden="true">·</span>
-        <span class="app-sync-status-bar__pair">
-          <span class="app-sync-status-bar__k">Schedules</span>
-          <span id="app-sync-interval-value" class="app-sync-status-bar__value">—</span>
-        </span>
         <span id="app-sync-cred-counts" class="app-sync-status-bar__cred-counts muted" aria-live="polite">—</span>
       </div>
     </div>
@@ -1249,23 +1311,6 @@
     </div>
   </div>
 
-  <div id="fw-firmware-modal" class="fw-firmware-modal" hidden aria-hidden="true">
-    <div class="fw-firmware-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
-    <div class="fw-firmware-modal__panel" role="dialog" aria-modal="true" aria-labelledby="fw-firmware-modal-title">
-      <div class="fw-firmware-modal__header">
-        <h2 id="fw-firmware-modal-title" class="fw-firmware-modal__title">Firmware upgrades</h2>
-        <button type="button" class="fw-firmware-modal__close" id="fw-firmware-modal-close" aria-label="Close"
-          title="Close">
-          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-            <path fill="currentColor"
-              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-          </svg>
-        </button>
-      </div>
-      <div id="fw-firmware-modal-body" class="fw-firmware-modal__body"></div>
-    </div>
-  </div>
-
   <div id="fw-firmware-batch-modal" class="fw-firmware-batch-modal" hidden aria-hidden="true">
     <div class="fw-firmware-batch-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
     <div class="fw-firmware-batch-modal__panel" role="dialog" aria-modal="true"
@@ -1347,6 +1392,34 @@
     </div>
   </div>
 
+  <div id="gr-delete-groups-modal" class="gr-delete-groups-modal" hidden aria-hidden="true">
+    <div class="gr-delete-groups-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
+    <div class="gr-delete-groups-modal__panel" role="dialog" aria-modal="true"
+      aria-labelledby="gr-delete-groups-modal-title">
+      <div class="gr-delete-groups-modal__header">
+        <h2 id="gr-delete-groups-modal-title" class="gr-delete-groups-modal__title">Delete groups on Sophos Central?</h2>
+        <button type="button" class="gr-delete-groups-modal__close" id="gr-delete-groups-modal-close"
+          aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="currentColor"
+              d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+      <div class="gr-delete-groups-modal__body">
+        <p id="gr-delete-groups-modal-lead" class="gr-delete-groups-modal__lead"></p>
+        <p class="muted">This removes the groups from Sophos Central. A credential sync will run for affected
+          accounts.</p>
+        <p id="gr-delete-groups-modal-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+      </div>
+      <div class="gr-delete-groups-modal__footer">
+        <button type="button" class="btn btn--secondary" id="gr-delete-groups-cancel">Cancel</button>
+        <button type="button" class="btn btn--danger" id="gr-delete-groups-proceed"
+          aria-label="Delete selected groups on Sophos Central">Delete groups</button>
+      </div>
+    </div>
+  </div>
+
   <div id="settings-modal" class="settings-modal" hidden aria-hidden="true">
     <div class="settings-modal__backdrop" tabindex="-1" aria-hidden="true"></div>
     <div class="settings-modal__panel" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
@@ -1410,13 +1483,22 @@
         </aside>
         <div class="settings-modal__main">
           <div class="settings-modal__main-toolbar">
-            <button type="button" class="settings-modal__close icon-btn" id="settings-modal-close"
-              aria-label="Close settings" title="Close">
-              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-                <path fill="currentColor"
-                  d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-              </svg>
-            </button>
+            <div class="settings-modal__toolbar-end">
+              <button type="button" class="icon-btn help-menu-trigger settings-modal__help" id="btn-settings-help"
+                title="Help" aria-label="Help" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                  <path fill="currentColor"
+                    d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
+                </svg>
+              </button>
+              <button type="button" class="settings-modal__close icon-btn" id="settings-modal-close"
+                aria-label="Close settings" title="Close">
+                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                  <path fill="currentColor"
+                    d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+              </button>
+            </div>
           </div>
           <div class="settings-modal__main-scroll">
             <section id="settings-panel-general" class="settings-panel" data-settings-panel="general" hidden>
@@ -1659,13 +1741,22 @@
         </aside>
         <div class="settings-modal__main profile-modal__main">
           <div class="settings-modal__main-toolbar">
-            <button type="button" class="settings-modal__close icon-btn" id="profile-modal-close"
-              aria-label="Close account" title="Close">
-              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-                <path fill="currentColor"
-                  d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-              </svg>
-            </button>
+            <div class="settings-modal__toolbar-end">
+              <button type="button" class="icon-btn help-menu-trigger settings-modal__help" id="btn-profile-help"
+                title="Help" aria-label="Help" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                  <path fill="currentColor"
+                    d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" />
+                </svg>
+              </button>
+              <button type="button" class="settings-modal__close icon-btn" id="profile-modal-close"
+                aria-label="Close account" title="Close">
+                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                  <path fill="currentColor"
+                    d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+              </button>
+            </div>
           </div>
           <div class="settings-modal__main-scroll">
             <section id="profile-panel-profile" class="settings-panel is-active" data-profile-panel="profile">
@@ -1893,6 +1984,14 @@
       </button>
     </div>
     <div class="flyout__body fw-detail-flyout__body">
+      <div class="fw-detail-flyout__connectivity">
+        <div class="fw-detail-flyout__connectivity-head">
+          <span class="fw-detail-flyout__connectivity-title">Connectivity</span>
+          <span class="fw-detail-flyout__connectivity-sub muted">Last 30 days from sync history</span>
+        </div>
+        <div id="fw-detail-connectivity-body" class="fw-detail-flyout__connectivity-body" role="region"
+          aria-label="Firewall connectivity timeline"></div>
+      </div>
       <div class="fw-detail-flyout__map-wrap">
         <div id="fw-detail-flyout-map" class="fw-map-leaflet fw-detail-flyout__map" role="img"
           aria-label="Firewall location"></div>
@@ -1957,6 +2056,13 @@
       <button type="button" class="table-export-popover__fmt" data-export-format="csv">CSV</button>
       <button type="button" class="table-export-popover__fmt" data-export-format="json">JSON</button>
     </div>
+  </div>
+
+  <div id="help-menu" class="help-menu" hidden role="menu" aria-label="Help options">
+    <button type="button" class="help-menu__item" role="menuitem" id="help-menu-page">Get help with this page</button>
+    <div class="help-menu__sep" role="separator"></div>
+    <a class="help-menu__item help-menu__item--link" role="menuitem" id="help-menu-bug"
+      href="https://github.com/alantoewsio/sophos-central-gui/issues" target="_blank" rel="noopener noreferrer">Report a bug</a>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="" defer></script>

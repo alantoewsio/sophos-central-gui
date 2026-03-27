@@ -831,16 +831,16 @@ provides-extras = ["bundle", "dev"]
 
 [[package]]
 name = "sfos-central-sdk"
-version = "0.9.8"
+version = "0.9.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dotenv" },
     { name = "openpyxl" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/42/3b0fe4a8064c393d144296947f30a4f31ad43d2f63688a45ab1cb3256463/sfos_central_sdk-0.9.8.tar.gz", hash = "sha256:b862deeb223c5da4b0e778583cb1ae46af559741a84a01a4eee5c38e8a74fbf6", size = 58600, upload-time = "2026-03-26T20:50:12.751Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/b5/6f5c05b33c7e9b8f7e7797690bc7a0208b8bb2b29dbf34509c4ea6198b98/sfos_central_sdk-0.9.9.tar.gz", hash = "sha256:40b716ce54f56f60bff427eddd47fff113345b1474879167cb55b4d563fafd3f", size = 58974, upload-time = "2026-03-27T16:43:20.148Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/a8/44a6de37016c930d37dbfcebf576b6ea4bd2a2c23b5c40f711f31120dee9/sfos_central_sdk-0.9.8-py3-none-any.whl", hash = "sha256:582f59663a50c4f0a69a54b76300b02bed8e517c726fa75b49fca577f7535e45", size = 60705, upload-time = "2026-03-26T20:50:11.595Z" },
+    { url = "https://files.pythonhosted.org/packages/92/f3/3bd23d5f1b906f224214255782893dd8d496f7638033eea073522d18c39b/sfos_central_sdk-0.9.9-py3-none-any.whl", hash = "sha256:d4050c7aa3950f06beb02d0a98a9b30cc5c51d6d41a4f4cd1d4627579cf88597", size = 61172, upload-time = "2026-03-27T16:43:19.196Z" },
 ]
 
 [[package]]

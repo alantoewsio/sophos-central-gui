@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import re
 import sqlite3
 import tomllib
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import urlencode, urljoin
 
@@ -39,7 +40,7 @@ from auth import (
     verify_password,
 )
 from central.classes import CentralResponse
-from central.firewalls.groups.methods import create_firewall_group
+from central.firewalls.groups.methods import create_firewall_group, delete_firewall_group
 from central.session import CentralSession
 from credential_store import (
     DEFAULT_ADMIN_USERNAME,
@@ -57,6 +58,7 @@ from credential_store import (
     get_credential_id_tenant_scoped_for_central_tenant,
     get_stored_credential_secrets,
     get_stored_credential_secrets_by_client_id,
+    get_user_operations_ui_json,
     insert_app_user,
     insert_credential,
     list_app_users,
@@ -72,6 +74,7 @@ from credential_store import (
     update_credential_name,
     update_credential_incremental_sync_interval,
     update_credential_sync_interval,
+    set_user_operations_ui_json,
     update_credential_whoami,
     whoami_dict_from_session,
 )
@@ -162,14 +165,42 @@ jinja = Environment(
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    """Writable connection for sync and mutating API handlers."""
+    conn = sqlite3.connect(DB_PATH, timeout=60.0)
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA busy_timeout=60000")
     except sqlite3.OperationalError:
         pass
     try:
         conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def get_db_readonly():
+    """
+    Read-only URI connection for list/detail API queries.
+
+    Avoids competing with the Central sync job for the main database writer lock
+    (long SDK transactions commit only at end of sync). WAL still lets readers
+    see the last committed snapshot while sync runs.
+    """
+    uri = DB_PATH.resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=60.0)
+    conn.row_factory = sqlite3.Row
+    conn.isolation_level = None
+    try:
+        conn.execute("PRAGMA busy_timeout=60000")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("PRAGMA query_only=ON")
     except sqlite3.OperationalError:
         pass
     try:
@@ -205,6 +236,18 @@ def get_db_with_sec():
     """Central DB with secrets DB attached as ``sec`` (for credential-based tenant labels)."""
     with get_db() as conn:
         conn.execute("ATTACH DATABASE ? AS sec", (str(SECRETS_DB_PATH.resolve()),))
+        try:
+            yield conn
+        finally:
+            conn.execute("DETACH DATABASE sec")
+
+
+@contextmanager
+def get_db_with_sec_readonly():
+    """Like ``get_db_with_sec`` but read-only on both DBs (UI reads during background sync)."""
+    with get_db_readonly() as conn:
+        sec_uri = SECRETS_DB_PATH.resolve().as_uri() + "?mode=ro"
+        conn.execute("ATTACH DATABASE ? AS sec", (sec_uri,))
         try:
             yield conn
         finally:
@@ -606,6 +649,48 @@ def _nominatim_search(q: str, limit: int = 8) -> list[dict]:
     return out
 
 
+GEOIP_USER_AGENT = "SophosCentralGUI/0.1 (approximate map position from public IPv4; ipwho.is)"
+
+
+def _geoip_lookup_ipv4(ip_s: str) -> tuple[float, float] | None:
+    """Return approximate (latitude, longitude) for a public IPv4 via ipwho.is (HTTPS)."""
+    ip_s = (ip_s or "").strip()
+    if not ip_s:
+        return None
+    try:
+        addr = ipaddress.ip_address(ip_s)
+    except ValueError:
+        return None
+    if addr.version != 4:
+        return None
+    try:
+        resp = requests.get(
+            f"https://ipwho.is/{ip_s}",
+            headers={"User-Agent": GEOIP_USER_AGENT},
+            timeout=12,
+        )
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not data.get("success"):
+        return None
+    lat_raw = data.get("latitude")
+    lon_raw = data.get("longitude")
+    try:
+        lat = float(lat_raw)  # type: ignore[arg-type]
+        lon = float(lon_raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if lat < -90 or lat > 90 or lon < -180 or lon > 180:
+        return None
+    return lat, lon
+
+
 def _json_string_list(raw: str | None) -> list[str]:
     if not raw or not str(raw).strip():
         return []
@@ -635,6 +720,174 @@ def _upgrade_versions_from_json(raw: str | None) -> list[str]:
     if not isinstance(parsed, list):
         return []
     return [str(v) for v in parsed if v is not None and str(v).strip() != ""]
+
+
+def _parse_iso_occurred_at(val: str | None) -> datetime | None:
+    if val is None or not str(val).strip():
+        return None
+    s = str(val).strip().replace(" ", "T", 1)
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _dt_iso_z(dt: datetime) -> str:
+    utc = dt.astimezone(timezone.utc)
+    return utc.isoformat().replace("+00:00", "Z")
+
+
+def _connected_cell_to_bool(val: str | None) -> bool | None:
+    if val is None:
+        return None
+    s = str(val).strip().lower()
+    if s in ("1", "true", "yes"):
+        return True
+    if s in ("0", "false", "no", ""):
+        return False
+    try:
+        return int(s) != 0
+    except ValueError:
+        return None
+
+
+def _connected_from_firewall_insert_payload(raw: str | None) -> bool | None:
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        d = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(d, dict):
+        return None
+    if "connected" not in d:
+        return None
+    return _connected_cell_to_bool(str(d.get("connected")))
+
+
+def _sync_change_events_table_exists(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        ("sync_change_events",),
+    ).fetchone()
+    return row is not None
+
+
+def _state_before_sync_change_row(row: sqlite3.Row) -> bool | None:
+    if row["operation"] == "update" and row["column_name"] == "connected":
+        return _connected_cell_to_bool(row["old_value"])
+    return None
+
+
+def _firewall_connectivity_history_payload(
+    conn: sqlite3.Connection,
+    *,
+    firewall_id: str,
+    days: int,
+) -> dict:
+    """Build 30-day (default) connectivity segments from ``sync_change_events``."""
+    days_capped = max(1, min(int(days), 90))
+    window_end = datetime.now(timezone.utc)
+    window_start = window_end - timedelta(days=days_capped)
+    if not _sync_change_events_table_exists(conn):
+        return {
+            "window_start": _dt_iso_z(window_start),
+            "window_end": _dt_iso_z(window_end),
+            "days": days_capped,
+            "segments": [],
+            "event_count": 0,
+        }
+
+    cur = conn.execute(
+        """
+        SELECT id, occurred_at, operation, column_name, old_value, new_value
+        FROM sync_change_events
+        WHERE table_name = 'firewalls'
+          AND json_valid(row_key_json)
+          AND json_extract(row_key_json, '$.id') = ?
+          AND (
+            operation = 'insert'
+            OR (operation = 'update' AND column_name = 'connected')
+          )
+        ORDER BY occurred_at ASC, id ASC
+        """,
+        (firewall_id,),
+    )
+    rows = cur.fetchall()
+    timeline: list[tuple[datetime, bool | None, sqlite3.Row]] = []
+    for row in rows:
+        dt = _parse_iso_occurred_at(row["occurred_at"])
+        if dt is None:
+            continue
+        op = row["operation"]
+        if op == "insert":
+            c_after = _connected_from_firewall_insert_payload(row["new_value"])
+            timeline.append((dt, c_after, row))
+        elif op == "update" and row["column_name"] == "connected":
+            c_new = _connected_cell_to_bool(row["new_value"])
+            if c_new is None:
+                continue
+            timeline.append((dt, c_new, row))
+
+    segments: list[dict[str, str | bool | None]] = []
+    if not timeline:
+        return {
+            "window_start": _dt_iso_z(window_start),
+            "window_end": _dt_iso_z(window_end),
+            "days": days_capped,
+            "segments": [],
+            "event_count": len(rows),
+        }
+
+    # State holds through the end of the window unless trimmed by events.
+    state: bool | None = None
+    ti = 0
+    while ti < len(timeline) and timeline[ti][0] < window_start:
+        state = timeline[ti][1]
+        ti += 1
+
+    if ti < len(timeline) and ti == 0 and timeline[ti][0] > window_start:
+        state = _state_before_sync_change_row(timeline[ti][2])
+
+    prev = window_start
+    cur_state = state
+    while ti < len(timeline):
+        t, next_state, _ = timeline[ti]
+        if t >= window_end:
+            break
+        if t > prev:
+            seg_until = min(t, window_end)
+            segments.append(
+                {
+                    "start": _dt_iso_z(prev),
+                    "end": _dt_iso_z(seg_until),
+                    "connected": cur_state,
+                }
+            )
+            prev = seg_until
+        cur_state = next_state
+        ti += 1
+    if prev < window_end:
+        segments.append(
+            {
+                "start": _dt_iso_z(prev),
+                "end": _dt_iso_z(window_end),
+                "connected": cur_state,
+            }
+        )
+
+    return {
+        "window_start": _dt_iso_z(window_start),
+        "window_end": _dt_iso_z(window_end),
+        "days": days_capped,
+        "segments": segments,
+        "event_count": len(rows),
+    }
 
 
 def _tenant_name_for_id(conn: sqlite3.Connection, tenant_id: str | None) -> str | None:
@@ -707,11 +960,18 @@ def _session_idle_timeout_seconds() -> float:
         if not DB_PATH.exists():
             _cached_session_idle_minutes = 60
         else:
-            with get_db() as conn:
-                ensure_app_ui_schema(conn)
-                row = conn.execute(
-                    "SELECT session_idle_timeout_minutes FROM app_ui_settings WHERE id = 1"
-                ).fetchone()
+            row = None
+            try:
+                with get_db_readonly() as conn:
+                    row = conn.execute(
+                        "SELECT session_idle_timeout_minutes FROM app_ui_settings WHERE id = 1"
+                    ).fetchone()
+            except sqlite3.OperationalError:
+                with get_db() as conn:
+                    ensure_app_ui_schema(conn)
+                    row = conn.execute(
+                        "SELECT session_idle_timeout_minutes FROM app_ui_settings WHERE id = 1"
+                    ).fetchone()
             _cached_session_idle_minutes = int(row["session_idle_timeout_minutes"]) if row else 60
     if _cached_session_idle_minutes <= 0:
         return 0.0
@@ -973,6 +1233,43 @@ def api_auth_me(request: Request, _uid: str = Depends(current_user_id_dep)):
         request.session.clear()
         raise HTTPException(status_code=401, detail="Session is no longer valid.")
     return {"user": user_row_public(row)}
+
+
+_OPS_UI_JSON_MAX_BYTES = 200_000
+
+
+@app.get("/api/me/operations-ui")
+def api_me_operations_ui_get(uid: str = Depends(current_user_id_dep)):
+    with get_secrets_db() as conn:
+        raw = get_user_operations_ui_json(conn, uid)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+@app.patch("/api/me/operations-ui")
+async def api_me_operations_ui_patch(request: Request, uid: str = Depends(current_user_id_dep)):
+    body = await request.body()
+    if len(body) > _OPS_UI_JSON_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Payload too large")
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from e
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object")
+    serialized = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    if len(serialized.encode("utf-8")) > _OPS_UI_JSON_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Payload too large")
+    with get_secrets_db() as conn:
+        if not set_user_operations_ui_json(conn, uid, serialized):
+            request.session.clear()
+            raise HTTPException(status_code=401, detail="Session is no longer valid.")
+    return data
 
 
 @app.patch("/api/auth/profile")
@@ -1333,10 +1630,13 @@ def _parse_sync_timestamp_ms(val: object) -> float | None:
 
 
 def _fw_recency_hours_from_db(conn: sqlite3.Connection) -> tuple[int, int]:
-    ensure_app_ui_schema(conn)
-    row = conn.execute(
-        "SELECT fw_new_max_age_hours, fw_updated_max_age_hours FROM app_ui_settings WHERE id = 1"
-    ).fetchone()
+    """Read recency windows; no schema writes (safe for read-only UI connections)."""
+    try:
+        row = conn.execute(
+            "SELECT fw_new_max_age_hours, fw_updated_max_age_hours FROM app_ui_settings WHERE id = 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 168, 48
     if not row:
         return 168, 48
     return int(row["fw_new_max_age_hours"]), int(row["fw_updated_max_age_hours"])
@@ -1410,7 +1710,7 @@ def _attach_alert_recency_tags(
 
 @app.get("/api/dashboard")
 def api_dashboard():
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         cur = conn.execute(
             """
             SELECT
@@ -1501,7 +1801,7 @@ def api_dashboard():
 @app.get("/api/firewalls")
 def api_firewalls():
     tdisp = _sql_tenant_display_coalesced("t", "f.tenant_id")
-    with get_db_with_sec() as conn:
+    with get_db_with_sec_readonly() as conn:
         sql_fw = (
             """
             SELECT
@@ -1583,6 +1883,20 @@ def api_firewalls():
         return rows_out
 
 
+@app.get("/api/firewalls/{firewall_id}/connectivity-history")
+def api_firewall_connectivity_history(
+    firewall_id: str,
+    days: int = Query(default=30, ge=1, le=90),
+    _: str = Depends(current_user_id_dep),
+):
+    """Per-firewall connected/up segments from ``sync_change_events`` (insert + ``connected`` updates)."""
+    with get_db_readonly() as conn:
+        row = conn.execute("SELECT id FROM firewalls WHERE id = ?", (firewall_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Firewall not found")
+        return _firewall_connectivity_history_payload(conn, firewall_id=firewall_id, days=days)
+
+
 class FirewallApproveBatchBody(BaseModel):
     """Approve management for firewalls that are in Sophos Central pending-approval state."""
 
@@ -1653,7 +1967,7 @@ def api_firewalls_approve_batch(
     errors: list[dict] = []
     sync_cred_ids: set[str] = set()
 
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         for fw_id in ids:
             row = conn.execute(
                 """
@@ -1768,7 +2082,7 @@ def api_firewalls_firmware_upgrade_batch(
     skipped: list[dict] = []
     errors: list[dict] = []
 
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         for it in body.items:
             fw_id = str(it.firewall_id or "").strip()
             if not fw_id:
@@ -1928,6 +2242,22 @@ def api_geocode_search(
     return {"results": results}
 
 
+@app.get("/api/geoip")
+def api_geoip(
+    ip: str = Query(default="", min_length=1, max_length=45),
+    _: str = Depends(current_user_id_dep),
+):
+    """Approximate latitude/longitude for a public IPv4 (for map hints when DB geo is unset)."""
+    pair = _geoip_lookup_ipv4(ip)
+    if not pair:
+        raise HTTPException(
+            status_code=404,
+            detail="Could not resolve a location for that IP address.",
+        )
+    lat, lon = pair
+    return {"ok": True, "latitude": lat, "longitude": lon}
+
+
 class FirewallLocationBody(BaseModel):
     """Set firewall map coordinates. Send either a street address (geocoded) or lat/lon."""
 
@@ -2084,7 +2414,15 @@ def _central_firewall_api_context(
     tenant_id: str,
     unsupported_phrase: str = "this action",
 ) -> tuple[CentralSession, str, str | None, str | None, str | None]:
-    """Authenticate and resolve data-region URL + tenant/org/partner headers for firewall APIs."""
+    """Authenticate and resolve data-region URL + tenant/org/partner headers for firewall APIs.
+
+    For **Firewall v1** (``/firewall/v1/...``), partner credentials must use ``X-Tenant-ID``
+    and the tenant's regional ``apiHost`` only. Do not send ``X-Partner-ID`` on those
+    requests — Sophos returns HTTP 401 ``BadServerResponse`` when it is set (the SDK's
+    ``get_firewalls`` only passes ``tenant_id``). The returned ``partner_hdr`` is for
+    callers that need the partner id for other purposes; Common API routes may still
+    require org/partner headers (see ``_post_common_alert_action_on_central``).
+    """
     session = CentralSession(oauth_client_id.strip(), oauth_client_secret)
     auth = session.authenticate()
     if not auth.success:
@@ -2110,7 +2448,7 @@ def _central_firewall_api_context(
     elif id_type == "partner":
         partner_hdr = w.id
         tenant_hdr = tenant_id
-        with get_db() as conn:
+        with get_db_readonly() as conn:
             trow = conn.execute(
                 "SELECT api_host FROM tenants WHERE id = ?",
                 (tenant_id,),
@@ -2124,7 +2462,7 @@ def _central_firewall_api_context(
     elif id_type == "organization":
         tenant_hdr = tenant_id
         org_hdr = w.id
-        with get_db() as conn:
+        with get_db_readonly() as conn:
             trow = conn.execute(
                 "SELECT api_host FROM tenants WHERE id = ?",
                 (tenant_id,),
@@ -2152,7 +2490,7 @@ def _approve_firewall_management_on_central(
     oauth_client_secret: str,
 ) -> None:
     """POST approveManagement on Sophos Central (same tenancy / region rules as geo PATCH)."""
-    session, url_base, tenant_hdr, org_hdr, partner_hdr = _central_firewall_api_context(
+    session, url_base, tenant_hdr, org_hdr, _partner_hdr = _central_firewall_api_context(
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         tenant_id=tenant_id,
@@ -2170,8 +2508,6 @@ def _approve_firewall_management_on_central(
         headers["X-Tenant-ID"] = tenant_hdr
     if org_hdr:
         headers["X-Organization-ID"] = org_hdr
-    if partner_hdr:
-        headers["X-Partner-ID"] = partner_hdr
     payload = {"action": "approveManagement"}
     try:
         r = requests.post(full_url, headers=headers, json=payload, timeout=30)
@@ -2229,7 +2565,7 @@ def _post_firmware_upgrade_actions_on_central(
     upgrade_dicts: list[dict],
 ) -> CentralResponse:
     """POST /firewall/v1/firewalls/actions/firmware-upgrade (single object or batch)."""
-    session, url_base, tenant_hdr, org_hdr, partner_hdr = _central_firewall_api_context(
+    session, url_base, tenant_hdr, org_hdr, _partner_hdr = _central_firewall_api_context(
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         tenant_id=tenant_id,
@@ -2248,8 +2584,6 @@ def _post_firmware_upgrade_actions_on_central(
         headers["X-Tenant-ID"] = tenant_hdr
     if org_hdr:
         headers["X-Organization-ID"] = org_hdr
-    if partner_hdr:
-        headers["X-Partner-ID"] = partner_hdr
     try:
         r = requests.post(full_url, headers=headers, json=json_body, timeout=60)
     except requests.RequestException as e:
@@ -2267,7 +2601,7 @@ def _patch_firewall_json_on_central(
     unsupported_phrase: str,
 ) -> None:
     """PATCH ``/firewall/v1/firewalls/{id}`` on Sophos Central (geo, name, etc.)."""
-    session, url_base, tenant_hdr, org_hdr, partner_hdr = _central_firewall_api_context(
+    session, url_base, tenant_hdr, org_hdr, _partner_hdr = _central_firewall_api_context(
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         tenant_id=tenant_id,
@@ -2284,8 +2618,6 @@ def _patch_firewall_json_on_central(
         headers["X-Tenant-ID"] = tenant_hdr
     if org_hdr:
         headers["X-Organization-ID"] = org_hdr
-    if partner_hdr:
-        headers["X-Partner-ID"] = partner_hdr
     try:
         r = requests.patch(full_url, headers=headers, json=json_body, timeout=30)
     except requests.RequestException as e:
@@ -2352,7 +2684,7 @@ def api_firewall_patch_location(
     lat_s = f"{lat:.7f}".rstrip("0").rstrip(".")
     lon_s = f"{lon:.7f}".rstrip("0").rstrip(".")
 
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         row = conn.execute(
             "SELECT id, tenant_id, client_id FROM firewalls WHERE id = ?",
             (firewall_id,),
@@ -2421,7 +2753,7 @@ def api_firewall_patch_label(
     if not new_name:
         raise HTTPException(status_code=400, detail="Name must not be empty.")
 
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         row = conn.execute(
             "SELECT id, tenant_id, client_id FROM firewalls WHERE id = ?",
             (firewall_id,),
@@ -2481,7 +2813,7 @@ def api_firewall_patch_label(
 
 @app.get("/api/firmware-versions")
 def api_firmware_versions():
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         cur = conn.execute(
             """
             SELECT version FROM firmware_versions
@@ -2507,7 +2839,7 @@ def api_firmware_version_details(
         ordered.append(v)
 
     details: list[dict] = []
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         for ver in ordered:
             vr = conn.execute(
                 """
@@ -2541,7 +2873,7 @@ def api_firmware_version_details(
 
 @app.get("/api/firewalls/{firewall_id}/firmware-upgrades")
 def api_firewall_firmware_upgrades(firewall_id: str):
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         fw = conn.execute(
             "SELECT id, hostname, name FROM firewalls WHERE id = ?",
             (firewall_id,),
@@ -2609,7 +2941,7 @@ def api_firewall_firmware_upgrades(firewall_id: str):
 
 @app.get("/api/tenants")
 def api_tenants():
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         cur = conn.execute(
             """
             SELECT
@@ -2702,7 +3034,7 @@ def api_tenants():
 def api_firewall_groups():
     """Rows from ``firewall_groups`` with tenant label, up to 3-segment breadcrumb, firewall count, and sync-status row count."""
     tdisp = _sql_tenant_display_coalesced("t", "g.tenant_id")
-    with get_db_with_sec() as conn:
+    with get_db_with_sec_readonly() as conn:
         fw_display = _firewall_id_display_map(conn)
         sql_fg = (
             """
@@ -2810,6 +3142,12 @@ class CreateFirewallGroupBody(BaseModel):
     config_import_source_firewall_id: str | None = None
 
 
+class DeleteFirewallGroupsBatchBody(BaseModel):
+    """Delete firewall groups on Sophos Central (per group, using tenant OAuth credentials)."""
+
+    group_ids: list[str] = Field(default_factory=list)
+
+
 @app.get("/api/tenants/{tenant_id}/firewall-group-create-data")
 def api_tenant_firewall_group_create_data(
     tenant_id: str,
@@ -2819,7 +3157,7 @@ def api_tenant_firewall_group_create_data(
     tid = str(tenant_id or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="Invalid tenant id.")
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         in_tenants = conn.execute(
             "SELECT 1 FROM tenants WHERE id = ? LIMIT 1", (tid,)
         ).fetchone()
@@ -2876,7 +3214,7 @@ def api_firewall_groups_create(
     assign_ids = list(dict.fromkeys(assign_ids))
     import_src = str(body.config_import_source_firewall_id or "").strip() or None
 
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         assigned = _firewall_ids_assigned_in_any_group_for_tenant(conn, tid)
         cur = conn.execute(
             """
@@ -2913,7 +3251,7 @@ def api_firewall_groups_create(
         )
 
     au_adm, an_adm = _actor_for_audit(admin_uid)
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         oauth_cid, oauth_secret, cred_row_id = _oauth_client_for_tenant_firewall_api(conn, tid)
 
     session, url_base, _, _, _ = _central_firewall_api_context(
@@ -2984,11 +3322,117 @@ def api_firewall_groups_create(
     }
 
 
+@app.post("/api/firewall-groups/delete-batch")
+def api_firewall_groups_delete_batch(
+    request: Request,
+    body: DeleteFirewallGroupsBatchBody,
+    admin_uid: str = Depends(admin_user_id_dep),
+):
+    """Delete selected firewall groups on Central via ``delete_firewall_group``; sync credentials that had a success."""
+    ids = [str(x).strip() for x in body.group_ids if x is not None and str(x).strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="group_ids must not be empty.")
+    uniq = list(dict.fromkeys(ids))
+    au_adm, an_adm = _actor_for_audit(admin_uid)
+    deleted: list[dict] = []
+    errors: list[dict] = []
+    sync_cred_ids: set[str] = set()
+
+    with get_db_readonly() as conn:
+        for gid in uniq:
+            row = conn.execute(
+                """
+                SELECT id, tenant_id, name
+                FROM firewall_groups WHERE id = ?
+                """,
+                (gid,),
+            ).fetchone()
+            if not row:
+                errors.append({"id": gid, "detail": "Group not found in local database"})
+                continue
+            tid = str(row["tenant_id"] or "").strip()
+            gname = str(row["name"] or "").strip()
+            if not tid:
+                errors.append({"id": gid, "detail": "Group has no tenant id"})
+                continue
+            try:
+                oauth_cid, oauth_secret, cred_row_id = _oauth_client_for_tenant_firewall_api(
+                    conn, tid
+                )
+            except HTTPException as he:
+                d = he.detail
+                errors.append(
+                    {"id": gid, "detail": d if isinstance(d, str) else str(d)}
+                )
+                continue
+
+            session, url_base, _, _, _ = _central_firewall_api_context(
+                oauth_client_id=oauth_cid,
+                oauth_client_secret=oauth_secret,
+                tenant_id=tid,
+                unsupported_phrase="deleting a firewall group",
+            )
+            rs = delete_firewall_group(session, gid, url_base=url_base, tenant_id=tid)
+            if not rs.success:
+                detail = rs.message or "Delete firewall group failed."
+                if rs.value is not None and isinstance(rs.value, CentralResponse):
+                    detail = _central_api_error_message(rs.value)
+                errors.append({"id": gid, "detail": detail})
+                continue
+
+            audit_event(
+                action="central.firewall_group_delete",
+                actor_user_id=au_adm,
+                actor_username=an_adm,
+                request=request,
+                detail={
+                    "tenant_id": tid,
+                    "group_id": gid,
+                    "group_name": gname,
+                    "oauth_client_id_mask": mask_oauth_client_id(oauth_cid),
+                },
+            )
+            deleted.append({"id": gid, "name": gname or gid})
+            if cred_row_id:
+                sync_cred_ids.add(cred_row_id)
+
+    sync_results: list[dict] = []
+    for cred_id in sorted(sync_cred_ids):
+        try:
+            with get_db() as central_conn:
+                result = run_credential_sync(
+                    cred_id,
+                    central_conn=central_conn,
+                    trigger="post-delete-firewall-group",
+                )
+            sync_results.append(
+                {
+                    "credential_id": cred_id,
+                    "ok": result.success,
+                    "error": result.error,
+                }
+            )
+        except Exception as e:
+            sync_results.append(
+                {
+                    "credential_id": cred_id,
+                    "ok": False,
+                    "error": str(e) or type(e).__name__,
+                }
+            )
+
+    return {
+        "deleted": deleted,
+        "errors": errors,
+        "credential_syncs": sync_results,
+    }
+
+
 @app.get("/api/licenses")
 def api_licenses():
     tdisp = _sql_tenant_display_coalesced("t", "l.tenant_id")
     managed_by = _sql_tenant_display_coalesced("t", "fwh.tenant_id")
-    with get_db_with_sec() as conn:
+    with get_db_with_sec_readonly() as conn:
         sql_lic = (
             """
             SELECT
@@ -3054,7 +3498,7 @@ def api_licenses_detailed():
     """One row per license–subscription pair (LEFT JOIN: licenses without subscriptions appear once)."""
     tdisp = _sql_tenant_display_coalesced("t", "l.tenant_id")
     managed_by = _sql_tenant_display_coalesced("tn", "fwh.tenant_id")
-    with get_db_with_sec() as conn:
+    with get_db_with_sec_readonly() as conn:
         sql_lic_d = (
             """
             SELECT
@@ -3162,7 +3606,7 @@ def api_alerts_facets(
         LEFT JOIN tenants t ON t.id = a.tenant_id
     """
     alerts_tenant_disp = _sql_alerts_tenant_display()
-    with get_db_with_sec() as conn:
+    with get_db_with_sec_readonly() as conn:
         sql_tenant_facets = (
             "SELECT DISTINCT "
             + alerts_tenant_disp
@@ -3248,7 +3692,7 @@ def api_alerts(
         LEFT JOIN firewalls fw ON fw.id = json_extract(a.managed_agent_json, '$')
     """
     alerts_tenant_disp = _sql_alerts_tenant_display()
-    with get_db_with_sec() as conn:
+    with get_db_with_sec_readonly() as conn:
         total = conn.execute(
             "SELECT COUNT(*) " + sql_from + " " + where_sql,
             bind,
@@ -3318,7 +3762,7 @@ def api_alerts_acknowledge(
     sync_cred_ids: set[str] = set()
 
     ph = ",".join("?" * len(uniq))
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         cur = conn.execute(
             f"SELECT id, tenant_id, client_id, allowed_actions_json, tenant_ref_json "
             f"FROM alerts WHERE id IN ({ph})",
@@ -3468,7 +3912,7 @@ def api_alerts_acknowledge(
 
 @app.get("/api/alerts/recent")
 def api_alerts_recent(limit: int = Query(default=20, ge=1, le=200)):
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         cur = conn.execute(
             """
             SELECT severity, product, description, raised_at, category
@@ -3484,7 +3928,7 @@ def api_alerts_recent(limit: int = Query(default=20, ge=1, le=200)):
 @app.get("/api/alerts/{alert_id}")
 def api_alert_detail(alert_id: str):
     alerts_tenant_disp = _sql_alerts_tenant_display()
-    with get_db_with_sec() as conn:
+    with get_db_with_sec_readonly() as conn:
         sql_alert_one = (
             """
             SELECT
@@ -3558,7 +4002,9 @@ class CentralCredentialSyncIntervalBody(BaseModel):
 
 
 class CentralCredentialIncrementalSyncIntervalBody(BaseModel):
-    incremental_sync_interval: Literal["1m", "5m", "10m", "15m", "30m", "60m", "none"]
+    incremental_sync_interval: Literal[
+        "1m", "2m", "3m", "4m", "5m", "10m", "15m", "30m", "60m", "none"
+    ]
 
 
 class AppUiSettingsBody(BaseModel):
@@ -3581,12 +4027,20 @@ def api_settings_ui_get(_: str = Depends(current_user_id_dep)):
             "fw_updated_max_age_hours": 48,
             "session_idle_timeout_minutes": 60,
         }
-    with get_db() as conn:
-        ensure_app_ui_schema(conn)
-        row = conn.execute(
-            "SELECT fw_new_max_age_hours, fw_updated_max_age_hours, session_idle_timeout_minutes "
-            "FROM app_ui_settings WHERE id = 1"
-        ).fetchone()
+    row = None
+    try:
+        with get_db_readonly() as conn:
+            row = conn.execute(
+                "SELECT fw_new_max_age_hours, fw_updated_max_age_hours, session_idle_timeout_minutes "
+                "FROM app_ui_settings WHERE id = 1"
+            ).fetchone()
+    except sqlite3.OperationalError:
+        with get_db() as conn:
+            ensure_app_ui_schema(conn)
+            row = conn.execute(
+                "SELECT fw_new_max_age_hours, fw_updated_max_age_hours, session_idle_timeout_minutes "
+                "FROM app_ui_settings WHERE id = 1"
+            ).fetchone()
     if not row:
         return {
             "fw_new_max_age_hours": 168,
@@ -3989,7 +4443,7 @@ def api_license_subscriptions(
         sql += " WHERE serial_number = ?"
         args = (serial,)
     sql += " ORDER BY (product_name IS NULL), product_name COLLATE NOCASE, id"
-    with get_db() as conn:
+    with get_db_readonly() as conn:
         cur = conn.execute(sql, args)
         return [row_to_dict(r) for r in cur.fetchall()]
 

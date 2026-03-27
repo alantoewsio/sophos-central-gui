@@ -24,13 +24,17 @@
   --border-light: #e8e8e8;
   --row-alt: #f7f7f7;
   --surface: #ffffff;
+  --surface-card: #ffffff;
+  /* Map chrome / inset panels (e.g. fw-map-section header) */
+  --surface-subtle: #f5f7fa;
+  --muted: #666666;
   --status-ok: #1a9b4a;
   --status-bad: #c62828;
   --fw-status-approval: #1565c0;
   --filter-cat: #8a8a8a;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-  /* OpenStreetMap Carto raster water — Leaflet map canvas behind tiles */
-  --fw-map-osm-water: #aad3df;
+  /* Voyager water fill (matches basemaps.cartocdn.com/rastertiles/voyager) */
+  --fw-map-osm-water: #b0d0d6;
   font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
 }
 
@@ -114,8 +118,6 @@ body {
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   background: var(--surface);
-  /* Clear fixed sync bar (viewport-bottom, content column only) */
-  padding-bottom: var(--app-status-bar-height);
 }
 
 .app-sidebar {
@@ -638,7 +640,59 @@ body {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.help-menu {
+  position: fixed;
+  z-index: 600;
+  min-width: 232px;
+  margin: 0;
+  padding: 6px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14), 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+.help-menu[hidden] {
+  display: none !important;
+}
+
+.help-menu__item {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 10px 16px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.help-menu__item:hover {
+  background: var(--row-alt);
+}
+
+.help-menu__item--link {
+  color: var(--text);
+}
+
+.help-menu__sep {
+  height: 1px;
+  margin: 6px 0;
+  border: none;
+  background: var(--border);
+}
+
 .page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
   padding: 16px var(--page-gutter) 10px;
   background: var(--surface);
   border-bottom: 1px solid var(--border-light);
@@ -652,6 +706,13 @@ body {
   line-height: 1.25;
 }
 
+.page-title__ops-count {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
 .app-main > .main {
   flex: 1 1 auto;
   min-height: 0;
@@ -659,11 +720,6 @@ body {
 }
 
 .app-sync-status-bar {
-  position: fixed;
-  bottom: 0;
-  left: var(--app-sidebar-width);
-  right: 0;
-  z-index: 150;
   flex-shrink: 0;
   min-height: 36px;
   display: flex;
@@ -673,17 +729,6 @@ body {
   border-top: 1px solid var(--border-light);
   box-shadow: 0 -1px 4px rgba(0, 0, 0, 0.06);
   font-size: 13px;
-  transition: left 0.2s ease;
-}
-
-.app-shell--nav-collapsed .app-sync-status-bar {
-  left: var(--app-sidebar-width-collapsed);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .app-sync-status-bar {
-    transition: none;
-  }
 }
 
 .app-sync-status-bar__inner {
@@ -2408,96 +2453,7 @@ button.cell-link.fw-firmware-upgrade-btn:hover {
   flex-shrink: 0;
 }
 
-/* ---------- Firmware upgrades modal ---------- */
-.fw-firmware-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 350;
-  box-sizing: border-box;
-}
-
-.fw-firmware-modal[hidden] {
-  display: none !important;
-}
-
-.fw-firmware-modal__backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  pointer-events: auto;
-}
-
-.fw-firmware-modal__panel {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: min(920px, calc(100vw - 32px));
-  max-height: min(720px, calc(100vh - 32px));
-  display: flex;
-  flex-direction: column;
-  background: var(--surface);
-  border-radius: 8px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18), 0 0 1px rgba(0, 0, 0, 0.12);
-  border: 1px solid var(--border);
-  overflow: hidden;
-  pointer-events: auto;
-}
-
-.fw-firmware-modal__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 18px 20px 14px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--border-light);
-}
-
-.fw-firmware-modal__title {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  color: var(--text);
-  line-height: 1.3;
-  word-break: break-word;
-  padding-right: 8px;
-}
-
-.fw-firmware-modal__close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  margin: 0;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.fw-firmware-modal__close:hover {
-  background: var(--row-alt);
-  color: var(--text);
-}
-
-.fw-firmware-modal__body {
-  padding: 16px 20px 20px;
-  overflow: hidden;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--text);
-}
-
+/* ---------- Firmware upgrade notes (tabs + cards; used inside batch modal) ---------- */
 .fw-firmware-modal__layout {
   display: flex;
   flex-direction: column;
@@ -2573,10 +2529,6 @@ button.cell-link.fw-firmware-upgrade-btn:hover {
 
 .fw-firmware-modal__notes-region[hidden] {
   display: none !important;
-}
-
-.fw-firmware-modal__body .fw-firmware-modal__notes-region:not([hidden]) {
-  margin-bottom: 2px;
 }
 
 .fw-firmware-modal__tab {
@@ -3569,12 +3521,111 @@ tr.lc-row:focus {
   padding-top: 12px;
 }
 
+.fw-detail-flyout__connectivity {
+  margin-bottom: 14px;
+}
+
+.fw-detail-flyout__connectivity-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  margin-bottom: 8px;
+}
+
+.fw-detail-flyout__connectivity-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.fw-detail-flyout__connectivity-sub {
+  font-size: 12px;
+}
+
+.fw-detail-flyout__connectivity-body {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface, #fff);
+  padding: 10px 10px 8px;
+  min-height: 72px;
+}
+
+.fw-detail-flyout__connectivity-chart {
+  width: 100%;
+}
+
+.fw-detail-flyout__connectivity-chart svg {
+  display: block;
+  width: 100%;
+  height: 52px;
+  vertical-align: top;
+}
+
+.fw-conn-chart__axis {
+  font-size: 11px;
+  fill: var(--text-muted);
+}
+
+.fw-conn-chart__seg {
+  stroke: rgba(0, 0, 0, 0.06);
+  stroke-width: 0.5;
+}
+
+.fw-conn-chart__seg--up {
+  fill: #2e7d32;
+}
+
+.fw-conn-chart__seg--down {
+  fill: var(--status-bad);
+}
+
+.fw-conn-chart__seg--unk {
+  fill: var(--text-muted);
+  opacity: 0.35;
+}
+
+.fw-detail-flyout__connectivity-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.fw-detail-flyout__connectivity-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.fw-detail-flyout__connectivity-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.fw-detail-flyout__connectivity-swatch--up {
+  background: #2e7d32;
+}
+
+.fw-detail-flyout__connectivity-swatch--down {
+  background: var(--status-bad);
+}
+
+.fw-detail-flyout__connectivity-swatch--unk {
+  background: var(--text-muted);
+  opacity: 0.45;
+}
+
 .fw-detail-flyout__map-wrap {
   position: relative;
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--border);
-  background: var(--fw-map-osm-water, #aad3df);
+  background: var(--fw-map-osm-water, #b0d0d6);
   min-height: 200px;
 }
 
@@ -4385,6 +4436,23 @@ tr.lc-row:focus {
   flex-shrink: 0;
 }
 
+.settings-modal__toolbar-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.settings-modal__help {
+  color: var(--text-muted);
+  border-radius: 6px;
+}
+
+.settings-modal__help:hover {
+  background: var(--row-alt);
+  color: var(--text);
+}
+
 .settings-modal__close {
   color: var(--text-muted);
   border-radius: 6px;
@@ -5104,7 +5172,7 @@ tr.lc-row:focus {
   }
 }
 
-/* ---------- Firewall world map (Leaflet / OSM) ---------- */
+/* ---------- Firewall world map (Leaflet / Carto Voyager) ---------- */
 .fw-map-section {
   margin-bottom: 20px;
   border: 1px solid var(--border-light);
@@ -5120,7 +5188,7 @@ tr.lc-row:focus {
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background: var(--surface-subtle, #f5f7fa);
+  background: var(--surface-subtle);
   border-bottom: 1px solid var(--border-light);
 }
 
@@ -5164,6 +5232,45 @@ tr.lc-row:focus {
   font-size: 12px;
   color: var(--text-muted);
   line-height: 1.35;
+}
+
+.fw-map-leaflet-wrap {
+  position: relative;
+}
+
+.fw-map-back-btn {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 1002;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--surface-card);
+  box-shadow: var(--shadow);
+  color: var(--text-header);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fw-map-back-btn:hover:not(:disabled) {
+  background: var(--surface-subtle);
+  color: var(--text);
+}
+
+.fw-map-back-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.fw-map-back-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .fw-map-leaflet {
@@ -5229,12 +5336,14 @@ tr.lc-row:focus {
 
 .fw-map-pin__dot {
   display: block;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   margin: 0 auto;
   border-radius: 50%;
   border: 2px solid #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.14),
+    0 4px 10px rgba(0, 0, 0, 0.28);
 }
 
 /* Off-screen firewall indicators: dot on map edge + headless arrow toward true location */
@@ -5257,11 +5366,13 @@ tr.lc-row:focus {
 
 .fw-map-edge__dot {
   display: block;
-  width: 11px;
-  height: 11px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   border: 2px solid #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.14),
+    0 3px 8px rgba(0, 0, 0, 0.26);
   flex-shrink: 0;
 }
 
@@ -5329,7 +5440,7 @@ tr.lc-row:focus {
   overflow: hidden;
   border: 3px solid #fff;
   box-shadow: 0 10px 36px rgba(0, 0, 0, 0.28);
-  background: var(--fw-map-osm-water, #aad3df);
+  background: var(--fw-map-osm-water, #b0d0d6);
 }
 
 .fw-map-cluster-lens__mapEl {
@@ -5369,7 +5480,7 @@ tr.lc-row:focus {
 
 .fw-map-cluster-lens__mapEl .leaflet-container {
   font-family: inherit;
-  background: var(--fw-map-osm-water, #aad3df);
+  background: var(--fw-map-osm-water, #b0d0d6);
 }
 
 /* Pin hover card is rendered in #fw-map-hover-portal on document.body (see app.js) */
@@ -5879,6 +5990,114 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
 }
 
 .fw-delete-local-modal__footer .btn--danger:hover:not(:disabled) {
+  filter: brightness(1.06);
+  color: #fff;
+}
+
+/* Delete firewall groups on Central (confirm) */
+.gr-delete-groups-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 366;
+  box-sizing: border-box;
+}
+
+.gr-delete-groups-modal[hidden] {
+  display: none !important;
+}
+
+.gr-delete-groups-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.gr-delete-groups-modal__panel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(85vh, 520px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18), 0 0 1px rgba(0, 0, 0, 0.12);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.gr-delete-groups-modal__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.gr-delete-groups-modal__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.gr-delete-groups-modal__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.gr-delete-groups-modal__close:hover {
+  background: var(--row-alt);
+  color: var(--text);
+}
+
+.gr-delete-groups-modal__body {
+  padding: 16px 18px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gr-delete-groups-modal__lead {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.gr-delete-groups-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--border-light);
+  flex-shrink: 0;
+}
+
+.gr-delete-groups-modal__footer .btn--danger {
+  background: var(--status-bad);
+  color: #fff;
+  border-color: var(--status-bad);
+}
+
+.gr-delete-groups-modal__footer .btn--danger:hover:not(:disabled) {
   filter: brightness(1.06);
   color: #fff;
 }
@@ -6424,6 +6643,22 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
   border-bottom: 1px solid var(--border-light);
 }
 
+.toolbar__ops-sort--inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.toolbar__ops-sort--inline .ops-sort-bar__label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
 .ops-sort-bar__select {
   min-width: 200px;
   padding: 6px 10px;
@@ -6434,14 +6669,12 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
   color: var(--text);
 }
 
-.toolbar--operations {
-  border-bottom: 1px solid var(--border-light);
+.toolbar--operations .toolbar__line--main .toolbar__fw-quick-wrap {
+  flex: 1 1 280px;
 }
 
-.operations-refresh {
-  font-size: 12px;
-  padding: 0 var(--table-cell-pad-x);
-  margin: 0;
+.toolbar--operations {
+  border-bottom: 1px solid var(--border-light);
 }
 
 .ops-card-grid {
@@ -6457,12 +6690,11 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
 }
 
 .ops-card {
-  flex: 0 1 200px;
-  width: 200px;
-  max-width: 200px;
-  min-width: 168px;
+  flex: 0 1 252px;
+  width: 252px;
+  max-width: 252px;
+  min-width: 208px;
   display: flex;
-  min-height: 168px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -6470,13 +6702,24 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
   cursor: pointer;
   padding: 0;
   overflow: hidden;
-  box-shadow: var(--shadow);
+  box-shadow:
+    0 4px 14px rgba(0, 27, 68, 0.12),
+    0 2px 4px rgba(0, 0, 0, 0.06);
   transition: box-shadow 0.15s ease, border-color 0.15s ease;
 }
 
 .ops-card:hover {
   border-color: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 27, 68, 0.08);
+  box-shadow:
+    0 8px 24px rgba(0, 27, 68, 0.16),
+    0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.ops-card--offline:hover {
+  border-color: rgba(198, 40, 40, 0.38);
+  box-shadow:
+    0 8px 24px rgba(198, 40, 40, 0.14),
+    0 2px 6px rgba(198, 40, 40, 0.09);
 }
 
 .ops-card:focus-visible {
@@ -6498,6 +6741,13 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
   background: var(--status-bad);
 }
 
+.ops-card--offline {
+  background: #fef5f5;
+  box-shadow:
+    0 4px 14px rgba(198, 40, 40, 0.1),
+    0 2px 4px rgba(198, 40, 40, 0.07);
+}
+
 .ops-card--suspended .ops-card__accent {
   background: #f57c00;
 }
@@ -6508,11 +6758,35 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
 
 .ops-card__body {
   flex: 1;
-  padding: 10px 12px 12px;
+  padding: 8px 10px 7px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
+}
+
+@keyframes ops-card-state-jiggle {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  20% {
+    transform: translate(-1.5px, 0.5px) rotate(-0.65deg);
+  }
+  40% {
+    transform: translate(1.5px, -0.5px) rotate(0.65deg);
+  }
+  60% {
+    transform: translate(-1px, -0.75px) rotate(-0.45deg);
+  }
+  80% {
+    transform: translate(0.75px, 0.5px) rotate(0.35deg);
+  }
+}
+
+.ops-card--tint-pos,
+.ops-card--tint-neg {
+  animation: ops-card-state-jiggle 0.7s ease-in-out infinite;
 }
 
 .ops-card--tint-pos {
@@ -6521,6 +6795,13 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
 
 .ops-card--tint-neg {
   background: #ffebee;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ops-card--tint-pos,
+  .ops-card--tint-neg {
+    animation: none;
+  }
 }
 
 .ops-card__title {
@@ -6616,37 +6897,84 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
   white-space: nowrap;
 }
 
-.ops-card__kv {
-  display: grid;
-  grid-template-columns: 5.5rem minmax(0, 1fr);
-  gap: 4px 8px;
-  font-size: 12px;
-  line-height: 1.35;
+.ops-pill--facet {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.ops-card__k {
+.ops-pill--facet-empty {
+  background: rgba(0, 27, 68, 0.06);
+  border-color: var(--border-light);
   color: var(--text-muted);
 }
 
-.ops-card__v {
-  color: var(--text);
+.ops-card__footer {
+  margin-top: auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+  min-height: 0;
+}
+
+.ops-card__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  line-height: 1.25;
+}
+
+.ops-card__meta--sync {
+  font-size: 10px;
+  min-width: 0;
+  flex: 1;
+  justify-content: flex-start;
+}
+
+.ops-card__meta--state {
+  font-size: 9px;
+  flex: 0 1 auto;
+  max-width: 48%;
+  min-width: 0;
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.ops-card__meta-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ops-card__tenant-btn.ops-card__v {
-  display: block;
-  width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.ops-card__sync-ico,
+.ops-card__state-ico {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+button.ops-card__tenant-btn.ops-pill.cell-link {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  width: auto;
+  max-width: 100%;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
   font: inherit;
-  text-align: left;
-  padding: 0;
-  background: none;
-  border: none;
-  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  line-height: 1.3;
+}
+
+button.ops-card__tenant-btn.ops-pill.cell-link:hover {
+  text-decoration: none;
+  filter: brightness(0.96);
 }
 
 .ops-change-strip {
@@ -6676,4 +7004,396 @@ button.fw-batch-choice-btn.fw-batch-choice-btn--primary:hover {
   background: #ffebee;
   color: #b71c1c;
   border-top: 1px solid #ffcdd2;
+}
+
+/* ---------- Dark color theme (toggle via Account menu) ---------- */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --text: #e8eaed;
+  --text-muted: #9aa0a6;
+  --text-header: #bdc1c6;
+  --muted: #9aa0a6;
+  --border: #3c4043;
+  --border-light: #303030;
+  --row-alt: #252526;
+  --surface: #1e1e1e;
+  --surface-card: #252526;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --filter-cat: #8d9299;
+  /* Align with Carto dark_all placeholder / loading gap */
+  --fw-map-osm-water: #1c2832;
+  --text-body: #e8eaed;
+  --surface-subtle: #2d3238;
+}
+
+[data-theme="dark"] .leaflet-container {
+  background: #1a1a1a;
+}
+
+[data-theme="dark"] .table-footer--dashboard {
+  background: var(--row-alt);
+}
+
+[data-theme="dark"] .data-table tbody tr:nth-child(even) {
+  background: var(--row-alt);
+}
+
+[data-theme="dark"] .alert-row:hover,
+[data-theme="dark"] .alert-row:focus {
+  background: rgba(0, 102, 204, 0.22) !important;
+}
+
+[data-theme="dark"] .tag-pill,
+[data-theme="dark"] .lc-gantt__type-pill,
+[data-theme="dark"] .fw-map-pill {
+  background: #2a3d52;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+[data-theme="dark"] #lc-table .tag-pill.lc-state-pill--active {
+  background: #1b3324;
+  color: #81c784;
+}
+
+[data-theme="dark"] #lc-table .tag-pill.lc-state-pill--expired {
+  background: #3a3a3a;
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] #lc-table .tag-pill.lc-state-pill--empty {
+  background: #2d2d30;
+  color: var(--text-muted);
+}
+
+[data-theme="dark"] tr.lc-row:hover {
+  background: rgba(0, 102, 204, 0.18);
+}
+
+[data-theme="dark"] .ops-pill--suspended {
+  background: #3d2f18;
+  border-color: #b8872e;
+  color: #ffcc80;
+}
+
+[data-theme="dark"] .ops-pill--approval {
+  background: #1a2f4a;
+  border-color: #4a7aaa;
+  color: #90caf9;
+}
+
+[data-theme="dark"] .ops-pill--fw {
+  background: #2a3d52;
+  border-color: #4a6078;
+  color: #b0bec5;
+}
+
+[data-theme="dark"] .ops-pill--facet-empty {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .flyout {
+  box-shadow: -4px 0 32px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="dark"] .flyout-pre {
+  background: #2d2d30;
+}
+
+[data-theme="dark"] .fw-detail-flyout__firmware-banner {
+  background: #3d2020;
+  border-color: rgba(239, 83, 80, 0.45);
+}
+
+[data-theme="dark"] .fw-detail-flyout__sync-suspend-banner {
+  background: #3d2a18;
+  border-color: rgba(230, 120, 60, 0.5);
+}
+
+[data-theme="dark"] .fw-conn-chart__seg--up {
+  fill: #66bb6a;
+}
+
+[data-theme="dark"] .fw-conn-chart__seg--unk {
+  opacity: 0.5;
+}
+
+[data-theme="dark"] .fw-detail-flyout__connectivity-swatch--up {
+  background: #66bb6a;
+}
+
+[data-theme="dark"] .settings-modal__sidebar {
+  background: var(--row-alt);
+  border-right-color: var(--border-light);
+}
+
+[data-theme="dark"] .settings-modal__panel {
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55), 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .btn--outline {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+[data-theme="dark"] .btn--danger {
+  background: var(--surface);
+  color: #ff8a80;
+  border-color: var(--border);
+}
+
+[data-theme="dark"] .btn--danger:hover {
+  background: #3d2020;
+  border-color: var(--status-bad);
+}
+
+[data-theme="dark"] .ops-change-strip__cell--pos {
+  background: #1b3320;
+  color: #81c784;
+  border-top-color: #2e4a36;
+}
+
+[data-theme="dark"] .ops-change-strip__cell--neg {
+  background: #3d2020;
+  color: #ef9a9a;
+  border-top-color: #5c2a2a;
+}
+
+[data-theme="dark"] .auth-overlay {
+  background-color: #0a1628;
+  background-image:
+    radial-gradient(ellipse 115% 75% at 50% -30%, rgba(120, 180, 255, 0.12) 0%, transparent 58%),
+    radial-gradient(ellipse 85% 55% at 100% 0%, rgba(0, 80, 200, 0.18) 0%, transparent 50%),
+    radial-gradient(ellipse 70% 50% at 0% 15%, rgba(0, 40, 100, 0.35) 0%, transparent 48%),
+    linear-gradient(168deg, #0d3a7a 0%, #0a3068 24%, #082850 52%, #051a38 82%, #020e1f 100%);
+}
+
+[data-theme="dark"] .user-menu__dropdown--rich {
+  background: #2d2d30;
+  border-color: var(--border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .user-menu__avatar {
+  background: rgba(255, 255, 255, 0.12);
+  color: #e8eaed;
+}
+
+[data-theme="dark"] .user-menu__rule {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .notifications-flyout {
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .notifications-flyout__header {
+  border-bottom-color: var(--border-light);
+}
+
+[data-theme="dark"] .help-menu {
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .settings-form__input,
+[data-theme="dark"] .auth-overlay__input,
+[data-theme="dark"] .search-field__input {
+  background: var(--surface-card);
+  color: var(--text);
+}
+
+[data-theme="dark"] .app-sync-status-bar__sync-btn,
+[data-theme="dark"] .settings-sync-interval-select,
+[data-theme="dark"] .settings-inc-sync-interval-select,
+[data-theme="dark"] .settings-cred-icon-btn {
+  background: var(--surface-card);
+  color: var(--text);
+}
+
+[data-theme="dark"] .settings-cred-icon-btn--danger:hover:not(:disabled) {
+  background: #3d2020;
+}
+
+[data-theme="dark"] .settings-form__input:focus {
+  box-shadow: 0 0 0 2px rgba(100, 181, 246, 0.25);
+}
+
+[data-theme="dark"] .search-field {
+  background: var(--surface-card);
+}
+
+[data-theme="dark"] .data-table thead th {
+  background: #2d3036;
+  color: var(--text-header);
+  border-bottom-color: var(--border);
+}
+
+[data-theme="dark"] .filters {
+  background: var(--row-alt);
+}
+
+[data-theme="dark"] .filters__toggle:hover {
+  background: rgba(100, 181, 246, 0.12);
+}
+
+[data-theme="dark"] .filter-group__facet-search {
+  background: var(--row-alt);
+}
+
+[data-theme="dark"] .filter-group__facet-search-input {
+  background: var(--surface-card);
+  border-color: var(--border);
+}
+
+[data-theme="dark"] .filter-group__facet-search-input:focus {
+  box-shadow: 0 0 0 2px rgba(100, 181, 246, 0.22);
+}
+
+[data-theme="dark"] .pager__per select,
+[data-theme="dark"] .pager__btn {
+  background: var(--surface-card);
+  color: var(--text);
+}
+
+[data-theme="dark"] .toolbar__seg {
+  background: var(--surface-card);
+}
+
+[data-theme="dark"] .toolbar__seg-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .toolbar__seg-btn[aria-pressed="true"] {
+  background: rgba(100, 181, 246, 0.18);
+  color: #90caf9;
+}
+
+[data-theme="dark"] .toolbar__cols-icon:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .toolbar__cols-icon:focus-visible {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+}
+
+[data-theme="dark"] .stat-card {
+  background: var(--surface-card);
+  border-color: var(--border);
+}
+
+[data-theme="dark"] .stat-card--hit {
+  background: var(--surface-card);
+  border-color: var(--border);
+}
+
+[data-theme="dark"] .stat-card--hit:hover {
+  background: #32353c;
+  border-color: var(--accent);
+}
+
+[data-theme="dark"] .stat-card__main:hover {
+  background: rgba(100, 181, 246, 0.1);
+}
+
+[data-theme="dark"] .stat-card--alerts .stat-card__main.stat-card--alert.is-active,
+[data-theme="dark"] .stat-card--tenants-dash .stat-card__main.stat-card__main--tenant-donut.is-active {
+  background: rgba(100, 181, 246, 0.12);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+[data-theme="dark"] .dash-alert-donut::after {
+  background: var(--surface-card);
+}
+
+/* Solid center hole (semi-transparent reads as “filled pie” over the conic-gradient). */
+[data-theme="dark"] .stat-card--alerts .stat-card__main.stat-card--alert.is-active .dash-alert-donut::after,
+[data-theme="dark"]
+  .stat-card--tenants-dash
+  .stat-card__main.stat-card__main--tenant-donut.is-active
+  .dash-alert-donut::after {
+  background: #2d374d;
+  background: color-mix(in srgb, var(--surface-card) 88%, rgb(100, 181, 246) 12%);
+}
+
+[data-theme="dark"] .stat-card__alert-row {
+  background: rgba(255, 255, 255, 0.03);
+  border-top-color: var(--border-light);
+}
+
+[data-theme="dark"] .stat-card__alert-seg:hover {
+  background: rgba(100, 181, 246, 0.1);
+}
+
+[data-theme="dark"] .stat-card__alert-seg.is-active {
+  background: rgba(100, 181, 246, 0.14);
+  color: #90caf9;
+  box-shadow: inset 0 -2px 0 #64b5f6;
+}
+
+[data-theme="dark"] .ops-card-grid {
+  background: var(--row-alt);
+}
+
+[data-theme="dark"] .ops-card {
+  background: var(--surface-card);
+  border-color: var(--border);
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.35),
+    0 2px 4px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"] .ops-card:hover {
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.45),
+    0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .ops-card--offline {
+  background: #3d2426;
+  border-color: rgba(239, 83, 80, 0.35);
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.32),
+    0 2px 4px rgba(198, 40, 40, 0.18);
+}
+
+[data-theme="dark"] .ops-card--offline:hover {
+  box-shadow:
+    0 8px 24px rgba(198, 40, 40, 0.22),
+    0 2px 6px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="dark"] .ops-card--tint-pos {
+  background: #1e2e22;
+  border-color: rgba(129, 199, 132, 0.35);
+}
+
+[data-theme="dark"] .ops-card--tint-neg {
+  background: #3d2024;
+  border-color: rgba(239, 83, 80, 0.4);
+}
+
+[data-theme="dark"] .ops-card__title-icon {
+  color: #90caf9;
+}
+
+[data-theme="dark"] .da-tenant-ms__clear:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .da-tenant-ms__opt:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .da-tenant-ms__panel {
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="dark"] .da-tenant-ms__search {
+  background: var(--surface-card);
+  color: var(--text);
+}
+
+[data-theme="dark"] .fw-map-card-tooltip.leaflet-tooltip {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
 }

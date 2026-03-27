@@ -4,6 +4,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    try {
+      var t = localStorage.getItem("sophos-central-theme");
+      if (t !== "dark" && t !== "light")
+        t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+    } catch (e) {}
+  </script>
+
   <title>Firewall location — Help — SFOS Central Firewall Management</title>
   <link rel="stylesheet" href="help-doc.css" />
 </head>

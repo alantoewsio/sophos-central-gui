@@ -9,6 +9,47 @@
   };
 
   const UI_STATE_KEY = "sophos-central-ui-v1";
+  const THEME_STORAGE_KEY = "sophos-central-theme";
+
+  function isDarkThemeActive() {
+    return document.documentElement.getAttribute("data-theme") === "dark";
+  }
+
+  function syncUserMenuThemeButton() {
+    const btn = document.getElementById("user-menu-theme");
+    if (!btn) return;
+    const dark = isDarkThemeActive();
+    const moon = btn.querySelector(".user-menu__theme-icon--moon");
+    const sun = btn.querySelector(".user-menu__theme-icon--sun");
+    if (moon && sun) {
+      if (dark) {
+        moon.setAttribute("hidden", "");
+        sun.removeAttribute("hidden");
+      } else {
+        sun.setAttribute("hidden", "");
+        moon.removeAttribute("hidden");
+      }
+    }
+    btn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+    btn.setAttribute("title", dark ? "Light mode" : "Dark mode");
+  }
+
+  function applyColorTheme(mode) {
+    const dark = mode === "dark";
+    if (dark) document.documentElement.setAttribute("data-theme", "dark");
+    else document.documentElement.removeAttribute("data-theme");
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, dark ? "dark" : "light");
+    } catch {
+      /* ignore */
+    }
+    syncUserMenuThemeButton();
+    refreshFwMapBaseTilesForTheme();
+  }
+
+  function toggleColorTheme() {
+    applyColorTheme(isDarkThemeActive() ? "light" : "dark");
+  }
 
   function readUiState() {
     try {
@@ -30,12 +71,31 @@
   }
 
   let persistTimer = null;
+  let operationsUiServerTimer = null;
+
+  async function persistOperationsUiToServer() {
+    try {
+      const ops = collectUiState().operations;
+      await apiRequestJson("/api/me/operations-ui", {
+        method: "PATCH",
+        body: JSON.stringify(ops),
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
   function schedulePersistUiState() {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
       persistTimer = null;
       writeUiState(collectUiState());
     }, 60);
+    if (operationsUiServerTimer) clearTimeout(operationsUiServerTimer);
+    operationsUiServerTimer = setTimeout(() => {
+      operationsUiServerTimer = null;
+      void persistOperationsUiToServer();
+    }, 600);
   }
 
   function getActiveTabName() {
@@ -45,7 +105,19 @@
   }
 
   window.addEventListener("beforeunload", () => {
-    writeUiState(collectUiState());
+    const state = collectUiState();
+    writeUiState(state);
+    try {
+      fetch("/api/me/operations-ui", {
+        method: "PATCH",
+        body: JSON.stringify(state.operations),
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch {
+      /* ignore */
+    }
   });
 
   function escapeHtml(s) {
@@ -112,8 +184,9 @@
   /**
    * @param {string|number|Date} iso
    * @param {boolean} [extendedMonthsYears] When true, ages ≥30 days use months; ≥365 days use years (groups Updated at).
+   * @param {boolean} [shortMonthLabel] When true with extendedMonthsYears, months render as "mth" / "mths".
    */
-  function formatSyncLastRelative(iso, extendedMonthsYears) {
+  function formatSyncLastRelative(iso, extendedMonthsYears, shortMonthLabel) {
     if (!iso) return "—";
     const d = new Date(iso);
     const t = d.getTime();
@@ -137,10 +210,17 @@
     }
     if (days < 365) {
       const months = Math.max(1, Math.floor(days / 30));
+      if (shortMonthLabel) {
+        return months === 1 ? "1 mth ago" : `${months} mths ago`;
+      }
       return `${months} month${months === 1 ? "" : "s"} ago`;
     }
     const years = Math.max(1, Math.floor(days / 365));
     return `${years} year${years === 1 ? "" : "s"} ago`;
+  }
+
+  function formatStateChangeRelative(iso) {
+    return formatSyncLastRelative(iso, true, true);
   }
 
   const CRED_ID_TYPE_BAR_ORDER = ["tenant", "partner", "organization", "unknown"];
@@ -172,13 +252,6 @@
     if (!el) return;
     const byType = data?.credential_counts_by_id_type;
     el.textContent = formatCredentialCountsByIdType(byType ?? {});
-  }
-
-  function updateAppSyncIntervalFromPayload(data) {
-    const el = document.getElementById("app-sync-interval-value");
-    if (!el) return;
-    const s = data?.sync_interval_summary;
-    el.textContent = s != null && String(s).trim() !== "" ? String(s) : "—";
   }
 
   /** From /api/sync/status when the browser is not driving progress (e.g. scheduler). */
@@ -296,7 +369,6 @@
         el.textContent = "—";
         el.removeAttribute("title");
         updateAppSyncCredCountsFromPayload(null);
-        updateAppSyncIntervalFromPayload(null);
         lastServerSyncActivity = {
           busy: false,
           credential_name: null,
@@ -308,7 +380,6 @@
       }
       const data = await r.json();
       updateAppSyncCredCountsFromPayload(data);
-      updateAppSyncIntervalFromPayload(data);
       lastServerSyncActivity = {
         busy: Boolean(data?.sync_busy),
         credential_name:
@@ -343,7 +414,6 @@
       el.textContent = "—";
       el.removeAttribute("title");
       updateAppSyncCredCountsFromPayload(null);
-      updateAppSyncIntervalFromPayload(null);
       lastServerSyncActivity = {
         busy: false,
         credential_name: null,
@@ -394,8 +464,6 @@
       el.textContent = "—";
       el.removeAttribute("title");
     }
-    const intEl = document.getElementById("app-sync-interval-value");
-    if (intEl) intEl.textContent = "—";
     const credEl = document.getElementById("app-sync-cred-counts");
     if (credEl) credEl.textContent = "—";
     const progEl = document.getElementById("app-sync-progress");
@@ -838,21 +906,11 @@
       );
       closeUserDropdown();
     });
-    document.getElementById("user-menu-theme-placeholder")?.addEventListener("click", (ev) => {
+    document.getElementById("user-menu-theme")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      const btn = ev.currentTarget;
-      const moon = btn?.querySelector?.(".user-menu__theme-icon--moon");
-      const sun = btn?.querySelector?.(".user-menu__theme-icon--sun");
-      if (!moon || !sun) return;
-      const showingSun = !sun.hasAttribute("hidden");
-      if (showingSun) {
-        sun.setAttribute("hidden", "");
-        moon.removeAttribute("hidden");
-      } else {
-        sun.removeAttribute("hidden");
-        moon.setAttribute("hidden", "");
-      }
+      toggleColorTheme();
     });
+    syncUserMenuThemeButton();
     document.getElementById("user-menu-logout")?.addEventListener("click", async () => {
       closeUserDropdown();
       try {
@@ -1426,6 +1484,9 @@
 
   const INCREMENTAL_SYNC_INTERVAL_OPTIONS = [
     { value: "1m", label: "1 min" },
+    { value: "2m", label: "2 mins" },
+    { value: "3m", label: "3 mins" },
+    { value: "4m", label: "4 mins" },
     { value: "5m", label: "5 mins" },
     { value: "10m", label: "10 mins" },
     { value: "15m", label: "15 mins" },
@@ -2206,10 +2267,17 @@
       p.hidden = !on;
     });
     pageTitle.textContent = TITLES[name] || name;
+    const opsTitleCount = document.getElementById("page-title-ops-count");
+    if (opsTitleCount) {
+      opsTitleCount.hidden = name !== "operations";
+      if (name !== "operations") opsTitleCount.textContent = "";
+    }
     if (persist) schedulePersistUiState();
     hideFwMapHoverPortalNow();
-    if (name === "operations") startOperationsAutoRefresh();
-    else stopOperationsAutoRefresh();
+    if (name === "operations") {
+      startOperationsAutoRefresh();
+      renderOperationsView();
+    } else stopOperationsAutoRefresh();
     const lazyFwMapInit =
       (name === "dashboard" && !dashFwMap) || (name === "firewalls" && !panelFwMap);
     if (lazyFwMapInit) {
@@ -2249,8 +2317,8 @@
     if (visibleEl("lc-cols-modal")) return "modal-table-columns.html#licenses";
     if (visibleEl("gr-create-group-modal")) return "modal-create-firewall-group.html";
     if (visibleEl("fw-firmware-batch-modal")) return "modal-firmware.html#batch";
-    if (visibleEl("fw-firmware-modal")) return "modal-firmware.html#single";
     if (visibleEl("fw-delete-local-modal")) return "modal-delete-local.html";
+    if (visibleEl("gr-delete-groups-modal")) return "page-groups.html";
     if (visibleEl("fw-location-modal")) return "modal-firewall-location.html";
     const profileModal = visibleEl("profile-modal");
     if (profileModal) {
@@ -2292,10 +2360,88 @@
     return pages[tab] || "page-dashboard.html";
   }
 
-  document.getElementById("btn-top-help")?.addEventListener("click", () => {
-    const url = helpDocUrl(resolveHelpTarget());
-    window.open(url, "_blank", "noopener,noreferrer");
-  });
+  function openContextHelpDoc() {
+    window.open(helpDocUrl(resolveHelpTarget()), "_blank", "noopener,noreferrer");
+  }
+
+  const helpMenuEl = document.getElementById("help-menu");
+  const helpMenuPageBtn = document.getElementById("help-menu-page");
+  let helpMenuOpenTrigger = null;
+
+  function closeHelpMenu() {
+    if (!helpMenuEl || helpMenuEl.hasAttribute("hidden")) return;
+    helpMenuEl.setAttribute("hidden", "");
+    document.querySelectorAll(".help-menu-trigger[aria-expanded='true']").forEach((el) => {
+      el.setAttribute("aria-expanded", "false");
+    });
+    helpMenuOpenTrigger = null;
+  }
+
+  function positionHelpMenu(anchor) {
+    if (!helpMenuEl) return;
+    const pad = 6;
+    const margin = 8;
+    helpMenuEl.removeAttribute("hidden");
+    const mw = helpMenuEl.offsetWidth;
+    const mh = helpMenuEl.offsetHeight;
+    const rect = anchor.getBoundingClientRect();
+    let left = rect.right - mw;
+    left = Math.max(margin, Math.min(left, window.innerWidth - mw - margin));
+    let top = rect.bottom + pad;
+    if (top + mh > window.innerHeight - margin) {
+      top = rect.top - mh - pad;
+    }
+    top = Math.max(margin, Math.min(top, window.innerHeight - mh - margin));
+    helpMenuEl.style.left = `${Math.round(left)}px`;
+    helpMenuEl.style.top = `${Math.round(top)}px`;
+  }
+
+  function toggleHelpMenu(anchor) {
+    if (!helpMenuEl) return;
+    const wasOpen = !helpMenuEl.hasAttribute("hidden") && helpMenuOpenTrigger === anchor;
+    closeHelpMenu();
+    if (wasOpen) return;
+    helpMenuOpenTrigger = anchor;
+    anchor.setAttribute("aria-expanded", "true");
+    positionHelpMenu(anchor);
+  }
+
+  (function initHelpMenu() {
+    if (!helpMenuEl) return;
+    document.querySelectorAll(".help-menu-trigger").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleHelpMenu(btn);
+      });
+    });
+    helpMenuPageBtn?.addEventListener("click", () => {
+      openContextHelpDoc();
+      closeHelpMenu();
+    });
+    document.getElementById("help-menu-bug")?.addEventListener("click", () => {
+      closeHelpMenu();
+    });
+    document.addEventListener("click", (e) => {
+      if (helpMenuEl.hasAttribute("hidden")) return;
+      const t = e.target;
+      if (helpMenuEl.contains(t)) return;
+      if (t.closest?.(".help-menu-trigger")) return;
+      closeHelpMenu();
+    });
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key !== "Escape") return;
+        if (helpMenuEl.hasAttribute("hidden")) return;
+        closeHelpMenu();
+        e.preventDefault();
+        e.stopPropagation();
+      },
+      true,
+    );
+    window.addEventListener("resize", closeHelpMenu);
+  })();
 
   const appShell = document.getElementById("app-shell");
   const sidebarToggle = document.getElementById("app-sidebar-toggle");
@@ -3878,12 +4024,6 @@
         e.preventDefault();
         return;
       }
-      const fwm = document.getElementById("fw-firmware-modal");
-      if (fwm && !fwm.hidden) {
-        closeFwFirmwareUpgradeModal();
-        e.preventDefault();
-        return;
-      }
       const licenseFlyout = document.getElementById("license-flyout");
       if (licenseFlyout && !licenseFlyout.hidden) {
         closeLicenseSubscriptionsFlyout();
@@ -4210,6 +4350,25 @@
   /* ---------- Firewalls ---------- */
   let fwRaw = [];
   let fwPrepared = [];
+  /** IP → { lat, lon } | null (failed lookup). Reused across firewalls sharing the same external IP. */
+  const fwGeoipByIp = new Map();
+  const fwGeoipInflight = new Set();
+  /** Firewall id → { lat, lon } when DB geo is unset; map + flyout use this as a hint only. */
+  const fwMapGeoipGuess = new Map();
+
+  /** Stored Sophos/geo DB coordinates, or approximate hint from first external IPv4. */
+  function fwRowMapLatLng(row) {
+    if (!row) return null;
+    if (row.geo_lat != null && row.geo_lon != null) {
+      return { lat: row.geo_lat, lon: row.geo_lon };
+    }
+    const g = fwMapGeoipGuess.get(row._id);
+    if (g && Number.isFinite(g.lat) && Number.isFinite(g.lon)) {
+      return { lat: g.lat, lon: g.lon };
+    }
+    return null;
+  }
+
   let dashFwMap = null;
   let panelFwMap = null;
   let dashFwLayer = null;
@@ -4237,6 +4396,11 @@
   let fwHoverViewportListeners = false;
   let _lastFwDashMapMarkerSig = "";
   let _lastFwPanelMapMarkerSig = "";
+  /** Per-map stack of firewall ids centered before the latest dot-click (session only). */
+  let fwDashMapCenterPastIds = [];
+  let fwDashMapLastCenteredId = null;
+  let fwPanelMapCenterPastIds = [];
+  let fwPanelMapLastCenteredId = null;
   /** Distinct `firmware_versions.version` values for the Firmware updates facet. */
   let fwFirmwareVersionCatalog = [];
   const fwFilterState = {};
@@ -4550,31 +4714,6 @@
     );
   }
 
-  let fwFirmwareModalFocusBefore = null;
-
-  function closeFwFirmwareUpgradeModal() {
-    const m = document.getElementById("fw-firmware-modal");
-    if (!m || m.hidden) return;
-    m.hidden = true;
-    m.setAttribute("aria-hidden", "true");
-    document.body.style.overflow = "";
-    if (fwFirmwareModalFocusBefore && typeof fwFirmwareModalFocusBefore.focus === "function") {
-      fwFirmwareModalFocusBefore.focus();
-    }
-    fwFirmwareModalFocusBefore = null;
-  }
-
-  function formatFwFirmwareModalTitle(data) {
-    const host =
-      data?.hostname != null && String(data.hostname).trim() !== ""
-        ? String(data.hostname)
-        : "Firewall";
-    const curRaw = data?.current_version;
-    const cur =
-      curRaw != null && String(curRaw).trim() !== "" ? String(curRaw).trim() : null;
-    return cur ? `${host} · ${cur}` : host;
-  }
-
   function renderFwFirmwareVersionCardInner(d) {
     const size =
       d.size != null && String(d.size).trim() !== "" ? escapeHtml(String(d.size)) : null;
@@ -4610,48 +4749,7 @@
     return `${metaNote}${dl}${newsBlock}${bugsBlock}`;
   }
 
-  function renderFwFirmwareModalBody(data) {
-    const vers = Array.isArray(data?.available_versions) ? data.available_versions : [];
-    if (vers.length === 0) {
-      return '<p class="muted">No upgrade versions listed in the local database for this firewall.</p>';
-    }
-
-    const details = Array.isArray(data?.version_details) ? data.version_details : [];
-    const tabButtons = vers
-      .map((v, idx) => {
-        const label = escapeHtml(String(v));
-        const vAttr = escapeAttr(String(v));
-        const active = idx === 0 ? " is-active" : "";
-        const selected = idx === 0 ? "true" : "false";
-        return `<button type="button" role="tab" id="fw-fw-tab-${idx}" class="fw-firmware-modal__tab${active}" aria-selected="${selected}" aria-controls="fw-fw-panel-${idx}" tabindex="${idx === 0 ? "0" : "-1"}" data-fw-tab-version="${vAttr}">${label}</button>`;
-      })
-      .join("");
-
-    const panels = vers
-      .map((v, idx) => {
-        const d =
-          details[idx] ??
-          ({ version: v, size: null, bugs: [], news: [], in_database: false });
-        const ver = escapeHtml(String(d.version || v || "—"));
-        const inner = renderFwFirmwareVersionCardInner(d);
-        const hiddenAttr = idx === 0 ? "" : " hidden";
-        return `<div role="tabpanel" id="fw-fw-panel-${idx}" class="fw-firmware-modal__tab-panel" aria-labelledby="fw-fw-tab-${idx}"${hiddenAttr}><div class="fw-firmware-card"><h4 class="fw-firmware-card__title">${ver}</h4>${inner}</div></div>`;
-      })
-      .join("");
-
-    return `<div class="fw-firmware-modal__layout">
-      <div class="fw-firmware-modal__tabs" role="tablist" aria-label="Available firmware versions" aria-orientation="horizontal">${tabButtons}</div>
-      <button type="button" class="fw-firmware-modal__notes-toggle" id="fw-single-notes-toggle" aria-expanded="false" aria-controls="fw-single-notes-region">
-        <span class="fw-firmware-modal__notes-toggle-label">Release notes &amp; details</span>
-        <span class="fw-firmware-modal__notes-toggle-chev" aria-hidden="true">▼</span>
-      </button>
-      <div id="fw-single-notes-region" class="fw-firmware-modal__notes-region" role="region" aria-labelledby="fw-single-notes-toggle" hidden>
-        <div class="fw-firmware-modal__tab-panels">${panels}</div>
-      </div>
-    </div>`;
-  }
-
-  /** Batch upgrade modal: one tab per unique target version, same card content as single-firewall modal. */
+  /** Batch upgrade modal: one tab per unique target version in the collapsible notes region. */
   function renderFwFirmwareBatchNotesBody(vers, details) {
     if (!Array.isArray(vers) || vers.length === 0) {
       return "";
@@ -4739,108 +4837,6 @@
       else p.setAttribute("hidden", "");
     });
     setFwFirmwareNotesExpanded(root, true);
-  }
-
-  function activateFwFirmwareModalTab(modalRoot, index) {
-    const list = modalRoot.querySelector(".fw-firmware-modal__tabs[role='tablist']");
-    if (!list) return;
-    const tabs = [...list.querySelectorAll('[role="tab"]')];
-    const panels = [...modalRoot.querySelectorAll(".fw-firmware-modal__tab-panel")];
-    if (!tabs.length || tabs.length !== panels.length) return;
-    const i = Math.max(0, Math.min(index, tabs.length - 1));
-    tabs.forEach((t, j) => {
-      const on = j === i;
-      t.classList.toggle("is-active", on);
-      t.setAttribute("aria-selected", on ? "true" : "false");
-      t.setAttribute("tabindex", on ? "0" : "-1");
-    });
-    panels.forEach((p, j) => {
-      if (j === i) p.removeAttribute("hidden");
-      else p.setAttribute("hidden", "");
-    });
-    setFwFirmwareNotesExpanded(modalRoot, true);
-  }
-
-  async function openFwFirmwareUpgradeModal(firewallId, options) {
-    const opts = options && typeof options === "object" ? options : {};
-    const targetVerRaw = opts.targetVersion;
-    const wantTargetVer = targetVerRaw != null && String(targetVerRaw).trim() !== "";
-
-    const m = document.getElementById("fw-firmware-modal");
-    const titleEl = document.getElementById("fw-firmware-modal-title");
-    const bodyEl = document.getElementById("fw-firmware-modal-body");
-    if (!m || !titleEl || !bodyEl || !firewallId) return;
-    fwFirmwareModalFocusBefore = document.activeElement;
-    m.hidden = false;
-    m.setAttribute("aria-hidden", "false");
-    document.body.style.overflow = "hidden";
-    titleEl.textContent = "Loading…";
-    bodyEl.innerHTML = '<p class="muted">Loading firmware details…</p>';
-    document.getElementById("fw-firmware-modal-close")?.focus();
-
-    try {
-      const data = await loadJson(
-        `/api/firewalls/${encodeURIComponent(firewallId)}/firmware-upgrades`
-      );
-      titleEl.textContent = formatFwFirmwareModalTitle(data);
-      bodyEl.innerHTML = renderFwFirmwareModalBody(data);
-      if (wantTargetVer) {
-        const idx = findFwFirmwareTabIndexByVersion(m, String(targetVerRaw).trim());
-        if (idx >= 0) activateFwFirmwareModalTab(m, idx);
-        else setFwFirmwareNotesExpanded(m, Boolean(opts.expandNotes) || wantTargetVer);
-      } else {
-        setFwFirmwareNotesExpanded(m, Boolean(opts.expandNotes));
-      }
-    } catch (e) {
-      console.error(e);
-      titleEl.textContent = "Firmware upgrades";
-      bodyEl.innerHTML =
-        '<p class="muted">Could not load firmware upgrade details. Check the console or try again.</p>';
-    }
-  }
-
-  function initFwFirmwareUpgradeModal() {
-    const m = document.getElementById("fw-firmware-modal");
-    const closeBtn = document.getElementById("fw-firmware-modal-close");
-    if (!m) return;
-    closeBtn?.addEventListener("click", closeFwFirmwareUpgradeModal);
-    m.querySelector(".fw-firmware-modal__backdrop")?.addEventListener("click", closeFwFirmwareUpgradeModal);
-
-    m.addEventListener("click", (e) => {
-      const notesToggle = e.target.closest("button.fw-firmware-modal__notes-toggle");
-      if (notesToggle && m.contains(notesToggle)) {
-        e.preventDefault();
-        toggleFwFirmwareNotesCollapse(m);
-        return;
-      }
-      const tab = e.target.closest("button.fw-firmware-modal__tab");
-      if (!tab || !m.contains(tab)) return;
-      const list = tab.closest(".fw-firmware-modal__tabs");
-      if (!list) return;
-      const tabs = [...list.querySelectorAll('[role="tab"]')];
-      const idx = tabs.indexOf(tab);
-      if (idx < 0) return;
-      activateFwFirmwareModalTab(m, idx);
-    });
-
-    m.addEventListener("keydown", (e) => {
-      const tab = e.target.closest("button.fw-firmware-modal__tab");
-      if (!tab || !m.contains(tab)) return;
-      const list = tab.closest(".fw-firmware-modal__tabs");
-      if (!list) return;
-      const tabs = [...list.querySelectorAll('[role="tab"]')];
-      const i = tabs.indexOf(tab);
-      if (i < 0) return;
-      let next = i;
-      if (e.key === "ArrowRight") next = (i + 1) % tabs.length;
-      else if (e.key === "ArrowLeft") next = (i - 1 + tabs.length) % tabs.length;
-      else if (e.key === "Home") next = 0;
-      else if (e.key === "End") next = tabs.length - 1;
-      else return;
-      e.preventDefault();
-      activateFwFirmwareModalTab(m, next);
-      tabs[next]?.focus();
-    });
   }
 
   /** Firewalls table: show model prefix before first underscore (full value if none). */
@@ -5127,8 +5123,8 @@
         return `<td>${escapeHtml(row.external_ips)}</td>`;
       case "location": {
         const has = row.has_location === 1;
-        const label = has ? "Update" : "Set";
-        const title = has ? "Update map location" : "Set map location";
+        const label = has ? "Change" : "Set";
+        const title = has ? "Change map location" : "Set map location";
         return `<td><button type="button" class="cell-link fw-loc-btn" data-fw-id="${escapeHtml(row._id)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${escapeHtml(label)}</button></td>`;
       }
       case "tenant_name":
@@ -5205,6 +5201,14 @@
   function prepareFirewall(row) {
     const caps = parseJsonArray(row.capabilities_json);
     const ips = parseJsonArray(row.external_ipv4_addresses_json);
+    let first_external_ipv4 = "";
+    for (const x of ips) {
+      const s = String(x ?? "").trim();
+      if (s) {
+        first_external_ipv4 = s;
+        break;
+      }
+    }
     const tags = caps.map((c) => `<span class="tag-pill">${escapeHtml(c)}</span>`).join("");
     const healthy = firewallStatusHealthy(row);
     const approvalPending =
@@ -5273,6 +5277,7 @@
       connected: row.connected,
       suspended: row.suspended,
       external_ips: ips.length ? ips.join(", ") : "—",
+      first_external_ipv4,
       tenant_name: row.tenant_name || "—",
       created_at: row.created_at || "",
       state_changed_at: row.state_changed_at || "",
@@ -5306,9 +5311,121 @@
     return Array.isArray(avail) && avail.length > 0;
   }
 
-  const FW_OSM_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-  const FW_OSM_ATTR =
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+  async function fetchGeoipForIPv4(ip) {
+    if (!ip) return null;
+    if (fwGeoipByIp.has(ip)) {
+      const c = fwGeoipByIp.get(ip);
+      return c || null;
+    }
+    try {
+      const data = await loadJson(`/api/geoip?ip=${encodeURIComponent(ip)}`);
+      if (!data || !data.ok) {
+        fwGeoipByIp.set(ip, null);
+        return null;
+      }
+      const lat = typeof data.latitude === "number" ? data.latitude : parseFloat(data.latitude);
+      const lon = typeof data.longitude === "number" ? data.longitude : parseFloat(data.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        fwGeoipByIp.set(ip, null);
+        return null;
+      }
+      const val = { lat, lon };
+      fwGeoipByIp.set(ip, val);
+      return val;
+    } catch {
+      fwGeoipByIp.set(ip, null);
+      return null;
+    }
+  }
+
+  function scheduleFwGeoipGuesses() {
+    let applied = false;
+    for (const row of fwPrepared) {
+      if (row.has_location === 1 || !row.first_external_ipv4) continue;
+      const cached = fwGeoipByIp.get(row.first_external_ipv4);
+      if (cached && !fwMapGeoipGuess.has(row._id)) {
+        fwMapGeoipGuess.set(row._id, cached);
+        applied = true;
+      }
+    }
+    if (applied) {
+      refreshFwMapMarkers({ refit: false });
+      if (fwDetailFlyoutOpenId) refreshFwDetailFlyoutVisuals();
+    }
+
+    for (const row of fwPrepared) {
+      if (row.has_location === 1 || !row.first_external_ipv4) continue;
+      if (fwMapGeoipGuess.has(row._id)) continue;
+      const ip = row.first_external_ipv4;
+      if (fwGeoipByIp.has(ip) && fwGeoipByIp.get(ip) == null) continue;
+      if (fwGeoipInflight.has(ip)) continue;
+      fwGeoipInflight.add(ip);
+      fetchGeoipForIPv4(ip).then((res) => {
+        fwGeoipInflight.delete(ip);
+        if (!res) return;
+        let upd = false;
+        for (const r of fwPrepared) {
+          if (r.has_location === 1) continue;
+          if (r.first_external_ipv4 !== ip) continue;
+          fwMapGeoipGuess.set(r._id, res);
+          upd = true;
+        }
+        if (upd) {
+          refreshFwMapMarkers({ refit: false });
+          if (fwDetailFlyoutOpenId) refreshFwDetailFlyoutVisuals();
+        }
+      });
+    }
+  }
+
+  function finalizeFwPreparedState() {
+    const ids = new Set(fwPrepared.map((r) => r._id));
+    for (const id of fwMapGeoipGuess.keys()) {
+      if (!ids.has(id)) fwMapGeoipGuess.delete(id);
+    }
+    for (const r of fwPrepared) {
+      if (r.has_location === 1) fwMapGeoipGuess.delete(r._id);
+    }
+    scheduleFwGeoipGuesses();
+  }
+
+  /** Carto Voyager: OSM data, no DEM hillshade; water reads clearly blue (vs. pale Positron/light_all). */
+  const FW_MAP_TILE_URL =
+    "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png";
+  /** Carto Dark Matter (dark_all): land/water tuned for dark UI. */
+  const FW_MAP_TILE_URL_DARK =
+    "https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png";
+  const FW_MAP_TILE_ATTR =
+    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+  const FW_MAP_TILE_LAYER_BASE = {
+    subdomains: "abcd",
+    maxZoom: 19,
+    noWrap: true,
+  };
+
+  function fwMapTileUrlForDocTheme() {
+    return isDarkThemeActive() ? FW_MAP_TILE_URL_DARK : FW_MAP_TILE_URL;
+  }
+
+  function attachFwBaseTileLayer(map, attribution) {
+    const layer = L.tileLayer(fwMapTileUrlForDocTheme(), {
+      ...FW_MAP_TILE_LAYER_BASE,
+      attribution: attribution === undefined ? FW_MAP_TILE_ATTR : attribution,
+    });
+    layer.addTo(map);
+    map._fwBaseTileLayer = layer;
+    return layer;
+  }
+
+  function refreshFwMapBaseTilesForTheme() {
+    if (typeof L === "undefined") return;
+    const url = fwMapTileUrlForDocTheme();
+    const maps = [dashFwMap, panelFwMap, fwLocPickMap, fwDetailFlyoutMap, fwClusterLensMap];
+    for (const m of maps) {
+      const tl = m && m._fwBaseTileLayer;
+      if (tl && typeof tl.setUrl === "function") tl.setUrl(url);
+    }
+  }
 
   const FW_MAP_H_KEY_DASH = "sophos-central-fw-map-height-dashboard-v1";
   const FW_MAP_H_KEY_PANEL = "sophos-central-fw-map-height-firewalls-v1";
@@ -5549,11 +5666,7 @@
     const el = document.getElementById("dash-fw-map");
     if (!el) return;
     dashFwMap = L.map(el, fwMapBaseOptions());
-    L.tileLayer(FW_OSM_TILE_URL, {
-      maxZoom: 19,
-      attribution: FW_OSM_ATTR,
-      noWrap: true,
-    }).addTo(dashFwMap);
+    attachFwBaseTileLayer(dashFwMap);
     dashFwLayer = L.layerGroup().addTo(dashFwMap);
     dashFwClusterLayer = L.layerGroup().addTo(dashFwMap);
     dashFwEdgeLayer = L.layerGroup().addTo(dashFwMap);
@@ -5573,11 +5686,7 @@
     const el = document.getElementById("panel-fw-map");
     if (!el) return;
     panelFwMap = L.map(el, fwMapBaseOptions());
-    L.tileLayer(FW_OSM_TILE_URL, {
-      maxZoom: 19,
-      attribution: FW_OSM_ATTR,
-      noWrap: true,
-    }).addTo(panelFwMap);
+    attachFwBaseTileLayer(panelFwMap);
     panelFwLayer = L.layerGroup().addTo(panelFwMap);
     panelFwClusterLayer = L.layerGroup().addTo(panelFwMap);
     panelFwEdgeLayer = L.layerGroup().addTo(panelFwMap);
@@ -5593,7 +5702,8 @@
   function collectFwMapLatLngsFromRows(rows) {
     const out = [];
     rows.forEach((row) => {
-      if (row.geo_lat != null && row.geo_lon != null) out.push([row.geo_lat, row.geo_lon]);
+      const ll = fwRowMapLatLng(row);
+      if (ll) out.push([ll.lat, ll.lon]);
     });
     return out;
   }
@@ -5601,15 +5711,16 @@
   function fwMapMarkerDataSignature(rows) {
     if (!rows || rows.length === 0) return "0";
     return `${rows.length}\u0001${rows
-      .map((r) =>
-        [
+      .map((r) => {
+        const ll = fwRowMapLatLng(r);
+        return [
           String(r.firewall_id ?? r._id ?? ""),
-          r.geo_lat != null ? String(r.geo_lat) : "",
-          r.geo_lon != null ? String(r.geo_lon) : "",
+          ll ? String(ll.lat) : "",
+          ll ? String(ll.lon) : "",
           String(r.connected ?? ""),
           String(r.suspended ?? ""),
-        ].join("\u0002")
-      )
+        ].join("\u0002");
+      })
       .join("\u0001")}`;
   }
 
@@ -5622,8 +5733,8 @@
     return L.divIcon({
       className: "fw-map-pin",
       html: `<span class="fw-map-pin__dot" style="background-color:${color}"></span>`,
-      iconSize: [18, 18],
-      iconAnchor: [9, 9],
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
     });
   }
 
@@ -5673,10 +5784,10 @@
 
   const FW_MAP_EDGE_GAP_PX = 22;
   /** Center-to-center distance (px) below which on-screen markers merge into one cluster. */
-  const FW_MAP_CLUSTER_MERGE_PX = 18;
-  /** Half of on-screen dot footprint (14px dot + 2px border), in px from marker anchor. */
-  const FW_MAP_DOT_RADIUS_PX = 9;
-  const FW_MAP_CLUSTER_MIN_DIAM_PX = 34;
+  const FW_MAP_CLUSTER_MERGE_PX = 22;
+  /** Half of on-screen dot footprint (18px dot + 2px border), in px from marker anchor. */
+  const FW_MAP_DOT_RADIUS_PX = 11;
+  const FW_MAP_CLUSTER_MIN_DIAM_PX = 38;
   const FW_MAP_LENS_SIZE_PX = 260;
   const FW_MAP_LENS_MIN_PAIR_SEP_PX = 28;
   /** Padding for lens fitBounds: large enough that pins stay inside the circular clip (square map is masked to a circle). */
@@ -5789,8 +5900,9 @@
     markerLayer.eachLayer((layer) => {
       if (!(layer instanceof L.Marker) || !layer.fwRow) return;
       const row = layer.fwRow;
-      if (row.geo_lat == null || row.geo_lon == null) return;
-      const ll = L.latLng(row.geo_lat, row.geo_lon);
+      const rowLl = fwRowMapLatLng(row);
+      if (!rowLl) return;
+      const ll = L.latLng(rowLl.lat, rowLl.lon);
       const t = map.latLngToContainerPoint(ll);
       const inGeo = bounds.contains(ll);
       const tIn = t.x >= xmin && t.x <= xmax && t.y >= ymin && t.y <= ymax;
@@ -5842,8 +5954,9 @@
     markerLayer.eachLayer((layer) => {
       if (!(layer instanceof L.Marker) || !layer.fwRow) return;
       const row = layer.fwRow;
-      if (row.geo_lat == null || row.geo_lon == null) return;
-      const ll = L.latLng(row.geo_lat, row.geo_lon);
+      const rowLl = fwRowMapLatLng(row);
+      if (!rowLl) return;
+      const ll = L.latLng(rowLl.lat, rowLl.lon);
       const t = map.latLngToContainerPoint(ll);
       const inGeo = bounds.contains(ll);
       const tIn = t.x >= xmin && t.x <= xmax && t.y >= ymin && t.y <= ymax;
@@ -6067,13 +6180,15 @@
     const eps = 1e-7;
     for (let i = 0; i < group.length; i++) {
       const a = group[i].row;
-      if (a.geo_lat == null || a.geo_lon == null) continue;
+      const aLl = fwRowMapLatLng(a);
+      if (!aLl) continue;
       for (let j = i + 1; j < group.length; j++) {
         const b = group[j].row;
-        if (b.geo_lat == null || b.geo_lon == null) continue;
+        const bLl = fwRowMapLatLng(b);
+        if (!bLl) continue;
         if (
-          Math.abs(a.geo_lat - b.geo_lat) < eps &&
-          Math.abs(a.geo_lon - b.geo_lon) < eps
+          Math.abs(aLl.lat - bLl.lat) < eps &&
+          Math.abs(aLl.lon - bLl.lon) < eps
         ) {
           return true;
         }
@@ -6116,12 +6231,15 @@
       zoomSnap: 0.25,
       zoomDelta: 0.25,
     });
-    L.tileLayer(FW_OSM_TILE_URL, {
-      maxZoom: 19,
-      attribution: "",
-      noWrap: true,
-    }).addTo(fwClusterLensMap);
-    const latlngs = group.map((g) => L.latLng(g.row.geo_lat, g.row.geo_lon));
+    attachFwBaseTileLayer(fwClusterLensMap, "");
+    const latlngs = group.map((g) => {
+      const ll = fwRowMapLatLng(g.row);
+      return ll ? L.latLng(ll.lat, ll.lon) : null;
+    });
+    if (latlngs.some((x) => x == null)) {
+      hideFwClusterLensNow();
+      return;
+    }
     const bounds = L.latLngBounds(latlngs);
     const geoCenter = bounds.getCenter();
     for (let i = 0; i < group.length; i++) {
@@ -6217,7 +6335,13 @@
       }
       hideFwClusterLensNow();
       hideFwMapHoverPortalNow();
-      const latlngs = group.map((g) => L.latLng(g.row.geo_lat, g.row.geo_lon));
+      const latlngs = group
+        .map((g) => {
+          const ll = fwRowMapLatLng(g.row);
+          return ll ? L.latLng(ll.lat, ll.lon) : null;
+        })
+        .filter((x) => x != null);
+      if (!latlngs.length) return;
       mainMap.fitBounds(L.latLngBounds(latlngs), { padding: [72, 72], maxZoom: 14, animate: true });
     });
   }
@@ -6411,6 +6535,100 @@
     });
   }
 
+  function fwMapStableRowId(row) {
+    if (!row) return null;
+    const id = row._id ?? row.firewall_id;
+    return id != null && id !== "" ? String(id) : null;
+  }
+
+  function findFwRowByIdForDashMap(fwId) {
+    if (!fwId) return null;
+    const k = String(fwId);
+    return fwPrepared.find((x) => String(x._id ?? x.firewall_id) === k) || null;
+  }
+
+  function findFwRowByIdForPanelMap(fwId) {
+    if (!fwId) return null;
+    const k = String(fwId);
+    const panelRows =
+      typeof fwController !== "undefined" && fwController?.getFullFilteredRows
+        ? fwController.getFullFilteredRows()
+        : fwPrepared;
+    const hit = panelRows.find((x) => String(x._id ?? x.firewall_id) === k);
+    if (hit) return hit;
+    return fwPrepared.find((x) => String(x._id ?? x.firewall_id) === k) || null;
+  }
+
+  function updateFwMapBackNavUi() {
+    const dashBtn = document.getElementById("dash-fw-map-back");
+    const panelBtn = document.getElementById("panel-fw-map-back");
+    if (dashBtn) {
+      const has = fwDashMapCenterPastIds.length > 0;
+      dashBtn.disabled = !has;
+      dashBtn.title = has ? "Previous firewall" : "No previous firewall";
+    }
+    if (panelBtn) {
+      const has = fwPanelMapCenterPastIds.length > 0;
+      panelBtn.disabled = !has;
+      panelBtn.title = has ? "Previous firewall" : "No previous firewall";
+    }
+  }
+
+  function recordFwMapDotCenter(map, row) {
+    const id = fwMapStableRowId(row);
+    if (!id) return;
+    if (map === dashFwMap) {
+      if (fwDashMapLastCenteredId && fwDashMapLastCenteredId !== id) {
+        fwDashMapCenterPastIds.push(fwDashMapLastCenteredId);
+      }
+      fwDashMapLastCenteredId = id;
+    } else if (map === panelFwMap) {
+      if (fwPanelMapLastCenteredId && fwPanelMapLastCenteredId !== id) {
+        fwPanelMapCenterPastIds.push(fwPanelMapLastCenteredId);
+      }
+      fwPanelMapLastCenteredId = id;
+    } else {
+      return;
+    }
+    updateFwMapBackNavUi();
+  }
+
+  function fwMapBackNavGo(map) {
+    if (typeof L === "undefined" || !map) return;
+    const past =
+      map === dashFwMap ? fwDashMapCenterPastIds : map === panelFwMap ? fwPanelMapCenterPastIds : null;
+    if (!past || past.length === 0) return;
+    let row = null;
+    let id = null;
+    while (past.length > 0 && !row) {
+      id = past.pop();
+      row =
+        map === dashFwMap ? findFwRowByIdForDashMap(id) : map === panelFwMap ? findFwRowByIdForPanelMap(id) : null;
+      if (row && !fwRowMapLatLng(row)) row = null;
+    }
+    updateFwMapBackNavUi();
+    if (!row || !id) return;
+    hideFwMapHoverPortalNow();
+    const ll = fwRowMapLatLng(row);
+    map.panTo(L.latLng(ll.lat, ll.lon), { animate: true, duration: 0.45, easeLinearity: 0.22 });
+    if (map === dashFwMap) fwDashMapLastCenteredId = id;
+    else if (map === panelFwMap) fwPanelMapLastCenteredId = id;
+  }
+
+  function initFwMapBackNavigation() {
+    const dashBtn = document.getElementById("dash-fw-map-back");
+    const panelBtn = document.getElementById("panel-fw-map-back");
+    if (dashBtn && !dashBtn.dataset.fwBackNavWired) {
+      dashBtn.dataset.fwBackNavWired = "1";
+      dashBtn.addEventListener("click", () => fwMapBackNavGo(dashFwMap));
+    }
+    if (panelBtn && !panelBtn.dataset.fwBackNavWired) {
+      panelBtn.dataset.fwBackNavWired = "1";
+      panelBtn.addEventListener("click", () => fwMapBackNavGo(panelFwMap));
+    }
+    updateFwMapBackNavUi();
+  }
+
   function attachFwMapMarkerClickToCenter(map, marker) {
     if (!map || !marker) return;
     marker.on("click", (ev) => {
@@ -6418,16 +6636,18 @@
         L.DomEvent.stopPropagation(ev.originalEvent);
       }
       const row = marker.fwRow;
-      if (!row || row.geo_lat == null || row.geo_lon == null) return;
+      const ll = row ? fwRowMapLatLng(row) : null;
+      if (!ll) return;
       hideFwMapHoverPortalNow();
-      map.panTo(L.latLng(row.geo_lat, row.geo_lon), { animate: true, duration: 0.45, easeLinearity: 0.22 });
+      recordFwMapDotCenter(map, row);
+      map.panTo(L.latLng(ll.lat, ll.lon), { animate: true, duration: 0.45, easeLinearity: 0.22 });
     });
   }
 
   function countFwRowsWithMapCoords(rows) {
     let n = 0;
     for (const row of rows) {
-      if (row.geo_lat != null && row.geo_lon != null) n++;
+      if (fwRowMapLatLng(row)) n++;
     }
     return n;
   }
@@ -6469,8 +6689,9 @@
     if (dashFwEdgeLayer) dashFwEdgeLayer.clearLayers();
     if (panelFwEdgeLayer) panelFwEdgeLayer.clearLayers();
     fwPrepared.forEach((row) => {
-      if (row.geo_lat == null || row.geo_lon == null) return;
-      const ll = [row.geo_lat, row.geo_lon];
+      const pos = fwRowMapLatLng(row);
+      if (!pos) return;
+      const ll = [pos.lat, pos.lon];
       const html = buildFwMapTooltipHtml(row);
       const icon = fwMapMarkerIconForRow(row);
       if (dashFwLayer) {
@@ -6481,8 +6702,9 @@
       }
     });
     panelRows.forEach((row) => {
-      if (row.geo_lat == null || row.geo_lon == null) return;
-      const ll = [row.geo_lat, row.geo_lon];
+      const pos = fwRowMapLatLng(row);
+      if (!pos) return;
+      const ll = [pos.lat, pos.lon];
       const html = buildFwMapTooltipHtml(row);
       const icon = fwMapMarkerIconForRow(row);
       if (panelFwLayer) {
@@ -6500,6 +6722,9 @@
     fwMapSyncMarkerLayers(panelFwMap, panelFwEdgeLayer, panelFwClusterLayer, panelFwLayer);
     _lastFwDashMapMarkerSig = fwMapMarkerDataSignature(fwPrepared);
     _lastFwPanelMapMarkerSig = fwMapMarkerDataSignature(panelRows);
+    // Leaflet often renders a blank tile layer if init ran before the container had its
+    // final size; invalidateSize after updates matches tab-switch and map-toggle behavior.
+    invalidateFwMapSizes();
   }
 
   function readFwMapSectionCollapsed(storageKey) {
@@ -6572,11 +6797,7 @@
     const lng = Number.isFinite(lng0) ? lng0 : 0;
     const z = Number.isFinite(lat0) && Number.isFinite(lng0) ? 12 : 2;
     fwLocPickMap = L.map(el, { scrollWheelZoom: true });
-    L.tileLayer(FW_OSM_TILE_URL, {
-      maxZoom: 19,
-      attribution: FW_OSM_ATTR,
-      noWrap: true,
-    }).addTo(fwLocPickMap);
+    attachFwBaseTileLayer(fwLocPickMap);
     fwLocPickMarker = L.marker([lat, lng], { draggable: true }).addTo(fwLocPickMap);
     fwLocPickMap.setView([lat, lng], z);
     fwLocPickMap.on("click", (e) => {
@@ -6604,7 +6825,7 @@
     fwLocModalFocusBefore = null;
   }
 
-  function openFwLocationModal(firewallId) {
+  async function openFwLocationModal(firewallId) {
     const m = document.getElementById("fw-location-modal");
     const titleEl = document.getElementById("fw-location-modal-title");
     const addrEl = document.getElementById("fw-location-address");
@@ -6620,10 +6841,29 @@
     m.hidden = false;
     m.setAttribute("aria-hidden", "false");
     document.body.style.overflow = "hidden";
-    titleEl.textContent = row.has_location === 1 ? "Update firewall location" : "Set firewall location";
+    titleEl.textContent = row.has_location === 1 ? "Change firewall location" : "Set firewall location";
     addrEl.value = "";
-    latEl.value = row.geo_lat != null ? String(row.geo_lat) : "";
-    lonEl.value = row.geo_lon != null ? String(row.geo_lon) : "";
+    let la = row.geo_lat;
+    let lo = row.geo_lon;
+    if (row.has_location !== 1) {
+      la = null;
+      lo = null;
+      const hint = fwRowMapLatLng(row);
+      if (hint) {
+        la = hint.lat;
+        lo = hint.lon;
+      } else if (row.first_external_ipv4) {
+        const g = await fetchGeoipForIPv4(row.first_external_ipv4);
+        if (fwLocEditingId === firewallId && g) {
+          la = g.lat;
+          lo = g.lon;
+          fwMapGeoipGuess.set(row._id, g);
+          refreshFwMapMarkers({ refit: false });
+        }
+      }
+    }
+    latEl.value = la != null ? String(la) : "";
+    lonEl.value = lo != null ? String(lo) : "";
     if (stEl) stEl.textContent = "";
     if (sugEl) {
       sugEl.hidden = true;
@@ -6631,12 +6871,8 @@
     }
     document.getElementById("fw-location-modal-close")?.focus();
     requestAnimationFrame(() => {
-      const la = row.geo_lat;
-      const lo = row.geo_lon;
-      ensureFwLocPickMap(
-        la != null ? la : null,
-        lo != null ? lo : null
-      );
+      if (fwLocEditingId !== firewallId) return;
+      ensureFwLocPickMap(la != null ? la : null, lo != null ? lo : null);
       invalidateFwMapSizes();
     });
   }
@@ -6729,11 +6965,14 @@
           method: "PATCH",
           body: JSON.stringify(payload),
         });
+        const savedFwIdForGuess = fwLocEditingId;
+        if (savedFwIdForGuess) fwMapGeoipGuess.delete(savedFwIdForGuess);
         const updated = await loadJson("/api/firewalls");
         fwRaw = updated;
         fwPrepared = fwRaw.map(prepareFirewall);
         applyFirewallRecencyTags(fwPrepared);
         buildFirewallFilters();
+        finalizeFwPreparedState();
         fwController.render();
         refreshFwMapMarkers();
         const savedFwId = fwLocEditingId;
@@ -6745,6 +6984,87 @@
         if (stEl) stEl.textContent = err.message || "Could not save location.";
       }
     });
+  }
+
+  function fwConnectivitySegmentClass(c) {
+    if (c === true) return "fw-conn-chart__seg fw-conn-chart__seg--up";
+    if (c === false) return "fw-conn-chart__seg fw-conn-chart__seg--down";
+    return "fw-conn-chart__seg fw-conn-chart__seg--unk";
+  }
+
+  function renderFwConnectivityChartHtml(data) {
+    const host = document.getElementById("fw-detail-connectivity-body");
+    if (!host) return;
+    const segments = Array.isArray(data.segments) ? data.segments : [];
+    const winStart = data.window_start ? Date.parse(data.window_start) : NaN;
+    const winEnd = data.window_end ? Date.parse(data.window_end) : NaN;
+    if (!Number.isFinite(winStart) || !Number.isFinite(winEnd) || winEnd <= winStart) {
+      host.innerHTML = '<p class="muted">Could not build connectivity timeline.</p>';
+      return;
+    }
+    const span = winEnd - winStart;
+    const VB_W = 1000;
+    const VB_H = 52;
+    const padY = 10;
+    const barH = VB_H - padY * 2;
+    const eventCount = Number(data.event_count) || 0;
+
+    if (segments.length === 0) {
+      host.innerHTML =
+        '<p class="muted">No connectivity history in sync change logs yet. History appears after Central sync records firewall inserts or connection state changes.</p>';
+      return;
+    }
+
+    function xAt(ms) {
+      return ((ms - winStart) / span) * VB_W;
+    }
+
+    const rects = [];
+    for (const seg of segments) {
+      const s = Date.parse(seg.start);
+      const e = Date.parse(seg.end);
+      if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) continue;
+      const x0 = Math.min(VB_W, Math.max(0, xAt(s)));
+      const x1 = Math.min(VB_W, Math.max(0, xAt(e)));
+      const w = Math.max(0.35, x1 - x0);
+      rects.push(
+        `<rect class="${fwConnectivitySegmentClass(seg.connected)}" x="${x0.toFixed(2)}" y="${padY}" width="${w.toFixed(
+          2
+        )}" height="${barH}" rx="2" />`
+      );
+    }
+
+    const startLabel = escapeHtml(new Date(winStart).toLocaleDateString());
+    const endLabel = escapeHtml(new Date(winEnd).toLocaleDateString());
+    const ariaSummary = `Last ${Number(data.days) || 30} days from ${data.window_start || ""} to ${
+      data.window_end || ""
+    }; ${eventCount} sync change rows for this firewall.`;
+    host.innerHTML = `<div class="fw-detail-flyout__connectivity-chart">
+      <svg viewBox="0 0 ${VB_W} ${VB_H}" preserveAspectRatio="none" role="img" aria-label="${escapeAttr(ariaSummary)}">
+        ${rects.join("")}
+      </svg>
+      <div class="fw-detail-flyout__connectivity-legend" aria-hidden="true">
+        <span><span class="fw-detail-flyout__connectivity-swatch fw-detail-flyout__connectivity-swatch--up"></span>Connected</span>
+        <span><span class="fw-detail-flyout__connectivity-swatch fw-detail-flyout__connectivity-swatch--down"></span>Not connected</span>
+        <span><span class="fw-detail-flyout__connectivity-swatch fw-detail-flyout__connectivity-swatch--unk"></span>Unknown</span>
+      </div>
+      <div class="fw-conn-chart__axis" style="display:flex;justify-content:space-between;margin-top:4px;">
+        <span>${startLabel}</span><span>${endLabel}</span>
+      </div>
+    </div>`;
+  }
+
+  async function loadFwDetailFlyoutConnectivity(fwId) {
+    const host = document.getElementById("fw-detail-connectivity-body");
+    if (!host) return;
+    try {
+      const data = await loadJson(
+        `/api/firewalls/${encodeURIComponent(fwId)}/connectivity-history?days=30`
+      );
+      renderFwConnectivityChartHtml(data);
+    } catch {
+      host.innerHTML = '<p class="muted">Could not load connectivity history.</p>';
+    }
   }
 
   function destroyFwDetailFlyoutMap() {
@@ -6759,8 +7079,9 @@
     const mapEl = document.getElementById("fw-detail-flyout-map");
     const ph = document.getElementById("fw-detail-flyout-map-placeholder");
     if (!mapEl) return;
-    const lat = row?.geo_lat;
-    const lng = row?.geo_lon;
+    const pos = row ? fwRowMapLatLng(row) : null;
+    const lat = pos?.lat;
+    const lng = pos?.lon;
     if (lat == null || lng == null || typeof L === "undefined") {
       destroyFwDetailFlyoutMap();
       mapEl.innerHTML = "";
@@ -6772,11 +7093,7 @@
     mapEl.hidden = false;
     destroyFwDetailFlyoutMap();
     fwDetailFlyoutMap = L.map(mapEl, fwMapBaseOptions());
-    L.tileLayer(FW_OSM_TILE_URL, {
-      maxZoom: 19,
-      attribution: FW_OSM_ATTR,
-      noWrap: true,
-    }).addTo(fwDetailFlyoutMap);
+    attachFwBaseTileLayer(fwDetailFlyoutMap);
     fwDetailFlyoutMapMarker = L.marker([lat, lng], {
       icon: fwMapMarkerIconForRow(row),
     }).addTo(fwDetailFlyoutMap);
@@ -6924,10 +7241,16 @@
     backdrop.hidden = false;
     panel.hidden = false;
     panel.setAttribute("aria-hidden", "false");
+    const connBody = document.getElementById("fw-detail-connectivity-body");
+    if (connBody) connBody.innerHTML = '<p class="muted">Loading…</p>';
     refreshFwDetailFlyoutVisuals();
     fwDetailFlyoutActivateTab("alerts");
     const serial = row.serial_number && row.serial_number !== "—" ? row.serial_number : "";
-    await Promise.all([loadFwDetailFlyoutAlerts(fwId), loadFwDetailFlyoutSubscriptions(serial)]);
+    await Promise.all([
+      loadFwDetailFlyoutConnectivity(fwId),
+      loadFwDetailFlyoutAlerts(fwId),
+      loadFwDetailFlyoutSubscriptions(serial),
+    ]);
     requestAnimationFrame(() => invalidateFwMapSizes());
     panel.querySelector(".flyout__close-btn")?.focus();
   }
@@ -6957,6 +7280,7 @@
       fwPrepared = fwRaw.map(prepareFirewall);
       applyFirewallRecencyTags(fwPrepared);
       buildFirewallFilters();
+      finalizeFwPreparedState();
       fwController.render();
       refreshFwMapMarkers({ refit: false });
       refreshFwDetailFlyoutVisuals();
@@ -6977,7 +7301,7 @@
     });
     locLink?.addEventListener("click", () => {
       const id = fwDetailFlyoutOpenId;
-      if (id) openFwLocationModal(id);
+      if (id) openFwLocationModal(id).catch(console.error);
     });
     panel.addEventListener("click", (e) => {
       const fwUpBtn = e.target.closest("button.fw-detail-flyout__firmware-update-btn");
@@ -6986,7 +7310,7 @@
         const fwId = fwUpBtn.getAttribute("data-fw-id") || fwDetailFlyoutOpenId;
         if (!fwId) return;
         closeFwDetailFlyout();
-        openFwFirmwareUpgradeModal(fwId);
+        openFwFirmwareBatchModal({ firewallIds: [fwId] }).catch(console.error);
         return;
       }
       const edit = e.target.closest("[data-fw-flyout-edit-name]");
@@ -7384,6 +7708,7 @@
     for (const st of Object.values(fwFilterState)) {
       if (st instanceof Set) n += st.size;
     }
+    if ((document.getElementById("fw-search")?.value || "").trim()) n += 1;
     return n;
   }
 
@@ -7449,6 +7774,8 @@
       });
       clearFwFacetSearchInputs(host);
     }
+    const fwSearch = document.getElementById("fw-search");
+    if (fwSearch) fwSearch.value = "";
     fwController.render();
     setFiltersPanelCollapsed(document.querySelector("#panel-firewalls .filters"), true);
     setFiltersPanelCollapsed(document.querySelector("#panel-operations .filters"), true);
@@ -7536,7 +7863,6 @@
   }
 
   let opsAutoRefreshTimer = null;
-  let opsLastSuccessfulRefresh = 0;
   const OPS_AUTO_REFRESH_MS = 45000;
 
   function stopOperationsAutoRefresh() {
@@ -7546,16 +7872,6 @@
     }
   }
 
-  function setOperationsRefreshStatus() {
-    const el = document.getElementById("ops-refresh-status");
-    if (!el) return;
-    if (!opsLastSuccessfulRefresh) {
-      el.textContent = "";
-      return;
-    }
-    el.textContent = `Updated ${formatSyncLastRelative(new Date(opsLastSuccessfulRefresh).toISOString())}`;
-  }
-
   function startOperationsAutoRefresh() {
     stopOperationsAutoRefresh();
     if (getActiveTabName() !== "operations") return;
@@ -7563,12 +7879,16 @@
       if (getActiveTabName() !== "operations") return;
       void loadFirewalls({ preserve: true })
         .then(() => {
-          opsLastSuccessfulRefresh = Date.now();
-          setOperationsRefreshStatus();
           onSessionUserActivity();
         })
         .catch(() => {});
     }, OPS_AUTO_REFRESH_MS);
+  }
+
+  /** For "online first": online+suspended (0), then online not suspended (1), then offline (2). */
+  function operationsOnlineFirstTier(row) {
+    if (!fwRowConnected(row)) return 2;
+    return fwRowSuspended(row) ? 0 : 1;
   }
 
   function operationsRowsFilteredSorted() {
@@ -7584,7 +7904,9 @@
       const ah = firewallStatusHealthy(a);
       const bh = firewallStatusHealthy(b);
       if (mode === "state_online_first") {
-        if (ah !== bh) return ah ? -1 : 1;
+        const ta = operationsOnlineFirstTier(a);
+        const tb = operationsOnlineFirstTier(b);
+        if (ta !== tb) return ta - tb;
         return cmpHost(a, b);
       }
       if (mode === "state_offline_first") {
@@ -7629,6 +7951,30 @@
     return "ops-card--tint-neg";
   }
 
+  /** Stable hue 0–359 from namespace + value so the same string reuses the same color on every card. */
+  function operationsFacetHue(namespace, value) {
+    const s = value != null ? String(value) : "";
+    let h = 2166136261;
+    const seed = `${namespace}:${s}`;
+    for (let i = 0; i < seed.length; i++) {
+      h ^= seed.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return Math.abs(h) % 360;
+  }
+
+  function operationsFacetPillPresentation(namespace, raw) {
+    const s = raw != null ? String(raw) : "";
+    if (!s || s === "—") {
+      return { cls: "ops-pill ops-pill--facet ops-pill--facet-empty", style: "" };
+    }
+    const hue = operationsFacetHue(namespace, s);
+    return {
+      cls: "ops-pill ops-pill--facet",
+      style: `background:hsl(${hue} 46% 90%);border-color:hsl(${hue} 38% 76%);color:hsl(${hue} 32% 24%)`,
+    };
+  }
+
   function renderOperationsPills(row) {
     const ap =
       fwRawIsApprovalPending(row.managing_status) || fwRawIsApprovalPending(row.reporting_status);
@@ -7665,7 +8011,7 @@
     let any = false;
     if (pos) {
       const host = firewallFilterHostnameValue(pos.r.hostname, pos.r.firewall_name);
-      const rel = formatSyncLastRelative(pos.r.state_changed_at);
+      const rel = formatStateChangeRelative(pos.r.state_changed_at);
       posEl.textContent = `${host} · ${pos.r.status} · ${rel}`;
       posEl.hidden = false;
       any = true;
@@ -7675,7 +8021,7 @@
     }
     if (neg) {
       const host = firewallFilterHostnameValue(neg.r.hostname, neg.r.firewall_name);
-      const rel = formatSyncLastRelative(neg.r.state_changed_at);
+      const rel = formatStateChangeRelative(neg.r.state_changed_at);
       negEl.textContent = `${host} · ${neg.r.status} · ${rel}`;
       negEl.hidden = false;
       any = true;
@@ -7690,6 +8036,12 @@
     const grid = document.getElementById("ops-card-grid");
     if (!grid) return;
     const rows = operationsRowsFilteredSorted();
+    const opsTitleCount = document.getElementById("page-title-ops-count");
+    if (opsTitleCount && getActiveTabName() === "operations") {
+      opsTitleCount.hidden = false;
+      const n = rows.length;
+      opsTitleCount.textContent = n === 1 ? "1 firewall shown" : `${n} firewalls shown`;
+    }
     renderOperationsChangeStrip(rows);
     if (!rows.length) {
       grid.innerHTML =
@@ -7711,27 +8063,35 @@
         const tenantDisp = escapeHtml(tenantRaw || "—");
         const tenantAttr = escapeAttr(tenantRaw);
         const modelRaw = row.model != null && row.model !== "" ? String(row.model) : "";
-        const modelDisp = escapeHtml(fwModelDisplay(row.model));
+        const modelDispPlain = fwModelDisplay(row.model);
+        const modelDisp = escapeHtml(modelDispPlain);
         const modelTitle = modelRaw && modelRaw !== "—" ? escapeAttr(modelRaw) : "";
+        const modelFacet = operationsFacetPillPresentation("model", modelRaw || modelDispPlain);
+        const tenantFacet = operationsFacetPillPresentation("tenant", tenantRaw);
+        const modelPill = `<span class="${modelFacet.cls}"${modelFacet.style ? ` style="${escapeAttr(modelFacet.style)}"` : ""}${modelTitle ? ` title="${modelTitle}"` : ""}>${modelDisp}</span>`;
+        const tenantPill =
+          tenantRaw && tenantRaw !== "—"
+            ? `<button type="button" class="cell-link ops-card__tenant-btn ${tenantFacet.cls}" data-ops-tenant="${tenantAttr}" title="Open Firewalls and search for this tenant" aria-label="Open Firewalls and search for tenant ${escapeAttr(tenantAttr)}"${tenantFacet.style ? ` style="${escapeAttr(tenantFacet.style)}"` : ""}>${tenantDisp}</button>`
+            : `<span class="${tenantFacet.cls}"${tenantFacet.style ? ` style="${escapeAttr(tenantFacet.style)}"` : ""}>${tenantDisp}</span>`;
         const syncRel = formatSyncLastRelative(row.last_sync);
-        const stateRel = formatSyncLastRelative(row.state_changed_at);
+        const stateRel = formatStateChangeRelative(row.state_changed_at);
+        const syncTitleRaw = syncPreciseTimeForTitle(row.last_sync);
+        const stateTitleRaw = syncPreciseTimeForTitle(row.state_changed_at);
+        const syncTitleAttr = syncTitleRaw ? ` title="${escapeAttr(syncTitleRaw)}"` : "";
+        const stateTitleAttr = stateTitleRaw ? ` title="${escapeAttr(stateTitleRaw)}"` : "";
+        const syncIcon = `<svg class="ops-card__sync-ico" viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>`;
+        const stateEyeIcon = `<svg class="ops-card__state-ico" viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`;
         const hostBtn = hostFacet
           ? `<button type="button" class="cell-link ops-card__hostname-btn" data-ops-hostname="${hostAttr}" title="Open Firewalls and search for this host" aria-label="Open Firewalls and search for ${escapeAttr(titleText)}">${escapeHtml(titleText)}</button>`
           : `<span class="ops-card__title-text">${escapeHtml(titleText)}</span>`;
-        const tenBtn =
-          tenantRaw && tenantRaw !== "—"
-            ? `<button type="button" class="cell-link ops-card__tenant-btn ops-card__v" data-ops-tenant="${tenantAttr}" title="Open Firewalls and search for this tenant" aria-label="Open Firewalls and search for tenant ${escapeAttr(tenantAttr)}">${tenantDisp}</button>`
-            : `<span class="ops-card__v">${tenantDisp}</span>`;
         return `<div class="ops-card ${tone} ${tint}" data-ops-fw="${escapeAttr(row._id)}" role="button" tabindex="0" aria-label="Open details for ${escapeAttr(titleText)}">
                 <span class="ops-card__accent" aria-hidden="true"></span>
                 <div class="ops-card__body">
                   <div class="ops-card__title">${icon}${hostBtn}</div>
-                  <div class="ops-card__pills">${renderOperationsPills(row)}</div>
-                  <div class="ops-card__kv">
-                    <span class="ops-card__k">Last sync</span><span class="ops-card__v">${escapeHtml(syncRel)}</span>
-                    <span class="ops-card__k">State change</span><span class="ops-card__v">${escapeHtml(stateRel)}</span>
-                    <span class="ops-card__k">Model</span><span class="ops-card__v"${modelTitle ? ` title="${modelTitle}"` : ""}>${modelDisp}</span>
-                    <span class="ops-card__k">Tenant</span>${tenBtn}
+                  <div class="ops-card__pills">${renderOperationsPills(row)}${modelPill}${tenantPill}</div>
+                  <div class="ops-card__footer">
+                    <span class="ops-card__meta ops-card__meta--sync"${syncTitleAttr}>${syncIcon}<span class="ops-card__meta-text">${escapeHtml(syncRel)}</span></span>
+                    <span class="ops-card__meta ops-card__meta--state"${stateTitleAttr}>${stateEyeIcon}<span class="ops-card__meta-text">${escapeHtml(stateRel)}</span></span>
                   </div>
                 </div>
               </div>`;
@@ -8304,9 +8664,14 @@
     if (grCreate) {
       grCreate.hidden = !admin;
     }
+    const grDel = document.getElementById("gr-delete-groups-btn");
+    if (grDel) {
+      grDel.hidden = !admin;
+    }
     updateFwApproveButtonState();
     updateFwFirmwareUpgradeButtonState();
     updateFwDeleteLocalButtonState();
+    updateGrDeleteGroupsButtonState();
   }
 
   function initFwToolbarQuickFilters() {
@@ -8485,7 +8850,6 @@
   initFwDeleteLocalModal();
 
   initFwColumnPicker();
-  initFwFirmwareUpgradeModal();
 
   fwTbody.addEventListener("click", (e) => {
     const grpBtn = e.target.closest("button.fw-to-central-group");
@@ -8512,7 +8876,7 @@
     if (locBtn) {
       e.preventDefault();
       const fid = locBtn.getAttribute("data-fw-id");
-      if (fid) openFwLocationModal(fid);
+      if (fid) openFwLocationModal(fid).catch(console.error);
       return;
     }
     const upBtn = e.target.closest("button.fw-firmware-upgrade-btn");
@@ -8870,13 +9234,10 @@
       fwController.clearSelection();
       fwController.resetPage();
     }
+    finalizeFwPreparedState();
     fwToolbarTenantMs.refresh();
     opsToolbarTenantMs.refresh();
     renderOperationsView();
-    if (getActiveTabName() === "operations") {
-      opsLastSuccessfulRefresh = Date.now();
-      setOperationsRefreshStatus();
-    }
     refreshFwMapMarkers();
   }
 
@@ -9534,7 +9895,11 @@
   function buildGrThead() {
     const tr = document.getElementById("gr-thead-row");
     if (!tr) return;
-    tr.innerHTML = "";
+    const checkTh = tr.querySelector(".th-check");
+    if (!checkTh) return;
+    while (tr.lastElementChild && tr.lastElementChild !== checkTh) {
+      tr.removeChild(tr.lastElementChild);
+    }
     GR_COLUMNS.forEach((col) => {
       if (!grColVisible[col.id]) return;
       const th = document.createElement("th");
@@ -9548,6 +9913,13 @@
       }
       tr.appendChild(th);
     });
+  }
+
+  function updateGrDeleteGroupsButtonState() {
+    const btn = document.getElementById("gr-delete-groups-btn");
+    if (!btn || btn.hidden) return;
+    const n = grController.getSelectedIds().filter(Boolean).length;
+    btn.disabled = n < 1;
   }
 
   function filterGrColumnMenuList() {
@@ -9961,11 +10333,15 @@
     }
   }
 
-  function renderGroupDataRow(row) {
+  function renderGroupDataRow(row, selected) {
     const cells = GR_COLUMNS.filter((c) => grColVisible[c.id])
       .map((c) => renderGrDataCell(c.id, row))
       .join("");
-    return `<tr>${cells}</tr>`;
+    const checked = selected.has(row._id) ? " checked" : "";
+    return `<tr>
+        <td class="th-check"><input type="checkbox" class="row-check" data-id="${escapeHtml(row._id)}"${checked} /></td>
+        ${cells}
+      </tr>`;
   }
 
   buildGrThead();
@@ -9977,7 +10353,7 @@
     rangeEl: document.getElementById("gr-lazy-hint"),
     pageSizeEl: document.getElementById("gr-page-size"),
     searchInput: document.getElementById("gr-search"),
-    selectAllInput: null,
+    selectAllInput: document.getElementById("gr-select-all"),
     sortHeaders: [],
     sortDelegateRoot: grTableEl,
     getFilteredRows: groupFiltered,
@@ -10000,11 +10376,133 @@
       ]
         .join(" ")
         .toLowerCase(),
-    renderRow: (row) => renderGroupDataRow(row),
-    afterRender: updateGroupFiltersChrome,
+    renderRow: (row, selected) => renderGroupDataRow(row, selected),
+    afterRender: () => {
+      updateGroupFiltersChrome();
+      updateGrDeleteGroupsButtonState();
+    },
+    onSelectionChange: () => {
+      updateGrDeleteGroupsButtonState();
+    },
   });
 
   initGrColumnPicker();
+
+  function setGrDeleteGroupsModalOpen(open) {
+    const modal = document.getElementById("gr-delete-groups-modal");
+    if (!modal) return;
+    modal.hidden = !open;
+    modal.setAttribute("aria-hidden", open ? "false" : "true");
+  }
+
+  function initGrDeleteGroupsModal() {
+    const modal = document.getElementById("gr-delete-groups-modal");
+    const openBtn = document.getElementById("gr-delete-groups-btn");
+    const cancel = document.getElementById("gr-delete-groups-cancel");
+    const proceed = document.getElementById("gr-delete-groups-proceed");
+    const closeBtn = document.getElementById("gr-delete-groups-modal-close");
+    const backdrop = modal?.querySelector(".gr-delete-groups-modal__backdrop");
+    const statusEl = document.getElementById("gr-delete-groups-modal-status");
+    const leadEl = document.getElementById("gr-delete-groups-modal-lead");
+
+    function closeModal() {
+      if (statusEl) statusEl.textContent = "";
+      setGrDeleteGroupsModalOpen(false);
+      openBtn?.focus();
+    }
+
+    openBtn?.addEventListener("click", () => {
+      if (!isAdmin() || openBtn.disabled) return;
+      const ids = grController.getSelectedIds().filter(Boolean);
+      const n = ids.length;
+      if (n === 0) return;
+      if (statusEl) statusEl.textContent = "";
+      const proceedLabel = n === 1 ? "Delete 1 group" : `Delete ${n} groups`;
+      if (proceed) {
+        proceed.textContent = proceedLabel;
+        proceed.setAttribute("aria-label", proceedLabel);
+      }
+      if (leadEl) {
+        leadEl.textContent =
+          n === 1
+            ? "The selected group will be permanently deleted on Sophos Central if you continue."
+            : `The ${n} selected groups will be permanently deleted on Sophos Central if you continue.`;
+      }
+      setGrDeleteGroupsModalOpen(true);
+      cancel?.focus();
+    });
+
+    cancel?.addEventListener("click", closeModal);
+    closeBtn?.addEventListener("click", closeModal);
+    backdrop?.addEventListener("click", closeModal);
+
+    proceed?.addEventListener("click", async () => {
+      if (!isAdmin() || proceed.disabled) return;
+      const ids = grController.getSelectedIds().filter(Boolean);
+      if (ids.length === 0) return;
+      if (statusEl) statusEl.textContent = "";
+      proceed.disabled = true;
+      try {
+        const res = await apiRequestJson("/api/firewall-groups/delete-batch", {
+          method: "POST",
+          body: JSON.stringify({ group_ids: ids }),
+        });
+        const lines = [];
+        if (res.deleted && res.deleted.length > 0) {
+          lines.push(`Deleted on Central: ${res.deleted.length}`);
+        }
+        if (res.errors && res.errors.length > 0) {
+          lines.push(
+            `Errors: ${res.errors.length}`,
+            ...res.errors.slice(0, 5).map((x) => `  ${x.id}: ${x.detail}`)
+          );
+        }
+        if (res.credential_syncs && res.credential_syncs.length > 0) {
+          const failed = res.credential_syncs.filter((s) => !s.ok);
+          if (failed.length > 0) {
+            lines.push(
+              `Credential sync issues: ${failed.length}`,
+              ...failed.slice(0, 3).map((s) => `  ${s.credential_id}: ${s.error || "failed"}`)
+            );
+          }
+        }
+        const msg = lines.length ? lines.join("\n") : "Done.";
+        const variant =
+          /(^|\n)Errors?:/i.test(msg) || /(^|\n)Credential sync issues:/i.test(msg)
+            ? "info"
+            : "success";
+        notifyAppUser("Delete firewall groups", msg, variant);
+        closeModal();
+        grController.clearSelection();
+        await loadFirewallGroups({ preserve: true });
+        grController.render();
+        refreshAppSyncStatusBar();
+      } catch (err) {
+        if (statusEl) {
+          statusEl.textContent = err && err.message ? err.message : String(err);
+        } else {
+          notifyAppUser(
+            "Delete firewall groups",
+            err && err.message ? err.message : String(err),
+            "error"
+          );
+        }
+      } finally {
+        proceed.disabled = false;
+      }
+    });
+
+    document.addEventListener("keydown", (e) => {
+      const m = document.getElementById("gr-delete-groups-modal");
+      if (!m || m.hidden) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeModal();
+      }
+    });
+  }
+
+  initGrDeleteGroupsModal();
 
   let grCreateImportSources = [];
   let grCreateAvailableAll = [];
@@ -12536,6 +13034,10 @@
     for (const [k, st] of Object.entries(lcFilterState)) {
       if (st instanceof Set) lcFilters[k] = [...st];
     }
+    const opsFilters = {};
+    for (const [k, st] of Object.entries(fwFilterState)) {
+      if (st instanceof Set) opsFilters[k] = [...st];
+    }
 
     const daRaisedFromEl = document.getElementById("da-raised-custom-from");
     const daRaisedToEl = document.getElementById("da-raised-custom-to");
@@ -12572,6 +13074,10 @@
       operations: {
         search: opsSearchEl ? opsSearchEl.value : "",
         sort: opsSortEl ? opsSortEl.value : "state_online_first",
+        linkMode: fwLinkMode,
+        filters: opsFilters,
+        tenant_names:
+          fwFilterState.tenant_name instanceof Set ? [...fwFilterState.tenant_name] : [],
         filtersExpanded: opsFiltersAside
           ? !opsFiltersAside.classList.contains("filters--collapsed")
           : undefined,
@@ -12657,6 +13163,46 @@
 
   function applyOperationsSaved(s) {
     if (!s || typeof s !== "object") return;
+    const touchFw =
+      ("filters" in s && s.filters && typeof s.filters === "object") ||
+      "linkMode" in s ||
+      Array.isArray(s.tenant_names);
+    if (touchFw) {
+      const legacyLm = s.linkMode;
+      if ("linkMode" in s) {
+        fwLinkMode =
+          legacyLm === "offline" || legacyLm === "firmware_updates" ? legacyLm : null;
+      }
+      if ("filters" in s && s.filters && typeof s.filters === "object") {
+        for (const [k, arr] of Object.entries(s.filters)) {
+          const st = fwFilterState[k];
+          if (!st || !(st instanceof Set) || !Array.isArray(arr)) continue;
+          st.clear();
+          arr.forEach((x) => st.add(String(x)));
+        }
+      }
+      const statusSt = fwFilterState.status;
+      if (legacyLm === "suspended" && statusSt) {
+        statusSt.clear();
+        statusSt.add("Suspended");
+      } else if (legacyLm === "pending" && statusSt) {
+        statusSt.clear();
+        statusSt.add("Pending approval");
+      }
+      if (Array.isArray(s.tenant_names)) {
+        const tset = fwFilterState.tenant_name;
+        if (tset instanceof Set) {
+          tset.clear();
+          s.tenant_names.forEach((x) => tset.add(String(x)));
+        }
+      }
+      syncFirewallFilterCheckboxesFromState();
+      updateFirewallFiltersChrome();
+      fwController.render();
+      fwToolbarTenantMs.refresh();
+      opsToolbarTenantMs.refresh();
+      updateFwQuickFilterToolbarUi();
+    }
     const search = document.getElementById("ops-search");
     if (search && typeof s.search === "string") search.value = s.search;
     const sortEl = document.getElementById("ops-sort");
@@ -12666,6 +13212,19 @@
     if (typeof s.filtersExpanded === "boolean") {
       const aside = document.querySelector("#panel-operations .filters");
       if (aside) setFiltersPanelCollapsed(aside, !s.filtersExpanded);
+    }
+    renderOperationsView();
+    updateOpsQuickFilterToolbarUi();
+  }
+
+  async function loadPersistedOperationsUi() {
+    try {
+      const data = await loadJson("/api/me/operations-ui");
+      if (data && typeof data === "object" && Object.keys(data).length > 0) {
+        applyOperationsSaved(data);
+      }
+    } catch {
+      /* ignore */
     }
   }
 
@@ -12876,6 +13435,7 @@
   lcToolbarTenantMs.init();
   initFwMapHeightsAndResizeHandles();
   initFwMapSectionToggles();
+  initFwMapBackNavigation();
   initFwLocationModal();
   initFwDetailFlyout();
   initOperationsViewPanel();
@@ -12896,10 +13456,13 @@
       ]);
 
       if (saved?.firewalls) applyFirewallSaved(saved.firewalls);
-      if (saved?.operations) applyOperationsSaved(saved.operations);
       if (saved?.groups) applyGroupSaved(saved.groups);
       if (saved?.tenants) applyTenantSaved(saved.tenants);
       if (saved?.licenses) applyLicenseSaved(saved.licenses);
+
+      await loadPersistedOperationsUi();
+      // Apply session operations after server so sort/search/filters match this tab (server payload can lag).
+      if (saved?.operations) applyOperationsSaved(saved.operations);
 
       fwController.render();
       grController.render();

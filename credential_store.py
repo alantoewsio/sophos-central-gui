@@ -91,6 +91,12 @@ def _migrate_app_users_profile_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE app_users ADD COLUMN mobile TEXT")
 
 
+def _migrate_app_users_operations_ui_json(conn: sqlite3.Connection) -> None:
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(app_users)").fetchall()}
+    if "operations_ui_json" not in cols:
+        conn.execute("ALTER TABLE app_users ADD COLUMN operations_ui_json TEXT")
+
+
 def init_users_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -106,6 +112,7 @@ def init_users_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _migrate_app_users_profile_columns(conn)
+    _migrate_app_users_operations_ui_json(conn)
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_app_users_username
@@ -379,6 +386,31 @@ def delete_app_user(conn: sqlite3.Connection, user_id: str) -> bool:
     return cur.rowcount > 0
 
 
+def get_user_operations_ui_json(conn: sqlite3.Connection, user_id: str) -> str | None:
+    init_users_schema(conn)
+    row = conn.execute(
+        "SELECT operations_ui_json FROM app_users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if not row:
+        return None
+    raw = row["operations_ui_json"]
+    return None if raw is None else str(raw)
+
+
+def set_user_operations_ui_json(conn: sqlite3.Connection, user_id: str, payload: str) -> bool:
+    init_users_schema(conn)
+    now = _utc_now_iso()
+    cur = conn.execute(
+        """
+        UPDATE app_users SET operations_ui_json = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (payload, now, user_id),
+    )
+    return cur.rowcount > 0
+
+
 DEFAULT_SYNC_INTERVAL = "12h"
 DEFAULT_INCREMENTAL_SYNC_INTERVAL = "15m"
 
@@ -396,6 +428,9 @@ CREDENTIAL_SYNC_INTERVAL_SECONDS: dict[str, int | None] = {
 
 CREDENTIAL_INCREMENTAL_SYNC_INTERVAL_SECONDS: dict[str, int | None] = {
     "1m": 60,
+    "2m": 120,
+    "3m": 180,
+    "4m": 240,
     "5m": 300,
     "10m": 600,
     "15m": 900,
@@ -418,6 +453,9 @@ SYNC_INTERVAL_DISPLAY: dict[str, str] = {
 
 INCREMENTAL_SYNC_INTERVAL_DISPLAY: dict[str, str] = {
     "1m": "Every 1 minute",
+    "2m": "Every 2 minutes",
+    "3m": "Every 3 minutes",
+    "4m": "Every 4 minutes",
     "5m": "Every 5 minutes",
     "10m": "Every 10 minutes",
     "15m": "Every 15 minutes",

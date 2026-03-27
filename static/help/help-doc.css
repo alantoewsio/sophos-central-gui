@@ -236,3 +236,32 @@ body.help-doc {
 .help-doc strong {
   font-weight: 600;
 }
+
+/* Match app theme toggle (localStorage sophos-central-theme) */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --help-bg: #121416;
+  --help-surface: #1e2126;
+  --help-border: #3d4450;
+  --help-text: #e8eaed;
+  --help-muted: #9aa0a6;
+  --help-accent: #64b5f6;
+  --help-accent-hover: #90caf9;
+  --help-masthead: #0d2137;
+  --help-masthead-text: #ffffff;
+  --help-link: #64b5f6;
+}
+
+[data-theme="dark"] .help-doc__masthead {
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="dark"] .help-doc__note {
+  background: #1a2838;
+  border-left-color: var(--help-accent);
+}
+
+[data-theme="dark"] .help-doc code {
+  background: #2a2f38;
+  color: var(--help-text);
+}
