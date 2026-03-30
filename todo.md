@@ -1,8 +1,10 @@
 # App planned features
 
+This app is meant to be a fun side-project that can test the sfos-central-sdk project, and demonstrate interesting uses of Sophos Central's firwall APIs. It comes with no warranty or support, and 
+
 ## Features
 
-- [ ] Basic UI layout 
+- [x] Basic UI layout 
     - [x] tabbed nav
     - [x] top bar with icons
     - [x] top nav pinned
@@ -13,6 +15,7 @@
         - [x] Export to excel/csv/json
         - [x] column selector
         - [x] Lazy loading
+    - [x] Dark mode
     - [x] Browser tab title: Firewalls Managed by Sophos Central 
     - [x] Sopos.com favicon
     - [x] Map control
@@ -28,7 +31,7 @@
     - [x] Documentation and make use of help icon     
     - [x] make use of notification bell icon
     - [x] Notifications panel
-    - [ ] Translation - support additional languages
+- [ ] Translation - support additional languages
 - [x] Dashboard tab 
     - [x] alerts table
         - [x] clickable firewall hostname
@@ -52,7 +55,7 @@
 - [ ] Groups tab
     - [x] Show firewall groups
     - [x] Add groups
-    - [ ] Remove groups
+    - [x] Remove groups
     - [ ] group/ungroup firewalls
     - [ ] Remove firewalls from Central *MAYBE*
 - [ ] Config page *FUTURE*
@@ -79,11 +82,7 @@
         - [ ] email challenge loop
         - [ ] text challenge loop
     - [ ] passkey support
-    - [ ] mfa tokens
-    - [ ] IDP integration
-        - [ ] google auth signin
-        - [ ] azure auth signin
-        - [ ] Sophos ID signin?
+    - [ ] mfa token support
 - [x] Central Creds management
     - [x] Add / Remove creds
     - [x] Test creds
@@ -95,3 +94,8 @@
     - [x] Add visual indicator to show last sync
     - [x] Event logging
 - [x] SUM-Style Firewall card view
+    - [x] search, sort, filter, quick filter
+    - [x] eye catching cards
+    - [x] minimize card size - maximize cards shown at once
+    - [x] Highlight recent state changes
+    - [x] prevent session timeout on card view

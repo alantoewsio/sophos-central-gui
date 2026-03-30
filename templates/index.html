@@ -187,6 +187,11 @@
                 </a>
               </div>
               <div class="user-menu__rule" role="separator"></div>
+              <div class="user-menu__shutdown-wrap" id="user-menu-shutdown-wrap" hidden>
+                <button type="button" class="user-menu__shutdown" role="menuitem" id="user-menu-shutdown-app">
+                  Shut down application
+                </button>
+              </div>
               <div class="user-menu__footer">
                 <button type="button" class="user-menu__theme-btn" id="user-menu-theme"
                   aria-label="Switch to dark mode" title="Color theme">
@@ -308,6 +313,7 @@
             <span class="app-nav__label">Licenses</span>
           </button>
         </nav>
+        <p class="app-sidebar__version">{{ app_about.app_version }}</p>
       </div>
     </aside>
 
@@ -1466,6 +1472,16 @@
               </svg>
               <span>Sync</span>
             </button>
+            {% if git_update_available %}
+            <button type="button" class="settings-nav__item" id="settings-nav-update" data-settings-section="update"
+              data-requires-admin="true">
+              <svg class="settings-nav__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor"
+                  d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+              </svg>
+              <span>Update</span>
+            </button>
+            {% endif %}
           </nav>
           <div class="settings-modal__sidebar-footer">
             <button type="button" class="settings-nav__item settings-nav__item--footer" id="settings-nav-about"
@@ -1675,6 +1691,30 @@
                 </div>
               </div>
             </section>
+            {% if git_update_available %}
+            <section id="settings-panel-update" class="settings-panel" data-settings-panel="update" hidden>
+              <h3 class="settings-panel__heading">Update</h3>
+              <p class="settings-panel__lead muted">When this app is running from a git checkout and <code>git</code> is
+                available, you can schedule a background check that <strong>fetches</strong> the default remote and
+                <strong>fast-forward pulls</strong> when your branch is behind its upstream. Local commits or merges are
+                not changed. After a successful pull, restart the app if Python or static assets changed.</p>
+              <form id="settings-git-update-form" class="settings-form settings-form--general">
+                <div class="settings-form__row">
+                  <label class="settings-form__label" for="settings-git-update-interval">Check for updates</label>
+                  <select id="settings-git-update-interval" name="interval" class="settings-form__input"
+                    aria-describedby="settings-git-update-hint"></select>
+                  <p id="settings-git-update-hint" class="settings-form__hint muted">Runs on a background thread while
+                    the server is up. Maximum interval is 30 days. Choose <strong>Never</strong> to disable.</p>
+                </div>
+                <p id="settings-git-update-repo" class="settings-form__hint muted" hidden></p>
+                <p id="settings-git-update-last" class="settings-form__hint muted" hidden></p>
+                <div class="settings-form__actions">
+                  <button type="submit" class="btn btn--primary" id="settings-git-update-save">Save</button>
+                </div>
+                <p id="settings-git-update-status" class="settings-form__status muted" role="status" aria-live="polite"></p>
+              </form>
+            </section>
+            {% endif %}
             <section id="settings-panel-about" class="settings-panel" data-settings-panel="about" hidden>
               <h3 class="settings-panel__heading">About</h3>
               <dl class="settings-about">

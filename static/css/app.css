@@ -327,6 +327,23 @@ body {
   padding-right: 8px;
 }
 
+.app-sidebar__version {
+  margin: 0;
+  margin-top: auto;
+  padding: 14px 8px 0;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.48);
+  text-align: center;
+  line-height: 1.3;
+  flex-shrink: 0;
+}
+
+.app-shell--nav-collapsed .app-sidebar__version {
+  display: none;
+}
+
 .app-chrome-sticky {
   position: sticky;
   top: 0;
@@ -527,6 +544,33 @@ body {
 
 .user-menu__theme-icon[hidden] {
   display: none !important;
+}
+
+.user-menu__shutdown-wrap {
+  padding: 0 14px 10px;
+}
+
+.user-menu__shutdown {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 8px;
+  background: rgba(248, 113, 113, 0.12);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fecaca;
+  cursor: pointer;
+}
+
+.user-menu__shutdown:hover {
+  background: rgba(248, 113, 113, 0.2);
+  border-color: rgba(248, 180, 180, 0.55);
+  color: #fff;
 }
 
 .user-menu__signout {
@@ -5197,6 +5241,29 @@ tr.lc-row:focus {
   gap: 10px;
   justify-content: flex-end;
   padding-top: 8px;
+}
+
+.settings-form__actions--wrap {
+  justify-content: flex-start;
+}
+
+.settings-form__row--checkbox {
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+.settings-form__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  cursor: pointer;
+  margin: 0;
+}
+
+.settings-form__check input {
+  margin-top: 3px;
+  flex-shrink: 0;
 }
 
 @media (max-width: 720px) {

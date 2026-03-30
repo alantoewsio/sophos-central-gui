@@ -660,6 +660,11 @@
     if (roleEl) {
       roleEl.textContent = u ? appRoleDisplay(u.role) : "";
     }
+    const shutdownWrap = document.getElementById("user-menu-shutdown-wrap");
+    if (shutdownWrap) {
+      const isAdmin = u && u.role === "admin";
+      shutdownWrap.hidden = !isAdmin;
+    }
     if (typeof applyFwApproveButtonVisibility === "function") applyFwApproveButtonVisibility();
     applyAppSyncBarSyncButtonVisibility();
   }
@@ -913,6 +918,18 @@
       toggleColorTheme();
     });
     syncUserMenuThemeButton();
+    document.getElementById("user-menu-shutdown-app")?.addEventListener("click", async () => {
+      closeUserDropdown();
+      const ok = window.confirm(
+        "Shut down the application for all users? You will need to start it again to use the UI.",
+      );
+      if (!ok) return;
+      try {
+        await apiRequestJson("/api/admin/shutdown", { method: "POST", body: "{}" });
+      } catch (e) {
+        window.alert(e.message || "Could not shut down the application.");
+      }
+    });
     document.getElementById("user-menu-logout")?.addEventListener("click", async () => {
       closeUserDropdown();
       try {
@@ -1197,7 +1214,7 @@
 
   function setSettingsSection(section) {
     let s = section;
-    if ((s === "credentials" || s === "sync") && !isAdmin()) {
+    if ((s === "credentials" || s === "sync" || s === "update") && !isAdmin()) {
       s = "users";
     }
     document.querySelectorAll("#settings-modal [data-settings-section]").forEach((btn) => {
@@ -1219,6 +1236,9 @@
     }
     if (s === "sync") {
       loadSettingsSync().catch(console.error);
+    }
+    if (s === "update") {
+      loadSettingsGitUpdate().catch(console.error);
     }
     if (s === "users") {
       loadSettingsUsers().catch(console.error);
@@ -1534,6 +1554,22 @@
     INCREMENTAL_SYNC_INTERVAL_OPTIONS.map((o) => o.value)
   );
 
+  const GIT_UPDATE_INTERVAL_OPTIONS = [
+    { value: "never", label: "Never" },
+    { value: "15m", label: "Every 15 minutes" },
+    { value: "30m", label: "Every 30 minutes" },
+    { value: "1h", label: "Every hour (default)" },
+    { value: "6h", label: "Every 6 hours" },
+    { value: "12h", label: "Every 12 hours" },
+    { value: "24h", label: "Every 24 hours" },
+    { value: "3d", label: "Every 3 days" },
+    { value: "7d", label: "Every 7 days" },
+    { value: "14d", label: "Every 14 days" },
+    { value: "30d", label: "Every 30 days" },
+  ];
+
+  const GIT_UPDATE_INTERVAL_ALLOWED = new Set(GIT_UPDATE_INTERVAL_OPTIONS.map((o) => o.value));
+
   function normalizeCredentialIncrementalSyncInterval(raw) {
     const v = raw != null && String(raw).trim() !== "" ? String(raw).trim() : "15m";
     return INCREMENTAL_SYNC_INTERVAL_ALLOWED.has(v) ? v : "15m";
@@ -1597,6 +1633,47 @@
     }
     const days = Math.floor(deltaSec / 86400);
     return { text: `in ${days} day${days === 1 ? "" : "s"}`, title: precise };
+  }
+
+  async function loadSettingsGitUpdate() {
+    const form = document.getElementById("settings-git-update-form");
+    if (!form) return;
+    const sel = document.getElementById("settings-git-update-interval");
+    const repoEl = document.getElementById("settings-git-update-repo");
+    const lastEl = document.getElementById("settings-git-update-last");
+    if (sel && !sel.dataset.populated) {
+      sel.innerHTML = GIT_UPDATE_INTERVAL_OPTIONS.map(
+        (o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`
+      ).join("");
+      sel.dataset.populated = "1";
+    }
+    try {
+      const j = await loadJson("/api/settings/git-update");
+      const rawIv = j.interval != null ? String(j.interval).trim() : "";
+      const iv = GIT_UPDATE_INTERVAL_ALLOWED.has(rawIv) ? rawIv : "1h";
+      if (sel) sel.value = iv;
+      if (repoEl && j.repo_path) {
+        repoEl.textContent = `Repository: ${j.repo_path}`;
+        repoEl.hidden = false;
+      } else if (repoEl) {
+        repoEl.hidden = true;
+      }
+      if (lastEl) {
+        const parts = [];
+        if (j.last_check_at) parts.push(`Last check: ${fmtDate(j.last_check_at)}`);
+        if (j.last_message) parts.push(String(j.last_message));
+        if (parts.length) {
+          lastEl.textContent = parts.join(" · ");
+          lastEl.hidden = false;
+        } else {
+          lastEl.textContent = "";
+          lastEl.hidden = true;
+        }
+      }
+    } catch {
+      if (repoEl) repoEl.hidden = true;
+      if (lastEl) lastEl.hidden = true;
+    }
   }
 
   async function loadSettingsSync() {
@@ -1816,6 +1893,47 @@
         grController.render();
         tnController.render();
         loadDashboardAlerts({ reset: true }).catch(console.error);
+      } catch (err) {
+        if (st) {
+          st.textContent = err.message || "Could not save.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+      } finally {
+        if (saveBtn) saveBtn.disabled = false;
+      }
+    });
+
+    document.getElementById("settings-git-update-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const sel = document.getElementById("settings-git-update-interval");
+      const st = document.getElementById("settings-git-update-status");
+      const saveBtn = document.getElementById("settings-git-update-save");
+      const v = sel?.value || "1h";
+      if (!GIT_UPDATE_INTERVAL_ALLOWED.has(v)) {
+        if (st) {
+          st.textContent = "Invalid interval.";
+          st.classList.add("is-error");
+          st.classList.remove("is-ok");
+        }
+        return;
+      }
+      if (saveBtn) saveBtn.disabled = true;
+      if (st) {
+        st.textContent = "Saving…";
+        st.classList.remove("is-error", "is-ok");
+      }
+      try {
+        await apiRequestJson("/api/settings/git-update", {
+          method: "PATCH",
+          body: JSON.stringify({ interval: v }),
+        });
+        if (st) {
+          st.textContent = "Saved.";
+          st.classList.add("is-ok");
+          st.classList.remove("is-error");
+        }
+        await loadSettingsGitUpdate();
       } catch (err) {
         if (st) {
           st.textContent = err.message || "Could not save.";
@@ -2425,6 +2543,7 @@
         users: "settings-users.html",
         credentials: "settings-credentials.html",
         sync: "settings-sync.html",
+        update: "settings-update.html",
         about: "settings-about.html",
       };
       return map[sec] || "settings-users.html";

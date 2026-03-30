@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    try {
+      var t = localStorage.getItem("sophos-central-theme");
+      if (t !== "dark" && t !== "light")
+        t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+    } catch (e) {}
+  </script>
+
+  <title>Settings — Update — Help — SFOS Central Firewall Management</title>
+  <link rel="stylesheet" href="help-doc.css" />
+</head>
+
+<body class="help-doc">
+  <header class="help-doc__masthead">
+    <div class="help-doc__masthead-inner">
+      <span class="help-doc__product">SFOS Central Firewall Management</span>
+      <span class="help-doc__sep">/</span>
+      <span class="help-doc__breadcrumb">Settings — Update</span>
+    </div>
+  </header>
+  <div class="help-doc__layout">
+    <aside class="help-doc__toc" aria-label="On this page">
+      <p class="help-doc__toc-title">On this page</p>
+      <ul>
+        <li><a href="#introduction">Introduction</a></li>
+        <li><a href="#behavior">What it does</a></li>
+        <li><a href="#availability">Availability</a></li>
+      </ul>
+    </aside>
+    <main class="help-doc__main">
+      <p class="help-doc__back"><a href="index.html">← All help topics</a></p>
+      <h1 class="help-doc__h1">Settings — Update</h1>
+      <p class="help-doc__meta">Optional git-based automatic fast-forward updates for development checkouts.</p>
+
+      <h2 class="help-doc__h2" id="introduction">Introduction</h2>
+      <p>Administrators can set how often the server checks the default remote for your current branch. This panel only
+        appears when <strong>git</strong> is installed and the app is running from a git working tree (typically a
+        source checkout).</p>
+
+      <h2 class="help-doc__h2" id="behavior">What it does</h2>
+      <p>On each scheduled run the service runs <code>git fetch</code>, compares your <code>HEAD</code> with the
+        configured upstream, and runs <code>git pull --ff-only</code> when your branch is behind. Diverged branches,
+        merge conflicts, or unpushed work are left untouched; you will see a short status message in Settings after a
+        check. After code or static files change, restart the app so the new files are loaded.</p>
+
+      <h2 class="help-doc__h2" id="availability">Availability</h2>
+      <p>PyInstaller bundles and installs without a <code>.git</code> directory do not show this section. The maximum
+        scheduled interval is 30 days; choosing <strong>Never</strong> disables background checks.</p>
+    </main>
+  </div>
+</body>
+
+</html>

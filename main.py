@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import ipaddress
 import json
+import os
 import re
+import signal
 import sqlite3
 import tomllib
 from collections import defaultdict
@@ -19,7 +21,7 @@ import sys
 from pathlib import Path
 
 from app_paths import bundle_root, runtime_root
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -80,6 +82,13 @@ from credential_store import (
     whoami_dict_from_session,
 )
 from audit_log import audit_event, mask_oauth_client_id
+from git_auto_update import (
+    GIT_AUTO_UPDATE_INTERVAL_CHOICES,
+    git_repo_root,
+    git_update_page_visible,
+    normalize_git_auto_update_interval,
+    start_git_update_scheduler_thread,
+)
 from sync_runner import configure_sync_file_logging, get_public_sync_activity, run_credential_sync
 from sync_scheduler import start_scheduler_thread
 
@@ -228,6 +237,19 @@ def ensure_app_ui_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE app_ui_settings ADD COLUMN session_idle_timeout_minutes "
             "INTEGER NOT NULL DEFAULT 60"
+        )
+    if "git_auto_update_interval" not in cols:
+        conn.execute(
+            "ALTER TABLE app_ui_settings ADD COLUMN git_auto_update_interval "
+            "TEXT NOT NULL DEFAULT '1h'"
+        )
+    if "git_auto_update_last_check_at" not in cols:
+        conn.execute(
+            "ALTER TABLE app_ui_settings ADD COLUMN git_auto_update_last_check_at TEXT"
+        )
+    if "git_auto_update_last_message" not in cols:
+        conn.execute(
+            "ALTER TABLE app_ui_settings ADD COLUMN git_auto_update_last_message TEXT"
         )
     conn.commit()
 
@@ -937,6 +959,7 @@ async def lifespan(app: FastAPI):
         with get_db() as conn:
             ensure_app_ui_schema(conn)
     start_scheduler_thread()
+    start_git_update_scheduler_thread()
     yield
 
 
@@ -1035,10 +1058,47 @@ def admin_user_id_dep(request: Request) -> str:
     return require_admin(request)
 
 
+def _graceful_shutdown() -> None:
+    """Stop the uvicorn process after the HTTP response has been sent."""
+    import time
+
+    time.sleep(0.08)
+    pid = os.getpid()
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        try:
+            signal.raise_signal(signal.SIGINT)
+        except (OSError, RuntimeError, ValueError):
+            os._exit(0)
+
+
+@app.post("/api/admin/shutdown")
+def api_admin_shutdown(
+    request: Request,
+    background: BackgroundTasks,
+    admin_uid: str = Depends(admin_user_id_dep),
+):
+    au, an = _actor_for_audit(admin_uid)
+    audit_event(
+        action="app.shutdown_requested",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+    )
+    background.add_task(_graceful_shutdown)
+    return {"ok": True}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     tpl = jinja.get_template("index.html")
-    return HTMLResponse(tpl.render(app_about=APP_ABOUT))
+    return HTMLResponse(
+        tpl.render(
+            app_about=APP_ABOUT,
+            git_update_available=git_update_page_visible(),
+        )
+    )
 
 
 @app.get("/api/health")
@@ -4032,6 +4092,13 @@ class AppUiSettingsBody(BaseModel):
     )
 
 
+class GitAutoUpdateSettingsBody(BaseModel):
+    interval: str = Field(min_length=1, max_length=32)
+
+
+_GIT_AUTO_UPDATE_INTERVAL_SET = frozenset(GIT_AUTO_UPDATE_INTERVAL_CHOICES)
+
+
 @app.get("/api/settings/ui")
 def api_settings_ui_get(_: str = Depends(current_user_id_dep)):
     if not DB_PATH.exists():
@@ -4109,6 +4176,81 @@ def api_settings_ui_patch(
         "fw_new_max_age_hours": body.fw_new_max_age_hours,
         "fw_updated_max_age_hours": body.fw_updated_max_age_hours,
         "session_idle_timeout_minutes": body.session_idle_timeout_minutes,
+    }
+
+
+@app.get("/api/settings/git-update")
+def api_settings_git_update_get(_: str = Depends(admin_user_id_dep)):
+    if not git_update_page_visible():
+        raise HTTPException(
+            status_code=404,
+            detail="Git auto-update is not available (git not on PATH or app root is not a git checkout).",
+        )
+    if not DB_PATH.exists():
+        raise HTTPException(status_code=503, detail="Database not available")
+    row = None
+    try:
+        with get_db_readonly() as conn:
+            row = conn.execute(
+                "SELECT git_auto_update_interval, git_auto_update_last_check_at, "
+                "git_auto_update_last_message FROM app_ui_settings WHERE id = 1"
+            ).fetchone()
+    except sqlite3.OperationalError:
+        with get_db() as conn:
+            ensure_app_ui_schema(conn)
+            row = conn.execute(
+                "SELECT git_auto_update_interval, git_auto_update_last_check_at, "
+                "git_auto_update_last_message FROM app_ui_settings WHERE id = 1"
+            ).fetchone()
+    repo = git_repo_root()
+    interval = normalize_git_auto_update_interval(
+        str(row["git_auto_update_interval"]) if row and row["git_auto_update_interval"] else None
+    )
+    return {
+        "interval": interval,
+        "last_check_at": str(row["git_auto_update_last_check_at"])
+        if row and row["git_auto_update_last_check_at"]
+        else None,
+        "last_message": str(row["git_auto_update_last_message"])
+        if row and row["git_auto_update_last_message"]
+        else None,
+        "repo_path": str(repo.resolve()) if repo else None,
+    }
+
+
+@app.patch("/api/settings/git-update")
+def api_settings_git_update_patch(
+    request: Request,
+    body: GitAutoUpdateSettingsBody,
+    admin_uid: str = Depends(admin_user_id_dep),
+):
+    if not git_update_page_visible():
+        raise HTTPException(
+            status_code=404,
+            detail="Git auto-update is not available (git not on PATH or app root is not a git checkout).",
+        )
+    if not DB_PATH.exists():
+        raise HTTPException(status_code=503, detail="Database not available")
+    iv = body.interval.strip()
+    if iv not in _GIT_AUTO_UPDATE_INTERVAL_SET:
+        raise HTTPException(status_code=422, detail="Invalid git auto-update interval")
+    with get_db() as conn:
+        ensure_app_ui_schema(conn)
+        conn.execute(
+            "UPDATE app_ui_settings SET git_auto_update_interval = ? WHERE id = 1",
+            (iv,),
+        )
+        conn.commit()
+    au, an = _actor_for_audit(admin_uid)
+    audit_event(
+        action="settings.git_auto_update",
+        actor_user_id=au,
+        actor_username=an,
+        request=request,
+        detail={"interval": iv},
+    )
+    return {
+        "interval": iv,
     }
 
 

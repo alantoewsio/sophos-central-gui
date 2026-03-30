@@ -23,4 +23,6 @@ sophos_session_secret
 credentials.env
 .env
 sophos_central.db
+sophos_central.db-wal
+sophos_central.db-shm
 *.db
